@@ -5,7 +5,7 @@
 
 ## Workflow
 - Work strictly milestone by milestone (spec §12): M1 → M2 → M3 → M4 → M5 → M6. Do not start a milestone until the previous one's tests are green.
-- Per milestone: (1) restate the milestone's scope by listing the spec sections it implements, (2) write tests first for the behavior in those sections, (3) implement until green, (4) run the relevant Acceptance Demo Script steps (spec §14) that are executable at this stage, (5) update README.md (milestone status table, plus any getting-started or layout details that changed), (6) single conventional commit per coherent change, (7) stop and summarize for review before advancing.
+- Per milestone: (1) restate the milestone's scope by listing the spec sections it implements, (2) write tests first for the behavior in those sections, (3) implement until green, (4) run the relevant Acceptance Demo Script steps (spec §14) that are executable at this stage, (5) update README.md (milestone status table, plus any getting-started or layout details that changed), (6) single conventional commit per coherent change, (7) write a checkpoint summary (what was built, what was deferred to which milestone, ambiguities hit) and proceed directly to the next milestone. Do not wait for review between milestones. Pause and ask ONLY when the spec is ambiguous or self-contradictory — resolve, then continue.
 - Verification means executed proof: show test output, show curl output for API milestones. Never declare a milestone done without it.
 
 ## Hard constraints
