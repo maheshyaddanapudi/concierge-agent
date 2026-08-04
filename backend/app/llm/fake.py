@@ -1,0 +1,108 @@
+"""Scriptable fake provider — how every test injects LLM behavior (spec §11).
+
+Registered through the same @model_provider port as real adapters, so tests
+exercise the identical resolution path (`get_model("fake:...")`) without ever
+touching a provider SDK. Enabled via FAKE_LLM_ENABLED env.
+"""
+
+from collections import deque
+from typing import Any
+
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages.ai import UsageMetadata
+from langchain_core.outputs import ChatGeneration, ChatResult
+
+from app.config import get_config
+from app.llm.port import ModelInfo, ModelParams, ProviderNotConfiguredError
+from app.llm.registry import model_provider
+
+_SCRIPT: deque[AIMessage] = deque()
+
+_DEFAULT_USAGE = UsageMetadata(input_tokens=7, output_tokens=11, total_tokens=18)
+
+
+def push_ai(content: str, tool_calls: list[dict[str, Any]] | None = None) -> None:
+    """Queue the next scripted response (FIFO across all fake model calls)."""
+    msg = AIMessage(content=content, tool_calls=tool_calls or [])
+    msg.usage_metadata = _DEFAULT_USAGE
+    _SCRIPT.append(msg)
+
+
+def push_message(msg: AIMessage) -> None:
+    if msg.usage_metadata is None:
+        msg.usage_metadata = _DEFAULT_USAGE
+    _SCRIPT.append(msg)
+
+
+def clear_script() -> None:
+    _SCRIPT.clear()
+
+
+def script_len() -> int:
+    return len(_SCRIPT)
+
+
+class ScriptedChatModel(BaseChatModel):
+    """Pops scripted AIMessages; falls back to a canned text answer.
+
+    Records the normalized params it was constructed with so the adapter
+    contract suite can assert the params → model mapping through the port.
+    """
+
+    model_name: str = "scripted"
+    effort: str | None = None
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted-fake"
+
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        formatted = [convert_to_openai_tool(t) for t in tools]
+        return self.bind(tools=formatted, **kwargs)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if _SCRIPT:
+            msg = _SCRIPT.popleft()
+        else:
+            msg = AIMessage(content=f"fake-answer[{self.model_name}]")
+            msg.usage_metadata = _DEFAULT_USAGE
+        return ChatResult(generations=[ChatGeneration(message=msg)])
+
+
+@model_provider
+class FakeProvider:
+    provider_id = "fake"
+
+    def is_configured(self) -> bool:
+        return get_config().fake_llm_enabled
+
+    def list_models(self) -> list[ModelInfo]:
+        return [ModelInfo("scripted", "Scripted fake model")]
+
+    def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:
+        if not self.is_configured():
+            raise ProviderNotConfiguredError("fake: FAKE_LLM_ENABLED not set")
+        return ScriptedChatModel(
+            model_name=model,
+            effort=params.effort if params else None,
+            temperature=params.temperature if params else None,
+            max_output_tokens=params.max_output_tokens if params else None,
+        )

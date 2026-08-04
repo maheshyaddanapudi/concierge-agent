@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: specification phase.** `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
+> **Status: in development — M1 complete.** `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
 
 ## Architecture at a glance
 
@@ -72,7 +72,7 @@ docker-compose.yml
 
 | # | Deliverable | Status |
 |---|---|---|
-| M1 | Postgres schema + registry API + seed + static rejection rules | ⬜ pending |
+| M1 | Postgres schema + registry API + seed + static rejection rules | ✅ complete |
 | M2 | MCP manager: stdio + http connect, ingest, listChanged, health | ⬜ pending |
 | M3 | Worker factory + validation (branch, parallel, error edges, HITL compile) | ⬜ pending |
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ⬜ pending |
@@ -81,7 +81,9 @@ docker-compose.yml
 
 ## Development
 
-Spec-driven: read `CLAUDE.md` first. Tests: `cd backend && pytest` · lint: `ruff check . && mypy app` · frontend: `npm run lint && npm run test`. LLM calls in tests run against a fake chat model through the provider port — no keys needed for the suite.
+Spec-driven: read `CLAUDE.md` first. Tests: `cd backend && pytest` · lint: `ruff check . && mypy app` · frontend: `npm run lint && npm run test`. LLM calls in tests run against a fake chat model through the provider port (`fake:scripted`, enabled by `FAKE_LLM_ENABLED=1` which the test suite sets itself) — no keys needed for the suite.
+
+Backend dev setup: `cd backend && uv sync` (Python 3.12). The pytest suite needs a Postgres it can own: `docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=postgres postgres:16`, create a `concierge_test` database, or point `TEST_DATABASE_URL` at your own instance. Schema is managed by Alembic (`alembic upgrade head`, run automatically at app startup).
 
 ## Scope notes
 
