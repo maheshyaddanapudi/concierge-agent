@@ -29,13 +29,13 @@ Non-goals: authentication/authorization (assumed safe), multi-tenancy, productio
 
 A first-class provider layer in `backend/app/llm/` — used for **every** provider including Claude and Gemini, never bypassed. Rationale: a custom enterprise provider adapter (its own gateway, its own model list) will be added post-POC; it must plug in without touching any consumer code.
 
-- **Port**: `class ModelProvider(Protocol)` — `provider_id: str`, `is_configured() -> bool`, `list_models() -> list[ModelInfo]`, `get_chat_model(model: str, **params) -> BaseChatModel`. The common currency across the whole codebase is LangChain's `BaseChatModel`: a provider adapter's only job is to return one. Everything downstream — LangGraph nodes, planner structured output, router, tools, `usage_metadata` token accounting — depends on `BaseChatModel`, never on a provider.
+- **Port**: `class ModelProvider(Protocol)` — `provider_id: str`, `is_configured() -> bool`, `list_models() -> list[ModelInfo]`, `get_chat_model(model: str, params: ModelParams | None) -> BaseChatModel`. **`ModelParams` is normalized model configuration**: `{effort: 'none'|'low'|'medium'|'high', temperature, max_output_tokens}` — each adapter maps `effort` to its provider's knob (Anthropic thinking budget, OpenAI reasoning effort, Gemini thinking config); `ModelInfo` declares which params each model supports, and selecting an unsupported combination → 422 at save. The common currency across the whole codebase is LangChain's `BaseChatModel`: a provider adapter's only job is to return one. Everything downstream — LangGraph nodes, planner structured output, router, tools, `usage_metadata` token accounting — depends on `BaseChatModel`, never on a provider.
 - **Provider registry**: adapters are code-registered at startup via `@model_provider` decorator scan (same pattern as `native/`), keyed by `provider_id`. Not UI-creatable (adapters are code); Settings lists them read-only with configured/unconfigured status.
 - **Built-in adapters (POC)**: `anthropic`, `google_genai`, `openai` — thin wrappers delegating to LangChain `init_chat_model`/provider packages, each gated by its API key env var. A fourth slot is reserved by design for a custom gateway adapter later: implement the port, register, done — zero consumer changes.
 - **Single entry point**: `get_model("provider:model") -> BaseChatModel` resolves the prefix against the registry and delegates to the adapter. Every LLM call in the system goes through it — planner, router, aggregator, skill nodes, direct-skill loops, native tools, native sub agents. No provider SDK or LangChain provider package imported anywhere outside `app/llm/`.
 - **Model references**: always `provider:model` strings (settings, per-agent overrides, trace labels). Default `anthropic:claude-sonnet-4-6`. Selecting a model whose adapter reports unconfigured → 422 at save.
 - **Neutrality rules**: structured outputs via LangChain's structured-output/tool-calling abstraction only; token accounting via `usage_metadata` only; prompts in `backend/app/prompts/` provider-neutral.
-- **Adapter contract tests**: one shared pytest suite asserting the port contract (list/configure/get, tool-calling round-trip, structured output, usage metadata population against a fake); every registered adapter must pass it — this suite is what makes the future custom adapter safe to drop in.
+- **Adapter contract tests**: one shared pytest suite asserting the port contract (list/configure/get, **normalized `ModelParams` mapping incl. effort→provider knob**, tool-calling round-trip, structured output, usage metadata population against a fake); every registered adapter must pass it — this suite is what makes the future custom adapter safe to drop in.
 
 Repo layout:
 
@@ -84,6 +84,7 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
 - `kind`: `'native' | 'custom'` — **native skills are markdown files** (`backend/app/native/skills/*.skill.md`, YAML frontmatter + body) scanned into the registry at startup; **custom skills are the same document shape** authored in the UI and stored in the registry. One format, two homes.
 - **Skill document** = frontmatter (`name`, `description`, `persona`, `tools: [tool_keys]`, `direct_exposure`) + markdown body (`instructions`).
 - `instructions (text, markdown)` — the body: free-form, typically a multi-step process. **Soft workflow**: steps guide the LLM inside a single tool-loop node and are not machine-enforced (the hard, machine-executed workflow is the sub agent DAG, §3.5). A step need not tie to any tool — pure reasoning/formatting steps are valid. Steps may reference bound tools inline via `{tool:server.tool_name}` mentions; save validates every mention resolves to a bound tool.
+- `model (text, nullable)` + `model_params (jsonb, nullable)` — optional per-skill override (`provider:model` + normalized params, §2.1): a heavy research skill can run a stronger model at high effort while a formatting skill runs a cheap one. Null inherits from the invoking sub agent, then defaults.
 - `persona (text)` — the "minor persona": short instruction block injected when this skill's node runs
 - `skill_tools` join table: `skill_id`, `tool_id`. **Binding = availability, strictly**: the skill's loop receives exactly its bound tools and nothing else — no ambient tools, no cross-skill visibility, in every execution context including orchestrator fallback (§7.0). A tool can belong to many skills; a skill can tag many tools, including system-seeded static ones.
 - `direct_exposure (bool, default false)` — when true, the orchestrator may execute this skill inline (skill persona + instructions + bound tools injected into an orchestrator tool-loop step) without spinning a sub agent.
@@ -94,7 +95,7 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
   - **native**: a hand-written compiled LangGraph graph registered at startup (`@native_sub_agent(name, description, covers_skill_ids=[])` scan). `covers_skill_ids` declares which registry skills this agent can service — used by capability resolution (§7). Registry stores its card (name, description, `native_ref`); the worker factory is bypassed — invocation calls the registered graph directly. Must accept the standard state schema (`{messages, task, node_outputs}`) and use the shared Postgres checkpointer; HITL/interrupts are permitted (native sub agents run top-level, not tool-wrapped). `workflow` is null.
   - **custom**: registry-composed — persona + workflow DAG over skills (the worker-factory path). The DAG is the **hard**, machine-executed workflow across skills; multi-step processes inside a skill's `instructions` are soft guidance within one node (§3.3). Custom sub agents are built from the skills pool; each skill in the picker surfaces its bound tools so the full skills-vs-tools pool is visible at composition time.
 - `persona (text)` — top-level persona for the worker (custom only)
-- `model (text, nullable)` — `provider:model` string override; null falls back to `default_model` setting
+- `model (text, nullable)` + `model_params (jsonb, nullable)` — `provider:model` string + normalized params (§2.1) override; null falls back to `default_model` / `default_model_params` settings. **Resolution order for any skill node: skill override → sub agent override → settings defaults.**
 - `workflow (jsonb)` — DAG, schema below (custom only)
 - `sub_agent_skills` join table derived from workflow at save time (for badge queries)
 
@@ -131,7 +132,7 @@ Rules:
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `planner_model`, `aggregator_model`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC.
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC.
 
 ## 4. Registry API
 
@@ -250,11 +251,11 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.3 Skills
 - Table: name, persona preview (first line), **tool badges** (chips → tool detail), **sub agent badges** (chips per sub agent whose workflow uses this skill), source, status.
-- Create/edit: **template-based skill document editor** — frontmatter as form fields (name, description, persona, "Expose to orchestrator" toggle, **tool tags**: searchable multi-select across the tool registry, grouped with system-seeded static tools first, source/kind badges on each) + markdown body editor pre-loaded with the skill template (Purpose / Steps / Output format sections); `{tool:...}` mentions autocomplete from tagged tools only and validate at save; side-by-side rendered preview. Save validates all tagged tool ids active + every mention resolves to a tagged tool.
+- Create/edit: **template-based skill document editor** — frontmatter as form fields (name, description, persona, "Expose to orchestrator" toggle, **optional model + effort override** (model select filtered to supported params, effort: none/low/medium/high, temperature), **tool tags**: searchable multi-select across the tool registry, grouped with system-seeded static tools first, source/kind badges on each) + markdown body editor pre-loaded with the skill template (Purpose / Steps / Output format sections); `{tool:...}` mentions autocomplete from tagged tools only and validate at save; side-by-side rendered preview. Save validates all tagged tool ids active + every mention resolves to a tagged tool.
 
 ### 8.4 Sub Agents
 - Table: name, persona preview, model (or "default"), **skill badges**, run count, source, status.
-- Create/edit: name, description, persona, model override select, **workflow builder** — form-based, opened from a **starter template** picker (Blank · Sequential pipeline · Branch + HITL approve · Parallel fan-out/join: pre-filled DAG skeletons with placeholder nodes the user fills via skill picker): node list (add skill node via skill picker / add HITL node with prompt), edge list (from → to + optional condition text + on: success/error), with a live read-only react-flow graph preview rendering nodes, edges, condition labels, and validation errors inline. Save runs `/validate`; compile errors shown next to the offending node/edge.
+- Create/edit: name, description, persona, **model + effort override selects** (model override select, effort none/low/medium/high, temperature — filtered to the model's supported params), **workflow builder** — form-based, opened from a **starter template** picker (Blank · Sequential pipeline · Branch + HITL approve · Parallel fan-out/join: pre-filled DAG skeletons with placeholder nodes the user fills via skill picker): node list (add skill node via skill picker / add HITL node with prompt), edge list (from → to + optional condition text + on: success/error), with a live read-only react-flow graph preview rendering nodes, edges, condition labels, and validation errors inline. Save runs `/validate`; compile errors shown next to the offending node/edge.
 - **Native sub agents** render as a definition card — description, `covers_skill_ids` chips, `native_ref` — with no DAG builder (there is no workflow record; the graph is code). Read-only except status.
 - Row action: "Test invoke" — opens Chat pre-targeted at this sub agent (bypasses planner).
 
@@ -267,7 +268,7 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.7 Settings (command center)
 
-- **Models**: default, planner, aggregator model selects (`provider:model`, listing only configured providers' models) — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
+- **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
 - **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner.
 - **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
 - **Observability**: log level select, LangSmith toggle, OTLP endpoint field.
@@ -286,7 +287,7 @@ Loaded idempotently at startup, all `source=static`:
 
 ## 10. Observability
 
-Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'skill'|'sub_agent'|'orchestrator'), kind, source, entity_id, entity_name, model, input_tokens, output_tokens, duration_ms, status}`. Sub-agent-tier `kind` values: `native | custom | dynamic` (ephemeral workers).
+Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'skill'|'sub_agent'|'orchestrator'), kind, source, entity_id, entity_name, model, effort, input_tokens, output_tokens, duration_ms, status}`. Sub-agent-tier `kind` values: `native | custom | dynamic` (ephemeral workers).
 
 - **Structured logs**: structlog, JSON to stdout — directly shippable to ELK/Filebeat without parsing config. One log event per registry mutation, MCP lifecycle event, run step start/finish, and error.
 - **Traces**: OpenTelemetry instrumentation over the orchestrator graph, worker invocations, tool calls (nested spans mirror `run_steps.parent_step_id`). OTLP exporter, endpoint via env — points at Grafana Tempo/Jaeger/anything OTLP.
@@ -316,7 +317,7 @@ Each milestone lands with its tests. M1–M4 are API-verifiable via curl before 
 
 ## 13. Environment & Conventions
 
-Env vars (all in `.env.example`): `ANTHROPIC_API_KEY` (required for the default provider, never in DB/UI), `GOOGLE_API_KEY` / `OPENAI_API_KEY` (optional — presence enables that provider in Settings model selects, spec §2.1), `DATABASE_URL`, `OTEL_EXPORTER_OTLP_ENDPOINT` (optional), `LANGSMITH_API_KEY`/`LANGSMITH_TRACING` (optional), `WORKSPACE_DIR` (filesystem MCP sandbox), `BACKEND_PORT`, `FRONTEND_PORT`.
+Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` (required for the default provider, never in DB/UI), `GOOGLE_API_KEY` / `OPENAI_API_KEY` (optional — presence enables that provider in Settings model selects, spec §2.1), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time).
 
 Conventions: Python — ruff (lint+format), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
