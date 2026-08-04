@@ -237,11 +237,11 @@ The orchestrator is a single `create_agent` with a finetuned system prompt (conc
 
 ## 8. Admin UI
 
-Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs, Settings**. Consistent table pattern everywhere: search, source filter, `static`/`dynamic` badge, status pill, row click → detail/edit drawer. Static records: definition fields disabled + "static" notice, but status/exposure toggles remain live.
+Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs, Settings**. Consistent table pattern everywhere: search, source filter, **kind filter**, `static`/`dynamic` badge, **kind badge** (`mcp`/`native`/`custom`), status pill, row click → detail/edit drawer. Static records: definition fields disabled + "static" notice, but status/exposure toggles remain live.
 
 ### 8.1 MCP Servers
 - Table: name, transport, status pill (active/error + last_error tooltip), tool count, last connected.
-- Register form: transport toggle → stdio fields (command, args, env key-values) or http fields (url, headers). Test-connection button (dry connect + tool count preview) before save.
+- Register form: transport toggle → stdio fields (command, args, env key-values) or http fields (url, headers). **Env and header values render masked with reveal-on-click** — the POC stores them, the UI doesn't display them by default. Test-connection button (dry connect + tool count preview) before save.
 - Row actions: reconnect, refresh tools, edit, soft delete (blocked with dependents dialog if its tools are bound to skills).
 
 ### 8.2 Tools
@@ -255,19 +255,20 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 ### 8.4 Sub Agents
 - Table: name, persona preview, model (or "default"), **skill badges**, run count, source, status.
 - Create/edit: name, description, persona, model override select, **workflow builder** — form-based, opened from a **starter template** picker (Blank · Sequential pipeline · Branch + HITL approve · Parallel fan-out/join: pre-filled DAG skeletons with placeholder nodes the user fills via skill picker): node list (add skill node via skill picker / add HITL node with prompt), edge list (from → to + optional condition text + on: success/error), with a live read-only react-flow graph preview rendering nodes, edges, condition labels, and validation errors inline. Save runs `/validate`; compile errors shown next to the offending node/edge.
+- **Native sub agents** render as a definition card — description, `covers_skill_ids` chips, `native_ref` — with no DAG builder (there is no workflow record; the graph is code). Read-only except status.
 - Row action: "Test invoke" — opens Chat pre-targeted at this sub agent (bypasses planner).
 
 ### 8.5 Chat
-- Conversation sidebar (list + new conversation); selecting one loads its history. Streaming conversation (SSE): assistant tokens, plus inline system cards for plan (which sub agents, parallel groups), each dispatch start/finish, and **HITL cards** with the prompt + Approve/Deny buttons and optional note. Each response footer links to its run trace.
+- Conversation sidebar (list + new conversation); selecting one loads its history. Streaming conversation (SSE): assistant tokens, plus inline system cards for plan (**graph mode**: sub agents + parallel groups; **agentic mode**: the live todo list, items checking off as the loop progresses), each dispatch start/finish, and **HITL cards** with the prompt + Approve/Deny buttons and optional note. **Self-service fallback engagement renders a distinct banner** ("full-catalog fallback — descriptions didn't route this") linking to its route step. Each response footer links to its run trace.
 
 ### 8.6 Runs
-- Table: time, message excerpt, status, sub agents involved, duration, tokens.
+- Table: time, message excerpt, status, **orchestrator mode badge**, sub agents involved, duration, tokens.
 - Detail: plan JSON, ordered step timeline grouped by sub agent (node id, type, model, tokens, duration, expandable input/output, tool calls with args/results), errors highlighted. Paused runs show pending HITL with resolve buttons. Row/detail actions: **cancel** (running), **retry** (failed — re-plans from the original message), **delete**.
 
 ### 8.7 Settings (command center)
 
 - **Models**: default, planner, aggregator model selects (`provider:model`, listing only configured providers' models) — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
-- **Orchestrator**: **mode toggle (graph | agentic, §7)**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold.
+- **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner.
 - **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
 - **Observability**: log level select, LangSmith toggle, OTLP endpoint field.
 - **HITL queue**: all currently paused runs across chats, resolvable inline.
