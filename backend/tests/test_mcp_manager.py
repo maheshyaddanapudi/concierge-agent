@@ -124,6 +124,62 @@ class TestConnectAndIngest:
         assert (await get_server(server_id)).status == "active"
 
 
+class TestHttpTransport:
+    async def test_http_connect_ingests_tools(self, manager: McpManager) -> None:
+        import socket
+
+        import uvicorn
+        from mcp.server.fastmcp import FastMCP
+
+        stub = FastMCP("http-stub", stateless_http=True)
+
+        def ping_tool(text: str) -> str:
+            """Return the text prefixed with pong."""
+            return f"pong:{text}"
+
+        stub.add_tool(ping_tool)
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        server = uvicorn.Server(
+            uvicorn.Config(
+                stub.streamable_http_app(), host="127.0.0.1", port=port, log_level="error"
+            )
+        )
+        serve_task = asyncio.create_task(server.serve())
+        try:
+
+            async def started() -> bool:
+                return server.started
+
+            await wait_for(started)
+            async with get_session_factory()() as session:
+                record = McpServer(
+                    name="http-stub",
+                    description="http stub",
+                    transport="http",
+                    url=f"http://127.0.0.1:{port}/mcp",
+                    source="dynamic",
+                    status="inactive",
+                )
+                session.add(record)
+                await session.commit()
+                server_id = record.id
+            await manager.connect_server(server_id)
+            assert (await get_server(server_id)).status == "active"
+            tools = await tools_of(server_id)
+            assert "ping_tool" in tools
+            assert tools["ping_tool"].tool_key == "http-stub.ping_tool"
+            lc_tools = await manager.get_langchain_tools(server_id, ["ping_tool"])
+            result = await lc_tools[0].ainvoke({"text": "hi"})
+            assert "pong:hi" in str(result)
+            await manager.disconnect_server(server_id)
+        finally:
+            server.should_exit = True
+            await serve_task
+
+
 class TestListChanged:
     async def test_reconcile_on_notification(self, manager: McpManager) -> None:
         server_id = await make_stub_server()
