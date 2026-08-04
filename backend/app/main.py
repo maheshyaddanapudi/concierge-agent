@@ -33,7 +33,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from app.seed.loader import seed_all
 
         await seed_all(session)
+    from app.mcp.manager import McpManager, set_manager
+
+    manager = McpManager()
+    set_manager(manager)
+    # connect persisted servers without blocking app readiness
+    startup_task = asyncio.create_task(manager.start())
     yield
+    startup_task.cancel()
+    await manager.stop()
+    set_manager(None)
 
 
 def create_app(with_lifespan: bool = True) -> FastAPI:
