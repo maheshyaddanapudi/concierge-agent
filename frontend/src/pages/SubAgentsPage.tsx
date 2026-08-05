@@ -503,13 +503,34 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
         </div>
       )}
       <ErrorNote error={error} />
-      <div className="flex justify-end gap-2">
-        {agent && <Button onClick={validate}>Validate (dry-run compile)</Button>}
-        {!isStatic && (
-          <Button variant="primary" onClick={save} disabled={!name}>
-            {agent ? 'Save sub agent' : 'Create sub agent'}
+      <div className="flex justify-between gap-2">
+        {agent && !isStatic ? (
+          <Button
+            variant="danger"
+            onClick={async () => {
+              setError(null)
+              try {
+                await api.delete(`/sub-agents/${agent.id}`)
+                invalidate('sub-agents', 'skills')
+                onDone()
+              } catch (e) {
+                setError(e)
+              }
+            }}
+          >
+            Delete
           </Button>
+        ) : (
+          <span />
         )}
+        <div className="flex gap-2">
+          {agent && <Button onClick={validate}>Validate (dry-run compile)</Button>}
+          {!isStatic && (
+            <Button variant="primary" onClick={save} disabled={!name}>
+              {agent ? 'Save sub agent' : 'Create sub agent'}
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -369,7 +369,26 @@ function SkillEditor({
       </Field>
       <ErrorNote error={error} />
       {!isStatic && (
-        <div className="flex justify-end">
+        <div className="flex justify-between">
+          {skill ? (
+            <Button
+              variant="danger"
+              onClick={async () => {
+                setError(null)
+                try {
+                  await api.delete(`/skills/${skill.id}`)
+                  invalidate('skills', 'tools')
+                  onDone()
+                } catch (e) {
+                  setError(e) // 409 lists dependent sub agents
+                }
+              }}
+            >
+              Delete
+            </Button>
+          ) : (
+            <span />
+          )}
           <Button variant="primary" onClick={save} disabled={!name}>
             {skill ? 'Save skill' : 'Create skill'}
           </Button>
