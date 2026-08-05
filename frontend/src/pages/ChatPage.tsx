@@ -397,6 +397,16 @@ export function ChatPage() {
     if (invoke) setMessage(`Use the "${invoke}" sub agent: `)
   }, [searchParams])
 
+  // re-attach to an in-flight or HITL-paused run when reopening its
+  // conversation — the SSE event replay restores the live cards
+  useEffect(() => {
+    if (liveRunId !== null || !detail) return
+    const active = [...detail.runs]
+      .reverse()
+      .find((r) => r.status === 'running' || r.status === 'paused_hitl')
+    if (active) setLiveRunId(active.id)
+  }, [detail, liveRunId])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   })
