@@ -1,0 +1,166 @@
+[
+ {
+  "label": "A1",
+  "message": "Please summarize the file /tmp/site-notes.txt for me",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "direct_tool→extras.read_text_file"
+  ],
+  "nodes": [
+   "tool_call:-"
+  ],
+  "answer": "The file **/tmp/site-notes.txt** could not be read. Access was denied because the path `/tmp/site-notes.txt` falls outside the allowed directories — only paths ",
+  "run_id": "df3d6966-a523-40c3-83b2-918a515a59b9"
+ },
+ {
+  "label": "A2",
+  "message": "Please summarize the file /tmp/site-notes.txt for me",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "direct_tool→extras.read_text_file"
+  ],
+  "nodes": [
+   "tool_call:-"
+  ],
+  "answer": "I was unable to summarize the file. Access was denied because **/tmp/site-notes.txt** falls outside the permitted directories — only paths within **/etc** are a",
+  "run_id": "6f8ea82f-c860-49bd-9dce-b8bdcbafbf80"
+ },
+ {
+  "label": "A3",
+  "message": "Please summarize the file /tmp/site-notes.txt for me",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "direct_tool→extras.read_text_file"
+  ],
+  "nodes": [
+   "tool_call:-"
+  ],
+  "answer": "The file `/tmp/site-notes.txt` could not be read. Access was denied because the path `/tmp` is outside the allowed directories — only paths under `/etc` are per",
+  "run_id": "0c68d3a4-8b4e-4e40-8879-29363e17d852"
+ },
+ {
+  "label": "B1",
+  "message": "Please summarize the file /tmp/site-notes.txt for me",
+  "status": "completed",
+  "error": null,
+  "routes": [],
+  "nodes": [
+   "tool_call:-"
+  ],
+  "answer": "Unfortunately, I'm unable to access the file at `/tmp/site-notes.txt`. The file system access is restricted to specific allowed directories, and `/tmp` is not a",
+  "run_id": "05e7ddc7-cb3b-4d2b-9d32-42d1336d196e"
+ },
+ {
+  "label": "B2",
+  "message": "Please summarize the file /tmp/site-notes.txt for me",
+  "status": "completed",
+  "error": null,
+  "routes": [],
+  "nodes": [
+   "tool_call:-"
+  ],
+  "answer": "Unfortunately, I'm unable to access the file at `/tmp/site-notes.txt`. The file system access is restricted to specific allowed directories (such as `/etc`), an",
+  "run_id": "851945b0-1a77-42b1-a801-3f04411f2684"
+ },
+ {
+  "label": "C1",
+  "message": "Use the site-analyst sub agent to summarize /tmp/site-notes.txt",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "custom_sub_agent→site-analyst"
+  ],
+  "nodes": [
+   "skill:s1",
+   "tool_call:-",
+   "tool_call:-",
+   "skill:work",
+   "tool_call:-",
+   "tool_call:-",
+   "hitl:approve",
+   "skill:finish"
+  ],
+  "answer": "Here is what the site-analyst found in `/tmp/site-notes.txt`:\n\nThe file describes a **proof-of-concept (POC)** centered on a **tri-layer registry architecture**",
+  "run_id": "f07b63b5-8dee-49dc-a78e-929148025c9b"
+ },
+ {
+  "label": "C2",
+  "message": "Use the site-analyst sub agent to summarize /tmp/site-notes.txt",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "custom_sub_agent→site-analyst"
+  ],
+  "nodes": [
+   "skill:s1",
+   "tool_call:-",
+   "tool_call:-",
+   "skill:work",
+   "hitl:approve",
+   "skill:finish"
+  ],
+  "answer": "Here is what `/tmp/site-notes.txt` contains:\n\nThe file documents a **proof-of-concept (POC)** built around a **tri-layer registry architecture** with three tier",
+  "run_id": "9b2ad6e0-e08f-49a5-bbc7-d4492cc41715"
+ },
+ {
+  "label": "C3",
+  "message": "Use the site-analyst sub agent to summarize /tmp/site-notes.txt",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "custom_sub_agent→site-analyst"
+  ],
+  "nodes": [
+   "skill:s1",
+   "tool_call:-",
+   "tool_call:-",
+   "skill:work",
+   "tool_call:-",
+   "tool_call:-",
+   "hitl:approve",
+   "skill:finish"
+  ],
+  "answer": "Here is a summary of `/tmp/site-notes.txt`:\n\nThe file documents a **Proof of Concept (POC)** built on a **tri-layer registry architecture** organized as **Tools",
+  "run_id": "e11d67e6-c9c3-434f-ba61-deec9b40cf17"
+ },
+ {
+  "label": "D1-exposed",
+  "message": "Run the summarize-site skill on /tmp/site-notes.txt and give me its output",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "direct_skill→summarize-site"
+  ],
+  "nodes": [
+   "skill:-",
+   "tool_call:-",
+   "tool_call:-"
+  ],
+  "answer": "Here is the output from running the summarize-site skill on `/tmp/site-notes.txt`:\n\n---\n\n**Summary of `/tmp/site-notes.txt`:**\n\nThe site describes a proof-of-co",
+  "run_id": "90706392-46f0-4b00-aeed-7b8df4b3ba3d"
+ },
+ {
+  "label": "D2-unexposed",
+  "message": "Run the summarize-site skill on /tmp/site-notes.txt and give me its output",
+  "status": "completed",
+  "error": null,
+  "routes": [
+   "custom_sub_agent→site-analyst"
+  ],
+  "nodes": [
+   "skill:s1",
+   "tool_call:-",
+   "tool_call:-",
+   "skill:work",
+   "tool_call:-",
+   "tool_call:-",
+   "hitl:approve",
+   "skill:finish"
+  ],
+  "answer": "Here is the output of the summarize-site skill run on `/tmp/site-notes.txt`:\n\n---\n\nThe file describes a proof-of-concept (POC) built around a **tri-layer regist",
+  "run_id": "fb401176-0303-4385-8c32-06911a413664"
+ }
+]

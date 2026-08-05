@@ -1,0 +1,78 @@
+"""Shared test fixtures: test database, app client, fake LLM scripting."""
+
+import os
+
+os.environ["DATABASE_URL"] = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5433/concierge_test",
+)
+os.environ["FAKE_LLM_ENABLED"] = "1"
+os.environ.pop("ANTHROPIC_API_KEY", None)
+os.environ.pop("GOOGLE_API_KEY", None)
+os.environ.pop("OPENAI_API_KEY", None)
+
+from collections.abc import AsyncIterator, Iterator  # noqa: E402
+
+import pytest  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
+
+from app.config import get_config  # noqa: E402
+from app.db import get_engine, get_session_factory, reset_db_state  # noqa: E402
+from app.llm import fake as fake_llm  # noqa: E402
+from app.llm.registry import register_builtin_providers  # noqa: E402
+from app.models import Base  # noqa: E402
+
+get_config.cache_clear()
+register_builtin_providers()
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _database() -> AsyncIterator[None]:
+    reset_db_state()
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_tables(_database: None) -> AsyncIterator[None]:
+    yield
+    engine = get_engine()
+    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    async with engine.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+
+
+@pytest.fixture(autouse=True)
+def _clean_fake_script() -> Iterator[None]:
+    fake_llm.clear_script()
+    yield
+    fake_llm.clear_script()
+
+
+@pytest.fixture
+async def session() -> AsyncIterator[AsyncSession]:
+    async with get_session_factory()() as s:
+        yield s
+
+
+@pytest.fixture
+async def client() -> AsyncIterator[AsyncClient]:
+    from app.main import create_app
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture
+async def seeded_client(client: AsyncClient) -> AsyncClient:
+    resp = await client.post("/api/v1/seed/reload")
+    assert resp.status_code == 200, resp.text
+    return client
