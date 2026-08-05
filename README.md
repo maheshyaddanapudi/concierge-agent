@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: in development — M1–M5 complete.** Full API + admin UI live; M6 (compose polish + acceptance script) remains. `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
+> **Status: all six milestones complete.** Backend + admin UI live, all test suites green, and the 11-step acceptance script (spec.md §14) executed top to bottom against a fresh `docker compose up`. `spec.md` is the single source of truth; implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
 
 ## Architecture at a glance
 
@@ -58,6 +58,8 @@ docker compose up
 
 Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACKEND_PORT}`. Seed data loads on first start: two stdio MCP servers (fetch, filesystem), two native skills, one native tool, and the `research-concierge` sub agent. Walk spec.md §14 to exercise everything.
 
+**Keyless demo mode**: with no provider keys, set `FAKE_LLM_ENABLED=1` in `.env` and pick `fake:scripted` as the default model in Settings — the whole stack (runs, SSE, HITL, both orchestrator modes) works against the scriptable fake provider from spec §11. A `/_fake/script` control endpoint (only mounted when the flag is set) lets you script exact model behavior, which is how the acceptance walk drives deterministic runs.
+
 ## Repository layout
 
 ```
@@ -77,7 +79,7 @@ docker-compose.yml
 | M3 | Worker factory + validation (branch, parallel, error edges, HITL compile) | ✅ complete |
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ✅ complete |
 | M5 | Admin UI: all seven pages incl. Settings command center | ✅ complete |
-| M6 | Test suites green + compose polish + acceptance script passes | ⬜ pending |
+| M6 | Test suites green + compose polish + acceptance script passes | ✅ complete |
 
 ## Development
 

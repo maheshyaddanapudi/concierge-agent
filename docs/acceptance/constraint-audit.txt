@@ -1,0 +1,36 @@
+═══ HARD CONSTRAINT AUDIT ═══
+── (a) exactly three compose services, no broker/queue/redis/celery ──
+db
+backend
+frontend
+1
+0
+── (b) provider SDK / LangChain provider imports outside app/llm: MUST be empty ──
+(none)
+── (c) init_chat_model / direct provider class use outside app/llm: MUST be empty ──
+(none)
+── (d) all LLM prompts as files in app/prompts ──
+backend/app/prompts/aggregator.md
+backend/app/prompts/answer_ui.md
+backend/app/prompts/concierge.md
+backend/app/prompts/direct_tool.md
+backend/app/prompts/planner.md
+backend/app/prompts/router.md
+backend/app/prompts/summarize_and_structure.md
+backend/app/prompts/tool_guidance.md
+8
+── (e) API keys never in DB/UI/logs ──
+(none in models/schemas)
+(none in settings store)
+frontend/src/pages/SettingsPage.tsx:231:                    {p.configured ? 'configured' : 'no api key'}
+0
+0 (no key material in logs)
+── (f) capabilities reach create_agent only via build_middleware_stack ──
+backend/app/orchestrator/graph_mode.py:278:        agent = create_agent(
+backend/app/orchestrator/agentic_mode.py:78:    return create_agent(
+backend/app/orchestrator/ladder.py:262:        agent = create_agent(model, tools=[], system_prompt=prompt, middleware=stack)
+backend/app/factory/worker.py:386:            agent = create_agent(model, tools=[], system_prompt=prompt, middleware=stack)
+   ↳ each call site passes middleware=build_middleware_stack(...) except native-author choice:
+262:        agent = create_agent(model, tools=[], system_prompt=prompt, middleware=stack)
+── (g) adapter contract suite parametrized over every registered adapter ──
+34 passed in 4.58s
