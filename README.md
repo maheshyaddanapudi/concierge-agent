@@ -53,9 +53,22 @@ Prerequisites: Docker + Docker Compose; an Anthropic API key (other provider key
 
 ```bash
 git clone <repo-url> && cd concierge-agent
-cp .env.example .env        # add ANTHROPIC_API_KEY (never committed)
-docker compose up
+./quick-setup.sh   # .env + API key (prompts; or --key sk-ant-...) + local deps
+./build.sh         # build backend + frontend images
+./start.sh         # start db/backend/frontend; schema + seeds auto-create on first run
 ```
+
+Lifecycle scripts (all idempotent):
+
+| Script | What it does |
+|---|---|
+| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
+| `./build.sh` | Builds both docker images. |
+| `./start.sh` | Errors out if Docker isn't running; otherwise creates or restarts the stack — missing images are pulled/built, first run creates the DB schema and loads seeds automatically, later runs resume with the same data (named volumes). Waits for backend health and prints the URLs. |
+| `./stop.sh` | Stops the containers; all data preserved — `./start.sh` resumes where you left off. |
+| `./decom.sh` | Dismantles everything (containers, network, **data volumes** — asks for confirmation, `-y` to skip). The next `./start.sh` is a clean slate: fresh schema, seeds reloaded. Images are kept; rebuild with `./build.sh` after code changes. |
+
+Equivalent manual path: `cp .env.example .env && docker compose up`.
 
 Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACKEND_PORT}`. Seed data loads on first start: two stdio MCP servers (fetch, filesystem), two native skills, one native tool, and the `research-concierge` sub agent. Walk spec.md §14 to exercise everything.
 
