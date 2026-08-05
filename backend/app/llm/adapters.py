@@ -49,6 +49,8 @@ class AnthropicProvider(ModelProviderBase):
 
     def list_models(self) -> list[ModelInfo]:
         return [
+            ModelInfo("claude-sonnet-5", "Claude Sonnet 5"),
+            ModelInfo("claude-opus-5", "Claude Opus 5"),
             ModelInfo("claude-sonnet-4-6", "Claude Sonnet 4.6"),
             ModelInfo("claude-opus-4-6", "Claude Opus 4.6"),
             ModelInfo("claude-haiku-4-5", "Claude Haiku 4.5"),
