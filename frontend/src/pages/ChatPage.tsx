@@ -365,7 +365,7 @@ function LiveRun({ runId, onDone }: { runId: string; onDone: () => void }) {
         }
       })}
       {tokens && (
-        <div className="animate-rise whitespace-pre-wrap rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
+        <div className="animate-rise whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
           {tokens}
           <span className="animate-blink text-accent-400">▮</span>
         </div>
@@ -495,13 +495,13 @@ export function ChatPage() {
           {messages.map((m, i) =>
             m.role === 'user' ? (
               <div key={i} className="flex justify-end">
-                <div className="max-w-[70%] rounded-lg rounded-br-sm border border-accent-500/30 bg-accent-500/10 px-3.5 py-2 text-sm text-slate-100">
+                <div className="max-w-[70%] break-words rounded-lg rounded-br-sm border border-accent-500/30 bg-accent-500/10 px-3.5 py-2 text-sm text-slate-100">
                   {m.content}
                 </div>
               </div>
             ) : (
               <div key={i} className="max-w-[85%]">
-                <div className="whitespace-pre-wrap rounded-lg rounded-bl-sm border border-slate-800 bg-void-900/70 px-3.5 py-2 text-sm leading-relaxed text-slate-200">
+                <div className="whitespace-pre-wrap break-words rounded-lg rounded-bl-sm border border-slate-800 bg-void-900/70 px-3.5 py-2 text-sm leading-relaxed text-slate-200">
                   {m.content}
                 </div>
                 {m.answer_ui?.a2ui && <AnswerUiView messages={m.answer_ui.a2ui} />}

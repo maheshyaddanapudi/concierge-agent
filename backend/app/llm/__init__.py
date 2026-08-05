@@ -5,6 +5,7 @@ packages. Everything else calls ``get_model("provider:model")`` and receives a
 ``BaseChatModel``.
 """
 
+from app.llm.content import text_from_content
 from app.llm.port import (
     ModelInfo,
     ModelParams,
@@ -22,6 +23,7 @@ from app.llm.registry import (
 )
 
 __all__ = [
+    "text_from_content",
     "ModelInfo",
     "ModelParams",
     "ModelProvider",

@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session_factory
-from app.llm import ModelParams, get_model
+from app.llm import ModelParams, get_model, text_from_content
 from app.models import Skill, SubAgent, Tool
 from app.prompts import load_prompt
 
@@ -393,7 +393,7 @@ def _make_skill_node(
             )
             messages = result["messages"]
             final = messages[-1]
-            text = final.content if isinstance(final.content, str) else str(final.content)
+            text = text_from_content(final.content)
             return {
                 "node_outputs": {
                     node_id: {

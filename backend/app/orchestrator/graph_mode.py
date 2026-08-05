@@ -14,7 +14,7 @@ from langgraph.types import Send
 
 from app.db import get_session_factory
 from app.factory.worker import resolve_node_model
-from app.llm import get_model
+from app.llm import get_model, text_from_content
 from app.models import Run
 from app.orchestrator.context import require_run_context
 from app.orchestrator.ladder import (
@@ -291,7 +291,7 @@ async def fallback_node(state: OrchestratorState) -> dict[str, Any]:
                 config={"callbacks": ctx.callbacks},
             )
         messages = result["messages"]
-        text = messages[-1].content
+        text = text_from_content(messages[-1].content)
         usage = _usage_from_messages(messages)
         await ctx.recorder.finish_step(
             step_id,
@@ -324,7 +324,7 @@ async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
     chunks: list[str] = []
     usage = {"input_tokens": 0, "output_tokens": 0}
     async for chunk in model.astream(prompt, config={"callbacks": ctx.callbacks}):
-        text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+        text = text_from_content(chunk.content)
         if text:
             chunks.append(text)
             ctx.recorder.emit("token", {"text": text})

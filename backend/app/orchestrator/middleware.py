@@ -239,7 +239,9 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         finally:
             TOOL_USAGE_HOLDER.reset(token)
         is_error = isinstance(result, ToolMessage) and result.status == "error"
-        content = str(getattr(result, "content", result))
+        from app.llm import text_from_content
+
+        content = text_from_content(getattr(result, "content", result))
         await _finish_tool_call(
             step_id,
             status="failed" if is_error else "completed",

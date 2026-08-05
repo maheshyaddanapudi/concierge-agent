@@ -943,3 +943,54 @@ class TestRunHousekeeping:
         await client.post(f"{API}/runs/{run_id}/cancel")
         await wait_run(client, run_id, {"cancelled"})
         fake_llm.clear_script()
+
+
+class TestBlockContent:
+    """Reasoning-enabled models return list-of-blocks message content —
+    prose extraction must keep text blocks only, never the block repr."""
+
+    async def test_agentic_final_answer_extracts_text_blocks(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_mode": "agentic"})
+        fake_llm.push_message(
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "let me think", "signature": "sig123"},
+                    {"type": "text", "text": "clean agentic answer"},
+                ]
+            )
+        )
+        run_id = await send_chat(client, "block content agentic")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["final_answer"] == "clean agentic answer"
+
+    async def test_graph_skill_and_aggregate_extract_text_blocks(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        skill = await create_skill(name=f"blocks-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "produce prose",
+                    "depends_on": [],
+                }
+            ]
+        )
+        blocks = lambda text: [  # noqa: E731
+            {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            {"type": "text", "text": text},
+        ]
+        fake_llm.push_message(AIMessage(content=blocks("skill prose")))  # inline skill loop
+        fake_llm.push_message(AIMessage(content=blocks("aggregated prose")))  # aggregator
+        run_id = await send_chat(client, "block content graph")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["final_answer"] == "aggregated prose"
+        skill_steps = [s for s in steps_of_type(run, "skill") if s.get("output")]
+        assert any("skill prose" in str(s["output"]) for s in skill_steps)
+        assert not any("signature" in str(s["output"]) for s in skill_steps)

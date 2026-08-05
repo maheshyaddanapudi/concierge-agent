@@ -14,7 +14,7 @@ from langchain_core.tools import StructuredTool
 
 from app.db import get_checkpointer, get_session_factory
 from app.factory.worker import _usage_from_messages, resolve_node_model
-from app.llm import get_model
+from app.llm import get_model, text_from_content
 from app.models import Run
 from app.orchestrator.context import require_run_context
 from app.orchestrator.ladder import execute_resolution, resolve_capability
@@ -120,8 +120,7 @@ def extract_todos(state_values: dict[str, Any]) -> list[dict[str, Any]] | None:
 def final_answer_from_messages(messages: list[Any]) -> str:
     for message in reversed(messages):
         if message.type == "ai" and not getattr(message, "tool_calls", None):
-            content = message.content
-            return content if isinstance(content, str) else str(content)
+            return text_from_content(message.content)
     return ""
 
 

@@ -24,7 +24,7 @@ from app.factory.worker import (
     snapshot_skill,
     snapshot_sub_agent,
 )
-from app.llm import get_model
+from app.llm import get_model, text_from_content
 from app.models import Skill, SubAgent, Tool, sub_agent_skills
 from app.orchestrator.context import require_run_context
 from app.prompts import load_prompt
@@ -268,7 +268,7 @@ async def run_inline_skill(
                 config={"callbacks": ctx.callbacks},
             )
         messages = result["messages"]
-        text = messages[-1].content
+        text = text_from_content(messages[-1].content)
         usage = _usage_from_messages(messages)
         output = {"status": "ok", "output": text if isinstance(text, str) else str(text)}
         if step_id is not None:
@@ -318,12 +318,12 @@ async def run_direct_tool(
         ai = await model.ainvoke(prompt, config={"callbacks": ctx.callbacks})
         usage = getattr(ai, "usage_metadata", None) or {}
         if not getattr(ai, "tool_calls", None):
-            text = ai.content if isinstance(ai.content, str) else str(ai.content)
+            text = text_from_content(ai.content)
             output = {"status": "ok", "output": text}
         else:
             call = ai.tool_calls[0]
             result = await tool.ainvoke(call["args"])
-            output = {"status": "ok", "output": str(result)}
+            output = {"status": "ok", "output": text_from_content(result)}
         await ctx.recorder.finish_step(
             step_id,
             output=output,
