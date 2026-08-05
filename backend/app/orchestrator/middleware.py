@@ -177,7 +177,16 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
                 )
                 if tool is not None:
                     tools.append(tool)
-        self._current = {t.name: t for t in tools}
+        # sanitized names can collide even though tool_keys are unique —
+        # bind first-wins, because duplicate bound names are a provider error
+        deduped: dict[str, BaseTool] = {}
+        for t in tools:
+            if t.name in deduped:
+                logger.warning("tool_name_collision_skipped", name=t.name)
+                continue
+            deduped[t.name] = t
+        tools = list(deduped.values())
+        self._current = deduped
         self._meta = {}
         for row in rows:
             from app.factory.worker import sanitize_tool_name
@@ -269,10 +278,11 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
             skills = list((await session.execute(stmt)).scalars())
             return [await snapshot_skill(session, s) for s in skills]
 
-    def _tool_for(self, snap: dict[str, Any]) -> BaseTool:
+    def _tool_for(self, snap: dict[str, Any], name: str | None = None) -> BaseTool:
         from app.factory.worker import sanitize_tool_name
 
-        name = f"use_skill_{sanitize_tool_name(snap['name'])}"
+        if name is None:
+            name = f"use_skill_{sanitize_tool_name(snap['name'])}"
 
         async def run(task: str) -> str:
             from app.orchestrator.ladder import run_inline_skill
@@ -298,12 +308,19 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
         )
 
     async def _refresh(self) -> list[BaseTool]:
+        from app.factory.worker import sanitize_tool_name
+
         snaps = await self._snapshots()
         self._current = {}
         tools: list[BaseTool] = []
         for snap in snaps:
-            tool = self._tool_for(snap)
-            self._current[tool.name] = snap
+            # registry names need not be unique (only ids are) — but bound
+            # tool names must be, so suffix duplicates with the record id
+            name = f"use_skill_{sanitize_tool_name(snap['name'])}"
+            if name in self._current:
+                name = f"{name}_{str(snap.get('id', ''))[:6]}"
+            tool = self._tool_for(snap, name)
+            self._current[name] = snap
             tools.append(tool)
         return tools
 
@@ -332,7 +349,7 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
             await self._refresh()
         if name in self._current:
             snap = self._current[name]
-            return await handler(request.override(tool=self._tool_for(snap)))
+            return await handler(request.override(tool=self._tool_for(snap, name)))
         return await handler(request)
 
 
@@ -368,10 +385,11 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
                 for a in agents
             ]
 
-    def _tool_for(self, card: dict[str, Any]) -> BaseTool:
+    def _tool_for(self, card: dict[str, Any], name: str | None = None) -> BaseTool:
         from app.factory.worker import sanitize_tool_name
 
-        name = f"dispatch_{sanitize_tool_name(card['name'])}"
+        if name is None:
+            name = f"dispatch_{sanitize_tool_name(card['name'])}"
 
         async def run(task: str) -> str:
             from app.orchestrator.ladder import (
@@ -410,12 +428,17 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
         )
 
     async def _refresh(self) -> list[BaseTool]:
+        from app.factory.worker import sanitize_tool_name
+
         cards = await self._cards()
         self._current = {}
         tools: list[BaseTool] = []
         for card in cards:
-            tool = self._tool_for(card)
-            self._current[tool.name] = card
+            name = f"dispatch_{sanitize_tool_name(card['name'])}"
+            if name in self._current:
+                name = f"{name}_{card['id'][:6]}"
+            tool = self._tool_for(card, name)
+            self._current[name] = card
             tools.append(tool)
         return tools
 
@@ -430,7 +453,7 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             # call runs, so a fresh instance must resolve its registry here.
             await self._refresh()
         if name in self._current:
-            return await handler(request.override(tool=self._tool_for(self._current[name])))
+            return await handler(request.override(tool=self._tool_for(self._current[name], name)))
         return await handler(request)
 
 

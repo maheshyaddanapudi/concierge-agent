@@ -492,6 +492,28 @@ class TestFallback:
             "full catalog must include unexposed tools"
         )
 
+    async def test_duplicate_skill_names_bind_unique_tool_names(self, client: AsyncClient) -> None:
+        """Registry names need not be unique — bound tool names must be
+        (real providers reject duplicate tool names with a 400)."""
+        shared = f"twin-{uuid4().hex[:4]}"
+        await create_skill(name=shared)
+        await create_skill(name=shared)
+        plan_call(no_confident_match=True)
+        fake_llm.clear_seen_tools()
+        fake_llm.push_ai("fallback handled it")
+        fake_llm.push_ai("Aggregated: fallback handled it")
+        run_id = await send_chat(client, "anything")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        from app.factory.worker import sanitize_tool_name
+
+        base = f"use_skill_{sanitize_tool_name(shared)}"
+        for names in fake_llm.seen_tools():
+            assert len(names) == len(set(names)), f"duplicate bound tool names: {names}"
+        flat = {n for names in fake_llm.seen_tools() for n in names}
+        twins = [n for n in flat if n.startswith(base)]
+        assert len(twins) == 2, f"both same-named skills must stay callable: {twins}"
+
     async def test_fallback_skill_isolation_holds(self, client: AsyncClient) -> None:
         bound = await create_tool(tool_name="orch_echo", tool_key=f"iso-{uuid4().hex[:4]}")
         await create_tool(tool_name="orch_echo", tool_key=f"noise-{uuid4().hex[:4]}")
