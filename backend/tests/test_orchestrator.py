@@ -994,3 +994,81 @@ class TestBlockContent:
         skill_steps = [s for s in steps_of_type(run, "skill") if s.get("output")]
         assert any("skill prose" in str(s["output"]) for s in skill_steps)
         assert not any("signature" in str(s["output"]) for s in skill_steps)
+
+
+class TestParallelHitl:
+    async def test_two_parallel_gates_approved_one_at_a_time(self, client: AsyncClient) -> None:
+        """Parallel dispatch can leave two interrupts pending at once; each
+        POST /hitl answers exactly one gate and the run pauses again until
+        every gate is resolved (spec §7.1 parallel dispatch + §7 HITL)."""
+        sa = await create_skill(name=f"pa-{uuid4().hex[:4]}")
+        sb = await create_skill(name=f"pb-{uuid4().hex[:4]}")
+        edges = [
+            {"from": "START", "to": "work"},
+            {"from": "work", "to": "gate"},
+            {"from": "gate", "to": "END"},
+        ]
+        agent_a = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(sa.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Gate A?"},
+                ],
+                "edges": edges,
+            },
+            name=f"par-a-{uuid4().hex[:4]}",
+        )
+        agent_b = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(sb.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Gate B?"},
+                ],
+                "edges": edges,
+            },
+            name=f"par-b-{uuid4().hex[:4]}",
+        )
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "sub_agent", "id": str(agent_a.id)},
+                    "task": "task a",
+                    "depends_on": [],
+                },
+                {
+                    "id": "s2",
+                    "capability": {"type": "sub_agent", "id": str(agent_b.id)},
+                    "task": "task b",
+                    "depends_on": [],
+                },
+            ]
+        )
+        fake_llm.push_ai("work output one")
+        fake_llm.push_ai("work output two")
+        run_id = await send_chat(client, "run both gated branches")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+
+        # first approval resolves ONE gate; the run must pause again
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": "1"})
+        deadline = asyncio.get_event_loop().time() + 20
+        while True:
+            run = (await client.get(f"{API}/runs/{run_id}")).json()
+            if run["status"] == "paused_hitl" and len(steps_of_type(run, "hitl")) == 1:
+                break
+            assert run["status"] != "failed", run["error"]
+            assert run["status"] != "completed", "one approval must not complete two gates"
+            assert asyncio.get_event_loop().time() < deadline, "second pause never reached"
+            await asyncio.sleep(0.1)
+
+        fake_llm.push_ai("Aggregated: both branches done")
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": "2"})
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert len(steps_of_type(run, "hitl")) == 2
+        dispatches = [s for s in steps_of_type(run, "skill") if s.get("node_id") in ("s1", "s2")]
+        assert sorted(s["node_id"] for s in dispatches) == ["s1", "s2"]
+        assert all(s["status"] == "completed" for s in dispatches)
+        work_steps = [s for s in steps_of_type(run, "skill") if s.get("node_id") == "work"]
+        assert len(work_steps) == 2, "each worker's work node runs exactly once"

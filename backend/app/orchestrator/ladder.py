@@ -405,6 +405,18 @@ async def invoke_worker_with_hitl(
     snapshot = await worker.aget_state(config)
     pending_interrupt = None
     suppress_emit = False
+    if snapshot is not None and not snapshot.next and (snapshot.values or {}).get("node_outputs"):
+        # the worker already ran to completion on this thread — a parallel
+        # sibling's interrupt kept the orchestrator superstep open, so this
+        # dispatch is replaying after the fact; return the recorded result
+        # without re-running anything (steps were recorded when it ran)
+        outputs = (snapshot.values or {}).get("node_outputs", {})
+        parts = [
+            str(outputs[k].get("output", ""))
+            for k in sorted(outputs)
+            if not k.startswith("route:") and outputs[k].get("status") == "ok"
+        ]
+        return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
     if snapshot is not None and snapshot.next:
         for t in snapshot.tasks:
             if t.interrupts:
@@ -437,7 +449,9 @@ async def invoke_worker_with_hitl(
                     },
                 )
             suppress_emit = False
-            decision = interrupt(pending_interrupt)
+            # worker_thread lets the runner tell live gates from stale ones
+            # when several parallel dispatches interrupt at once
+            decision = interrupt({**pending_interrupt, "worker_thread": thread_id})
             graph_input = Command(resume=decision)
             pending_interrupt = None
         state = await worker.ainvoke(graph_input, config=config)
@@ -456,20 +470,22 @@ async def invoke_worker_with_hitl(
 
 
 async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
-    """A dispatch step left `running` marks a HITL pause — its presence tells
-    a replayed handler to adopt it instead of recording a duplicate."""
+    """An existing dispatch step for this entry marks a HITL replay — running
+    (paused mid-flight) or completed (a parallel sibling kept the superstep
+    open). Adopt it instead of recording a duplicate."""
     from app.models import RunStep
 
     async with get_session_factory()() as session:
         row = (
             (
                 await session.execute(
-                    select(RunStep).where(
+                    select(RunStep)
+                    .where(
                         RunStep.run_id == run_id,
                         RunStep.node_id == node_id,
                         RunStep.step_type == "skill",
-                        RunStep.status == "running",
                     )
+                    .order_by(RunStep.started_at.desc())
                 )
             )
             .scalars()

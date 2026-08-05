@@ -189,7 +189,7 @@ async def _run_graph(
         "recursion_limit": 100,
     }
     if resume is not None:
-        graph_input: Any = Command(resume=resume)
+        graph_input: Any = await _resume_command(graph, config, resume)
     else:
         history = await build_history(conversation_id)
         graph_input = {"task": task_text, "history": history}
@@ -199,8 +199,58 @@ async def _run_graph(
 
     state = await graph.ainvoke(graph_input, config=cast(RunnableConfig, config))
     if state.get("__interrupt__"):
+        if resume is not None:
+            await _emit_pending_hitl(graph, config, ctx)
         return {"paused": True}
     return {"paused": False, "answer": state.get("answer", "")}
+
+
+async def _pending_interrupts(graph: Any, config: dict[str, Any]) -> tuple[list[Any], list[Any]]:
+    """All pending interrupts on the thread, and the LIVE subset — parallel
+    supersteps keep stale interrupts around for gates whose worker thread has
+    already recorded the gate's output (answered in an earlier resume)."""
+    snapshot = await graph.aget_state(config)
+    pending = [i for t in (snapshot.tasks or ()) for i in t.interrupts]
+    saver = await get_checkpointer()
+    live: list[Any] = []
+    for intr in pending:
+        value = intr.value if isinstance(intr.value, dict) else {}
+        thread, node = value.get("worker_thread"), value.get("node_id")
+        if thread and node:
+            tup = await saver.aget_tuple({"configurable": {"thread_id": thread}})
+            outputs = (
+                ((tup.checkpoint or {}).get("channel_values") or {}).get("node_outputs")
+                if tup
+                else None
+            )
+            if outputs and node in outputs:
+                continue  # gate already answered on the worker thread
+        live.append(intr)
+    return pending, live
+
+
+async def _resume_command(graph: Any, config: dict[str, Any], resume: dict[str, Any]) -> Command:
+    """One POST /hitl decision answers ONE gate. Parallel dispatch can leave
+    several interrupts pending at once — target the first LIVE one by id so
+    the run pauses again for the remaining gates instead of erroring."""
+    pending, live = await _pending_interrupts(graph, config)
+    logger.info("hitl_resume", pending=len(pending), live=len(live))
+    if len(pending) > 1:
+        target = live[0] if live else pending[0]
+        return Command(resume={target.id: resume})
+    return Command(resume=resume)
+
+
+async def _emit_pending_hitl(graph: Any, config: dict[str, Any], ctx: RunContext) -> None:
+    """After a resume that pauses again, re-announce the gates still waiting
+    so the UI shows the next approval card."""
+    _, live = await _pending_interrupts(graph, config)
+    for intr in live:
+        value = intr.value if isinstance(intr.value, dict) else {}
+        ctx.recorder.emit(
+            "hitl_request",
+            {"prompt": value.get("prompt"), "node_id": value.get("node_id")},
+        )
 
 
 async def _run_agentic(
@@ -225,7 +275,7 @@ async def _run_agentic(
         "recursion_limit": 100,
     }
     if resume is not None:
-        graph_input: Any = Command(resume=resume)
+        graph_input: Any = await _resume_command(agent, config, resume)
     else:
         history = await build_history_messages(conversation_id)
         graph_input = {"messages": [*history, HumanMessage(content=task_text)]}
@@ -244,6 +294,8 @@ async def _run_agentic(
                 last_todos = todos
                 ctx.recorder.emit("plan", {"todos": todos, "mode": "agentic"})
     if interrupted:
+        if resume is not None:
+            await _emit_pending_hitl(agent, config, ctx)
         return {"paused": True}
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])
