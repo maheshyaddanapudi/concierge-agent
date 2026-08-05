@@ -562,3 +562,25 @@ class TestProvidersPanel:
         assert by_id["anthropic"]["configured"] is False
         model = by_id["anthropic"]["models"][0]
         assert {"id", "display_name", "supports_effort"} <= set(model)
+
+
+class TestFakeScriptControl:
+    async def test_script_endpoint_gated_and_queues(
+        self, client: AsyncClient, monkeypatch: Any
+    ) -> None:
+        from app.config import get_config
+        from app.llm import fake as fake_llm
+
+        resp = await client.post(f"{API}/_fake/script", json={"calls": [{"content": "hi"}]})
+        assert resp.status_code == 200  # FAKE_LLM_ENABLED=1 in tests
+        assert fake_llm.script_len() == 1
+        await client.post(f"{API}/_fake/clear")
+        assert fake_llm.script_len() == 0
+
+        monkeypatch.setenv("FAKE_LLM_ENABLED", "0")
+        get_config.cache_clear()
+        try:
+            resp = await client.post(f"{API}/_fake/script", json={"calls": []})
+            assert resp.status_code == 404  # invisible when disabled
+        finally:
+            get_config.cache_clear()

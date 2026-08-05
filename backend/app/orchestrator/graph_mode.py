@@ -81,8 +81,8 @@ async def plan_node(state: OrchestratorState) -> dict[str, Any]:
     async with get_session_factory()() as session:
         max_steps = int(await get_setting(session, "max_plan_steps"))
         fallback_enabled = bool(await get_setting(session, "orchestrator_full_fallback_enabled"))
-    step_id = await ctx.recorder.start_step("plan", tier="orchestrator")
     ref, model = await _planner_model()
+    step_id = await ctx.recorder.start_step("plan", tier="orchestrator", model=ref)
     try:
         async with get_session_factory()() as session:
             plan, raw_outputs, usage = await run_planner(
@@ -313,8 +313,8 @@ async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
         answer = str(state["direct_answer"])
         ctx.recorder.emit("token", {"text": answer})
         return {"answer": answer}
-    step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator")
     ref, model = await _aggregator_model()
+    step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator", model=ref)
     outputs = state.get("outputs", {})
     formatted = "\n\n".join(
         f"[{entry_id}] status={o.get('status')}\n" + str(o.get("output") or o.get("error") or "")

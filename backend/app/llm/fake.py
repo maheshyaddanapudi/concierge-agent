@@ -24,10 +24,16 @@ _SEEN_TOOLS: list[list[str]] = []
 _DEFAULT_USAGE = UsageMetadata(input_tokens=7, output_tokens=11, total_tokens=18)
 
 
-def push_ai(content: str, tool_calls: list[dict[str, Any]] | None = None) -> None:
+def push_ai(
+    content: str,
+    tool_calls: list[dict[str, Any]] | None = None,
+    delay_s: float | None = None,
+) -> None:
     """Queue the next scripted response (FIFO across all fake model calls)."""
     msg = AIMessage(content=content, tool_calls=tool_calls or [])
     msg.usage_metadata = _DEFAULT_USAGE
+    if delay_s:
+        msg.additional_kwargs["__delay_s"] = delay_s
     _SCRIPT.append(msg)
 
 
@@ -104,6 +110,11 @@ class ScriptedChatModel(BaseChatModel):
             if isinstance(item, BaseException):
                 raise item
             msg = item
+            delay = msg.additional_kwargs.pop("__delay_s", None)
+            if delay:
+                import time
+
+                time.sleep(float(delay))
         else:
             msg = self._default_message(_SEEN_TOOLS[-1] if _SEEN_TOOLS else [])
         return ChatResult(generations=[ChatGeneration(message=msg)])
@@ -129,9 +140,7 @@ class ScriptedChatModel(BaseChatModel):
         elif "ConditionChoice" in tool_names:
             msg = AIMessage(
                 content="",
-                tool_calls=[
-                    {"name": "ConditionChoice", "args": {"index": 0}, "id": "fake-route"}
-                ],
+                tool_calls=[{"name": "ConditionChoice", "args": {"index": 0}, "id": "fake-route"}],
             )
         elif "AnswerUi" in tool_names:
             msg = AIMessage(

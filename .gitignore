@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# environment-local build artifacts (proxy CA injected at image build)
+.build-ca.crt
