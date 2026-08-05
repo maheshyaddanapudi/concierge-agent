@@ -269,3 +269,21 @@ class TestStartupAndApi:
         resp = await client.post(f"{API}/mcp-servers/{server_id}/reconnect")
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
+
+
+class TestStdioEnv:
+    def test_passthrough_and_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Deployment network env reaches stdio subprocesses; server.env wins."""
+        from app.mcp.manager import _stdio_env
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
+        monkeypatch.setenv("UV_OFFLINE", "1")
+        monkeypatch.setenv("npm_config_offline", "true")
+        monkeypatch.setenv("SECRET_TOKEN", "must-not-leak")
+        env = _stdio_env({"HTTPS_PROXY": "http://per-server:9999", "EXTRA": "x"})
+        assert env["HTTPS_PROXY"] == "http://per-server:9999"  # server.env overrides
+        assert env["UV_OFFLINE"] == "1"
+        assert env["npm_config_offline"] == "true"
+        assert env["EXTRA"] == "x"
+        assert "SECRET_TOKEN" not in env  # only network-related keys pass through
+        assert "PATH" in env  # SDK default environment is preserved

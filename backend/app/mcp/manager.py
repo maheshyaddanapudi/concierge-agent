@@ -31,6 +31,36 @@ logger = structlog.get_logger("mcp.manager")
 CONNECT_TIMEOUT_S = 25.0
 PING_TIMEOUT_S = 5.0
 
+# The MCP SDK spawns stdio servers with a minimal default environment, which
+# strips deployment-level network config — behind a proxy, uvx/npx launchers
+# can't reach their registries. Pass these through; server.env still wins.
+_STDIO_ENV_PASSTHROUGH = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_OPTIONS",
+)
+_STDIO_ENV_PREFIXES = ("UV_", "npm_config_")
+
+
+def _stdio_env(server_env: dict[str, Any] | None) -> dict[str, str]:
+    import os
+
+    from mcp.client.stdio import get_default_environment
+
+    env = get_default_environment()
+    for key, value in os.environ.items():
+        if key in _STDIO_ENV_PASSTHROUGH or key.startswith(_STDIO_ENV_PREFIXES):
+            env[key] = value
+    env.update({str(k): str(v) for k, v in (server_env or {}).items()})
+    return env
+
 
 class _Connection:
     def __init__(self) -> None:
@@ -103,7 +133,7 @@ class McpManager:
                 params = StdioServerParameters(
                     command=server.command or "",
                     args=[str(a) for a in (server.args or [])],
-                    env={str(k): str(v) for k, v in (server.env or {}).items()} or None,
+                    env=_stdio_env(server.env),
                 )
                 client_ctx: Any = stdio_client(params)
             else:
