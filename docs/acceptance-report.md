@@ -137,6 +137,20 @@ tight for genuine web research with thinking (runtime setting, raised in the dem
 stack; the agentic mode's retry → full-catalog escalation recovery worked as
 designed while the budget was still tight — `walkF-multiagent.log`).
 
+## Strict UI-only final verification (both modes, genuine key)
+
+`walkH-ui-only.log`, `ui-only-*.png`. The complex four-part prompt re-run under a
+strict rule: **every action through the UI** — orchestrator mode and the thinking
+knob (effort) switched on the Settings page, messages typed in chat, and **every
+HITL approval clicked on the chat card** (the driver had no API fallback; when a
+card wasn't on screen it reopened the conversation and relied on the re-attach
+feature). The API was used only to read traces for the verification matrix.
+
+- Graph: completed — 2 sub agents + `direct_tool→sitefiles.list_directory`,
+  2 gates approved on cards (`ui-only-1*`).
+- Agentic: completed — 2 sub agents, 2 gates approved on cards; the concierge
+  handled the /tmp listing and reformat itself (`ui-only-2*`).
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
