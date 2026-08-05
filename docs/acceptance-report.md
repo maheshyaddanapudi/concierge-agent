@@ -95,6 +95,16 @@ not the model's mood.
 | Planner/router/skill-loop choices (schema-forced, catalog-bound, call-limited) | Partially deterministic | batch C: same route/path, varying inner tool iterations |
 | Capability selection on ambiguous asks, answer prose, todos | Non-deterministic (steerable via exposure/descriptions/params) | batches A/B vs A′/B′ flip after registry change |
 
+## Complete from-scratch retest (UI-driven)
+
+`complete_retest/` re-runs the whole lifecycle on a wiped database, entirely through
+the admin UI with genuine model decisions: MCP registration → tool ingest → skill
+authoring → sub agent authoring → implicit routing (both modes) → HITL → traces.
+It also exercises the **overlap guard** end to end (duplicate skill and duplicate sub
+agent both flagged by the LLM judge and cancelled; a legitimate borderline flag
+confirmed via "Save anyway"), and proves implicit sub agent selection works with a
+**path-free description**. See `complete_retest/README.md` for the shot-by-shot map.
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
