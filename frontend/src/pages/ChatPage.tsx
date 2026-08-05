@@ -435,8 +435,11 @@ export function ChatPage() {
   const { data: detail } = useConversation(conversationId)
   const [liveRunId, setLiveRunId] = useState<string | null>(null)
   const [liveStatus, setLiveStatus] = useState<string>('running')
-  const [queued, setQueued] = useState(false)
+  // the queue is bound to the conversation it was queued in — switching
+  // chats must never fire it somewhere else
+  const [queuedDraft, setQueuedDraft] = useState<{ convId: string; text: string } | null>(null)
   const [message, setMessage] = useState('')
+  const queuedHere = queuedDraft !== null && queuedDraft.convId === conversationId
   const [searchParams] = useSearchParams()
   const invalidate = useInvalidate()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -453,21 +456,35 @@ export function ChatPage() {
     const active = [...detail.runs]
       .reverse()
       .find((r) => r.status === 'running' || r.status === 'paused_hitl')
-    if (active) setLiveRunId(active.id)
+    if (active) {
+      setLiveRunId(active.id)
+      setLiveStatus(active.status === 'paused_hitl' ? 'paused_hitl' : 'running')
+    }
   }, [detail, liveRunId])
+
+  // entering the queue's conversation restores its draft to the composer;
+  // leaving it clears the composer copy (the draft itself is kept)
+  useEffect(() => {
+    if (!queuedDraft) return
+    if (conversationId === queuedDraft.convId) setMessage(queuedDraft.text)
+    else setMessage((m) => (m === queuedDraft.text ? '' : m))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   })
 
-  const send = async () => {
-    if (!message.trim()) return
+  const send = async (textOverride?: string) => {
+    const text = (textOverride ?? message).trim()
+    if (!text) return
     if (liveRunId) {
-      // one message can wait its turn; it stays editable in the composer
-      setQueued(true)
+      // one message can wait its turn, bound to THIS conversation; it stays
+      // editable in the composer while the run works
+      if (conversationId) setQueuedDraft({ convId: conversationId, text })
       return
     }
-    const body: Record<string, unknown> = { message }
+    const body: Record<string, unknown> = { message: text }
     if (conversationId) body.conversation_id = conversationId
     const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
     setConversationId(result.conversation_id)
@@ -482,14 +499,21 @@ export function ChatPage() {
     await api.post(`/runs/${liveRunId}/cancel`).catch(() => {})
   }
 
-  // fire the queued message once the current run is done
+  // fire the queued message once ITS conversation's run is truly done —
+  // never in another chat, and never on the transient liveRunId gap while
+  // switching back (the conversation's own run list is the source of truth)
   useEffect(() => {
-    if (liveRunId === null && queued) {
-      setQueued(false)
-      if (message.trim()) void send()
-    }
+    if (!queuedDraft || conversationId !== queuedDraft.convId || liveRunId !== null) return
+    if (!detail || detail.id !== conversationId) return
+    const stillActive = detail.runs.some(
+      (r) => r.status === 'running' || r.status === 'paused_hitl',
+    )
+    if (stillActive) return // the re-attach effect takes over instead
+    const text = queuedDraft.text
+    setQueuedDraft(null)
+    if (text.trim()) void send(text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveRunId, queued])
+  }, [liveRunId, queuedDraft, conversationId, detail])
 
   const liveDone = () => {
     invalidate('conversations', 'runs')
@@ -591,13 +615,13 @@ export function ChatPage() {
         </div>
 
         <div className="border-t border-slate-800/70 bg-void-950/60 p-4 backdrop-blur">
-          {queued && liveRunId && (
+          {queuedHere && liveRunId && (
             <div className="mb-1.5 flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-widest text-amber-400">
-              <span className="animate-blink">⏳</span> 1 message queued — sends when the agent
-              finishes (edit it below)
+              <span className="animate-blink">⏳</span> 1 message queued in this chat — sends when
+              the agent finishes (edit it below)
               <button
                 className="text-slate-500 underline-offset-2 hover:text-slate-300 hover:underline"
-                onClick={() => setQueued(false)}
+                onClick={() => setQueuedDraft(null)}
               >
                 discard
               </button>
@@ -612,7 +636,11 @@ export function ChatPage() {
                   ? 'Type a message to queue it — it sends when the agent finishes…'
                   : 'Ask the concierge… (Enter to send, Shift+Enter for newline)'
               }
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => {
+                setMessage(e.target.value)
+                // queued drafts stay editable — keep the bound copy in sync
+                if (queuedHere) setQueuedDraft({ convId: conversationId!, text: e.target.value })
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
@@ -626,12 +654,16 @@ export function ChatPage() {
                 <Button variant="danger" onClick={stopRun}>
                   ■ Stop
                 </Button>
-                <Button variant="secondary" onClick={send} disabled={!message.trim() || queued}>
+                <Button
+                  variant="secondary"
+                  onClick={() => void send()}
+                  disabled={!message.trim() || queuedHere}
+                >
                   Queue ⏎
                 </Button>
               </div>
             ) : (
-              <Button variant="primary" onClick={send} disabled={!message.trim()}>
+              <Button variant="primary" onClick={() => void send()} disabled={!message.trim()}>
                 Send ⏎
               </Button>
             )}

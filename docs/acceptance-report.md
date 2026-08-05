@@ -168,6 +168,17 @@ feature). The API was used only to read traces for the verification matrix.
 - **Themes** — default / anthropic / openai / google, switched from Settings,
   stored client-side (`theme-*-settings/chat.png`).
 
+## Per-chat isolation of live runs and the queue
+
+`walkJ-perchat.log`, `perchat-*.png`. Two concurrent conversations: chat A holds a
+paused run and a queued draft; chat B is opened mid-flight. Verified: B shows no
+queue banner and an empty composer; B runs its own message while A works; the
+queue never fires in B; returning to A re-attaches its live run and restores the
+queued draft to the composer; the queue fires only when A's own run truly
+finishes, into A's conversation. (This test caught and fixed a race where the
+transient attachment gap on switching back fired the queue prematurely — the
+auto-send now consults the conversation's actual run list.)
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
