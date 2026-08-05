@@ -74,9 +74,7 @@ class McpManager:
 
     # ── connection ───────────────────────────────────────────────
 
-    async def connect_server(
-        self, server_id: UUID, timeout_s: float = CONNECT_TIMEOUT_S
-    ) -> None:
+    async def connect_server(self, server_id: UUID, timeout_s: float = CONNECT_TIMEOUT_S) -> None:
         """(Re)connect, ingest tools, and record status on the server row."""
         await self._teardown(server_id)
         async with get_session_factory()() as db:
@@ -161,9 +159,7 @@ class McpManager:
                     await db.execute(select(Tool).where(Tool.mcp_server_id == server_id))
                 ).scalars()
             }
-            taken_keys = set(
-                (await db.execute(select(Tool.tool_key))).scalars()
-            )
+            taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
             seen: set[str] = set()
             for spec in result.tools:
                 seen.add(spec.name)
@@ -240,9 +236,7 @@ class McpManager:
 
     # ── invocation (spec §5): bound tools as LangChain tools ────
 
-    async def get_langchain_tools(
-        self, server_id: UUID, tool_names: list[str]
-    ) -> list[BaseTool]:
+    async def get_langchain_tools(self, server_id: UUID, tool_names: list[str]) -> list[BaseTool]:
         conn = self._conns.get(server_id)
         if conn is None or conn.session is None:
             raise RuntimeError(f"MCP server {server_id} is not connected")

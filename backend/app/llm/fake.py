@@ -18,7 +18,8 @@ from app.config import get_config
 from app.llm.port import ModelInfo, ModelParams, ProviderNotConfiguredError
 from app.llm.registry import model_provider
 
-_SCRIPT: deque[AIMessage] = deque()
+_SCRIPT: deque[AIMessage | BaseException] = deque()
+_SEEN_TOOLS: list[list[str]] = []
 
 _DEFAULT_USAGE = UsageMetadata(input_tokens=7, output_tokens=11, total_tokens=18)
 
@@ -30,6 +31,20 @@ def push_ai(content: str, tool_calls: list[dict[str, Any]] | None = None) -> Non
     _SCRIPT.append(msg)
 
 
+def push_error(exc: BaseException) -> None:
+    """Queue an exception: the next fake model call raises it (LLM error path)."""
+    _SCRIPT.append(exc)
+
+
+def seen_tools() -> list[list[str]]:
+    """Tool names bound on each captured model call (isolation assertions)."""
+    return list(_SEEN_TOOLS)
+
+
+def clear_seen_tools() -> None:
+    _SEEN_TOOLS.clear()
+
+
 def push_message(msg: AIMessage) -> None:
     if msg.usage_metadata is None:
         msg.usage_metadata = _DEFAULT_USAGE
@@ -38,6 +53,7 @@ def push_message(msg: AIMessage) -> None:
 
 def clear_script() -> None:
     _SCRIPT.clear()
+    _SEEN_TOOLS.clear()
 
 
 def script_len() -> int:
@@ -79,8 +95,15 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        bound_tools = kwargs.get("tools") or []
+        _SEEN_TOOLS.append(
+            [t.get("function", {}).get("name", t.get("name", "?")) for t in bound_tools]
+        )
         if _SCRIPT:
-            msg = _SCRIPT.popleft()
+            item = _SCRIPT.popleft()
+            if isinstance(item, BaseException):
+                raise item
+            msg = item
         else:
             msg = AIMessage(content=f"fake-answer[{self.model_name}]")
             msg.usage_metadata = _DEFAULT_USAGE

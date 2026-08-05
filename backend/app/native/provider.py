@@ -33,7 +33,7 @@ class NativeToolEntry:
 class NativeSubAgentEntry:
     name: str
     description: str
-    build: Callable[[], Any]  # returns a compiled StateGraph
+    build: Callable[[Any], Any]  # (checkpointer) -> compiled StateGraph
     native_ref: str
     covers_skill_ids: list[str] = field(default_factory=list)
 
@@ -101,8 +101,11 @@ def native_tool(name: str, description: str) -> Callable[[NativeFn], NativeFn]:
 
 def native_sub_agent(
     name: str, description: str, covers_skill_ids: list[str] | None = None
-) -> Callable[[Callable[[], Any]], Callable[[], Any]]:
-    def decorator(build: Callable[[], Any]) -> Callable[[], Any]:
+) -> Callable[[Callable[[Any], Any]], Callable[[Any], Any]]:
+    """Register a native sub agent: `build(checkpointer)` must return a
+    compiled graph over the standard state schema (spec §3.4)."""
+
+    def decorator(build: Callable[[Any], Any]) -> Callable[[Any], Any]:
         _NATIVE_SUB_AGENTS[name] = NativeSubAgentEntry(
             name=name,
             description=description,

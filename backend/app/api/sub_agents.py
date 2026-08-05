@@ -42,10 +42,13 @@ async def _active_skill_ids(session: SessionDep) -> set[str]:
 
 
 async def _validate_and_resolve(session: SessionDep, workflow: dict[str, Any]) -> list[Skill]:
-    """Structural DAG validation (spec §3.5) + skill resolution; 422 on errors.
-
-    M3 extends save-time validation with a full factory compile."""
+    """Structural DAG validation (spec §3.5) + full factory compile (spec §6:
+    compile-time = save-time) + skill resolution; 422 on errors."""
     errors = validate_workflow(workflow, await _active_skill_ids(session))
+    if not errors:
+        from app.factory.worker import compile_workflow_check
+
+        errors = await compile_workflow_check(session, workflow)
     if errors:
         raise HTTPException(status_code=422, detail="; ".join(errors))
     ids = [UUID(sid) for sid in workflow_skill_ids(workflow)]
@@ -109,10 +112,15 @@ async def patch_sub_agent(agent_id: UUID, body: SubAgentPatch, session: SessionD
 
 @router.post("/{agent_id}/validate", response_model=ValidateResult)
 async def validate_sub_agent(agent_id: UUID, session: SessionDep) -> ValidateResult:
+    """Dry-run factory compile (spec §4, §6)."""
     agent = await fetch_or_404(session, SubAgent, agent_id)
     if agent.kind == "native":
         return ValidateResult(valid=True, errors=[])
     errors = validate_workflow(agent.workflow, await _active_skill_ids(session))
+    if not errors:
+        from app.factory.worker import compile_workflow_check
+
+        errors = await compile_workflow_check(session, agent.workflow or {})
     return ValidateResult(valid=not errors, errors=errors)
 
 

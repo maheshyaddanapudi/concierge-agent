@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: in development — M1–M2 complete.** `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
+> **Status: in development — M1–M3 complete.** `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
 
 ## Architecture at a glance
 
@@ -74,7 +74,7 @@ docker-compose.yml
 |---|---|---|
 | M1 | Postgres schema + registry API + seed + static rejection rules | ✅ complete |
 | M2 | MCP manager: stdio + http connect, ingest, listChanged, health | ✅ complete |
-| M3 | Worker factory + validation (branch, parallel, error edges, HITL compile) | ⬜ pending |
+| M3 | Worker factory + validation (branch, parallel, error edges, HITL compile) | ✅ complete |
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ⬜ pending |
 | M5 | Admin UI: all seven pages incl. Settings command center | ⬜ pending |
 | M6 | Test suites green + compose polish + acceptance script passes | ⬜ pending |

@@ -221,8 +221,6 @@ async def seed_all(session: AsyncSession) -> dict[str, int]:
         "skills": Skill,
         "sub_agents": SubAgent,
     }.items():
-        rows = (
-            await session.execute(select(model).where(model.deleted_at.is_(None))) 
-        ).scalars()
+        rows = (await session.execute(select(model).where(model.deleted_at.is_(None)))).scalars()
         counts[label] = len(list(rows))
     return counts

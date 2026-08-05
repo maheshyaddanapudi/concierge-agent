@@ -13,6 +13,7 @@ from app.models import RegistryRecord
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
+
 class ListFilters(BaseModel):
     include_deleted: bool = False
     source: str | None = None
