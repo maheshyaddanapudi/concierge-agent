@@ -1,0 +1,48 @@
+# Exactly three services (spec §2): db, backend, frontend.
+# No broker, no queue, no Redis, no Celery — Postgres is the only stateful
+# infrastructure. One command: docker compose up.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-concierge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concierge}
+      POSTGRES_DB: ${POSTGRES_DB:-concierge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-concierge}']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://concierge:concierge@db:5432/concierge}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FAKE_LLM_ENABLED: ${FAKE_LLM_ENABLED:-}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      WORKSPACE_DIR: /workspace
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - workspace:/workspace
+    ports:
+      - '${BACKEND_PORT:-8000}:8000'
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - '${FRONTEND_PORT:-5173}:80'
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  workspace:

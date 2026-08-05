@@ -28,7 +28,8 @@ async def seed_mcp_servers(session: AsyncSession) -> None:
             "description": "Reference MCP server exposing a fetch tool for web pages.",
             "transport": "stdio",
             "command": "uvx",
-            "args": ["mcp-server-fetch"],
+            # --with mcp<2: published mcp-server-fetch builds break on mcp 2.x
+            "args": ["--with", "mcp<2", "mcp-server-fetch"],
         },
         {
             "name": "filesystem",
