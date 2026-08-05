@@ -187,3 +187,13 @@ export interface SseEvent {
   ts: string
   payload: Record<string, unknown>
 }
+
+export interface OverlapCheck {
+  overlap: boolean
+  threshold: number
+  overlap_percent: number
+  match_type: string
+  match_id: string | null
+  match_name: string | null
+  reasoning: string
+}

@@ -6,7 +6,15 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Background, Handle, Position, ReactFlow, type Edge, type Node } from '@xyflow/react'
 import { api } from '../api/client'
 import { useInvalidate, useRuns, useSkills, useSubAgents } from '../api/hooks'
-import type { ModelParams, SubAgent, Workflow, WorkflowEdge, WorkflowNode } from '../api/types'
+import type {
+  ModelParams,
+  OverlapCheck,
+  SubAgent,
+  Workflow,
+  WorkflowEdge,
+  WorkflowNode,
+} from '../api/types'
+import { OverlapDialog } from '../components/OverlapDialog'
 import { RegistryTable } from '../components/RegistryTable'
 import { ModelOverrideFields } from './SkillsPage'
 import {
@@ -186,6 +194,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
   const [template, setTemplate] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [validation, setValidation] = useState<string[] | null>(null)
+  const [overlap, setOverlap] = useState<OverlapCheck | null>(null)
   const isStatic = agent?.source === 'static'
 
   const applyTemplate = (t: string) => {
@@ -204,8 +213,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
       edges: workflow.edges.map((e, j) => (j === i ? { ...e, ...patch } : e)),
     })
 
-  const save = async () => {
-    setError(null)
+  const doSave = async () => {
     const body = {
       name,
       description,
@@ -224,6 +232,27 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
     }
   }
 
+  const save = async () => {
+    setError(null)
+    // pre-save overlap guard (spec §4) — advisory, so check failures fall
+    // through to a normal save
+    try {
+      const check = await api.post<OverlapCheck>('/sub-agents/check-overlap', {
+        name,
+        description,
+        skill_ids: workflow.nodes.filter((n) => n.skill_id).map((n) => n.skill_id),
+        exclude_id: agent?.id ?? null,
+      })
+      if (check.overlap) {
+        setOverlap(check)
+        return
+      }
+    } catch {
+      // judge unavailable — never block the save on it
+    }
+    await doSave()
+  }
+
   const validate = async () => {
     if (!agent) return
     const result = await api.post<{ valid: boolean; errors: string[] }>(
@@ -236,6 +265,17 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
 
   return (
     <div className="space-y-4">
+      {overlap && (
+        <OverlapDialog
+          check={overlap}
+          entity="sub agent"
+          onConfirm={async () => {
+            setOverlap(null)
+            await doSave()
+          }}
+          onCancel={() => setOverlap(null)}
+        />
+      )}
       {isStatic && <StaticNotice />}
       <div className="grid grid-cols-2 gap-3">
         <Field label="Name">

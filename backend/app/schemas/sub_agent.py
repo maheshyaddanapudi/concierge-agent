@@ -15,6 +15,15 @@ class SubAgentCreate(ApiModel):
     workflow: dict[str, Any]
 
 
+class SubAgentOverlapCheck(ApiModel):
+    """Draft payload for the pre-save overlap judge (spec §4)."""
+
+    name: str
+    description: str = ""
+    skill_ids: list[Any] = []
+    exclude_id: Any | None = None
+
+
 class SubAgentPatch(ApiModel):
     name: str | None = None
     description: str | None = None

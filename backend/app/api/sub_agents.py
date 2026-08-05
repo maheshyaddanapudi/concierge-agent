@@ -18,7 +18,14 @@ from app.api.deps import (
 from app.factory.dag import validate_workflow, workflow_skill_ids
 from app.llm import ModelParams, validate_model_selection
 from app.models import Skill, SubAgent
-from app.schemas.sub_agent import SubAgentCreate, SubAgentOut, SubAgentPatch, ValidateResult
+from app.overlap import OverlapCheckOut, check_sub_agent_overlap
+from app.schemas.sub_agent import (
+    SubAgentCreate,
+    SubAgentOut,
+    SubAgentOverlapCheck,
+    SubAgentPatch,
+    ValidateResult,
+)
 
 router = APIRouter(prefix="/sub-agents", tags=["sub-agents"])
 
@@ -82,6 +89,24 @@ async def create_sub_agent(body: SubAgentCreate, session: SessionDep) -> SubAgen
     await session.commit()
     await session.refresh(agent)
     return agent
+
+
+@router.post("/check-overlap", response_model=OverlapCheckOut)
+async def sub_agent_overlap(body: SubAgentOverlapCheck, session: SessionDep) -> OverlapCheckOut:
+    """Pre-save LLM-as-judge duplicate check (spec §4). Advisory: the UI asks
+    the user to confirm or cancel; this endpoint never blocks anything."""
+    ids = [UUID(str(s)) for s in body.skill_ids]
+    skills = (
+        list((await session.execute(select(Skill).where(Skill.id.in_(ids)))).scalars())
+        if ids
+        else []
+    )
+    return await check_sub_agent_overlap(
+        name=body.name,
+        description=body.description,
+        skill_names=[s.name for s in skills],
+        exclude_id=UUID(str(body.exclude_id)) if body.exclude_id else None,
+    )
 
 
 @router.get("/{agent_id}", response_model=SubAgentOut)

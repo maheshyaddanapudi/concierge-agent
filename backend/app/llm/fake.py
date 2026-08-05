@@ -144,6 +144,23 @@ class ScriptedChatModel(BaseChatModel):
                 content="",
                 tool_calls=[{"name": "ConditionChoice", "args": {"index": 0}, "id": "fake-route"}],
             )
+        elif "OverlapVerdict" in tool_names:
+            msg = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "OverlapVerdict",
+                        "args": {
+                            "overlap_percent": 0,
+                            "match_type": "none",
+                            "match_id": None,
+                            "match_name": None,
+                            "reasoning": "unscripted default",
+                        },
+                        "id": "fake-overlap",
+                    }
+                ],
+            )
         elif "AnswerUi" in tool_names:
             msg = AIMessage(
                 content="",

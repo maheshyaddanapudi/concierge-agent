@@ -18,6 +18,16 @@ class SkillCreate(ApiModel):
     model_params: dict[str, Any] | None = None
 
 
+class SkillOverlapCheck(ApiModel):
+    """Draft payload for the pre-save overlap judge (spec §4)."""
+
+    name: str
+    description: str = ""
+    instructions: str = ""
+    tool_ids: list[UUID] = []
+    exclude_id: UUID | None = None
+
+
 class SkillPatch(ApiModel):
     name: str | None = None
     description: str | None = None

@@ -17,7 +17,8 @@ from app.api.deps import (
 )
 from app.llm import ModelParams, validate_model_selection
 from app.models import Skill, SubAgent, Tool, sub_agent_skills
-from app.schemas.skill import SkillCreate, SkillOut, SkillPatch
+from app.overlap import OverlapCheckOut, check_skill_overlap
+from app.schemas.skill import SkillCreate, SkillOut, SkillOverlapCheck, SkillPatch
 from app.schemas.sub_agent import SubAgentOut
 from app.skilldoc import validate_mentions
 
@@ -87,6 +88,20 @@ async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
     await session.commit()
     await session.refresh(skill)
     return skill
+
+
+@router.post("/check-overlap", response_model=OverlapCheckOut)
+async def skill_overlap(body: SkillOverlapCheck, session: SessionDep) -> OverlapCheckOut:
+    """Pre-save LLM-as-judge duplicate check (spec §4). Advisory: the UI asks
+    the user to confirm or cancel; this endpoint never blocks anything."""
+    tools = list((await session.execute(select(Tool).where(Tool.id.in_(body.tool_ids)))).scalars())
+    return await check_skill_overlap(
+        name=body.name,
+        description=body.description,
+        instructions=body.instructions,
+        tool_keys=[t.tool_key for t in tools],
+        exclude_id=body.exclude_id,
+    )
 
 
 @router.get("/{skill_id}", response_model=SkillOut)

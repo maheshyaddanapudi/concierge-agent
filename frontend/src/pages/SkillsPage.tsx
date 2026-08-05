@@ -6,7 +6,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useInvalidate, useProviders, useSkills, useTools } from '../api/hooks'
-import type { ModelParams, Skill, SubAgent, Tool } from '../api/types'
+import type { ModelParams, OverlapCheck, Skill, SubAgent, Tool } from '../api/types'
+import { OverlapDialog } from '../components/OverlapDialog'
 import { RegistryTable } from '../components/RegistryTable'
 import { ExposureWarningBanner } from './ToolsPage'
 import {
@@ -210,6 +211,7 @@ function SkillEditor({
   const [instructions, setInstructions] = useState(skill?.instructions || SKILL_TEMPLATE)
   const [toolQuery, setToolQuery] = useState('')
   const [error, setError] = useState<unknown>(null)
+  const [overlap, setOverlap] = useState<OverlapCheck | null>(null)
   const isStatic = skill?.source === 'static'
 
   // system-seeded static tools first (spec §8.3)
@@ -218,8 +220,7 @@ function SkillEditor({
   )
   const boundKeys = tools.filter((t) => toolIds.includes(t.id)).map((t) => t.tool_key)
 
-  const save = async () => {
-    setError(null)
+  const doSave = async () => {
     const body = {
       name,
       description,
@@ -240,8 +241,41 @@ function SkillEditor({
     }
   }
 
+  const save = async () => {
+    setError(null)
+    // pre-save overlap guard (spec §4) — advisory, so check failures fall
+    // through to a normal save
+    try {
+      const check = await api.post<OverlapCheck>('/skills/check-overlap', {
+        name,
+        description,
+        instructions,
+        tool_ids: toolIds,
+        exclude_id: skill?.id ?? null,
+      })
+      if (check.overlap) {
+        setOverlap(check)
+        return
+      }
+    } catch {
+      // judge unavailable — never block the save on it
+    }
+    await doSave()
+  }
+
   return (
     <div className="space-y-4">
+      {overlap && (
+        <OverlapDialog
+          check={overlap}
+          entity="skill"
+          onConfirm={async () => {
+            setOverlap(null)
+            await doSave()
+          }}
+          onCancel={() => setOverlap(null)}
+        />
+      )}
       {isStatic && <StaticNotice />}
       <div className="grid grid-cols-2 gap-3">
         <Field label="Name">
