@@ -35,6 +35,8 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(16), default="running")
     orchestrator_mode: Mapped[str] = mapped_column(String(16), default="graph")
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
+    # optional model-generated declarative answer UI (spec §7.1 answer_ui)
+    answer_ui: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

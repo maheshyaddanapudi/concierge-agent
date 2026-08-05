@@ -2,12 +2,14 @@
 
 from fastapi import APIRouter
 
-from app.api import mcp_servers, seed, settings, skills, sub_agents, tools
+from app.api import chat, mcp_servers, runs, seed, settings, skills, sub_agents, tools
 
 api_router = APIRouter()
 api_router.include_router(mcp_servers.router)
 api_router.include_router(tools.router)
 api_router.include_router(skills.router)
 api_router.include_router(sub_agents.router)
+api_router.include_router(chat.router)
+api_router.include_router(runs.router)
 api_router.include_router(settings.router)
 api_router.include_router(seed.router)

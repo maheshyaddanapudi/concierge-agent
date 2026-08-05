@@ -105,9 +105,43 @@ class ScriptedChatModel(BaseChatModel):
                 raise item
             msg = item
         else:
-            msg = AIMessage(content=f"fake-answer[{self.model_name}]")
-            msg.usage_metadata = _DEFAULT_USAGE
+            msg = self._default_message(_SEEN_TOOLS[-1] if _SEEN_TOOLS else [])
         return ChatResult(generations=[ChatGeneration(message=msg)])
+
+    def _default_message(self, tool_names: list[str]) -> AIMessage:
+        """Unscripted default: satisfy known structured-output schemas so an
+        unscripted server (curl demos, keyless compose) still completes runs."""
+        if "PlannerOutput" in tool_names:
+            msg = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "PlannerOutput",
+                        "args": {
+                            "entries": [],
+                            "direct_answer": f"fake-answer[{self.model_name}]",
+                            "no_confident_match": False,
+                        },
+                        "id": "fake-plan",
+                    }
+                ],
+            )
+        elif "ConditionChoice" in tool_names:
+            msg = AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "ConditionChoice", "args": {"index": 0}, "id": "fake-route"}
+                ],
+            )
+        elif "AnswerUi" in tool_names:
+            msg = AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": {"components": []}, "id": "fake-ui"}],
+            )
+        else:
+            msg = AIMessage(content=f"fake-answer[{self.model_name}]")
+        msg.usage_metadata = _DEFAULT_USAGE
+        return msg
 
 
 @model_provider

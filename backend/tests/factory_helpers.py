@@ -61,6 +61,18 @@ async def create_sub_agent(
     defaults.update(kw)
     async with get_session_factory()() as session:
         agent = SubAgent(**defaults)
+        # derive sub_agent_skills from the workflow (as the API does at save)
+        skill_ids = {
+            UUID(n["skill_id"])
+            for n in workflow.get("nodes", [])
+            if n.get("type") == "skill" and n.get("skill_id")
+        }
+        if skill_ids:
+            from sqlalchemy import select
+
+            agent.skills = list(
+                (await session.execute(select(Skill).where(Skill.id.in_(skill_ids)))).scalars()
+            )
         session.add(agent)
         await session.commit()
         await session.refresh(agent)

@@ -27,6 +27,7 @@ DEFAULTS: dict[str, Any] = {
     "max_tool_iterations": 8,
     "dynamic_worker_fallback_enabled": True,
     "direct_exposure_cap_warning": 10,
+    "answer_ui_enabled": True,
     "mcp_health_interval_s": 30,
     "log_level": "INFO",
     "langsmith_enabled": False,
@@ -48,6 +49,7 @@ _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
     "dynamic_worker_fallback_enabled",
     "langsmith_enabled",
+    "answer_ui_enabled",
 }
 _STR_KEYS = {"langsmith_endpoint", "langsmith_project", "otlp_endpoint"}
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}

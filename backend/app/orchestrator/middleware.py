@@ -5,15 +5,20 @@ any create_agent instance. They are stateless projections over Postgres:
 fresh reads per model call, no shared state — reuse is by class + config.
 
 Composition happens through build_middleware_stack(context), used everywhere:
-- SkillLoopContext → SummarizationMiddleware + call limits + ToolsRegistry in
-  scoped mode (the skill's bound tool ids only; never Skills/SubAgents
-  registry middleware — §3.3 isolation is enforced structurally).
-- Orchestrator contexts (M4) → all three registry middlewares + TodoList +
-  Summarization + limits.
+- SkillLoopContext → Summarization + call limits + ToolsRegistry in scoped
+  mode (bound tool ids only; never Skills/SubAgents middleware — §3.3
+  isolation is enforced structurally).
+- FallbackLoopContext → Summarization + limits + ToolsRegistry + SkillsRegistry
+  in full-catalog mode (exposure flags ignored; skill handlers stay isolated).
+- AgenticLoopContext → TodoList + Summarization + limits + all three registry
+  middlewares, exposure-gated; the use_full_catalog escalation flips them to
+  full-catalog mid-loop via the run flags.
 """
 
-from dataclasses import dataclass, field
-from typing import Any
+import contextlib
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
@@ -21,12 +26,24 @@ from langchain.agents.middleware import (
     AgentMiddleware,
     ModelCallLimitMiddleware,
     SummarizationMiddleware,
+    TodoListMiddleware,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool
+from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
+from sqlalchemy import select
+
+from app import obs
+from app.db import get_session_factory
+from app.models import Skill, SubAgent, Tool
+from app.orchestrator.context import get_run_context
 
 logger = structlog.get_logger("orchestrator.middleware")
+
+# parent step for nested tool_call recording (set by skill/dispatch executors)
+CURRENT_STEP_ID: ContextVar[UUID | None] = ContextVar("current_step_id", default=None)
+# holder mutated by native tool wrappers to report nested LLM usage (spec §5b)
+TOOL_USAGE_HOLDER: ContextVar[dict[str, int] | None] = ContextVar("tool_usage_holder", default=None)
 
 
 class ToolExecutionFailed(RuntimeError):
@@ -43,74 +60,393 @@ class SkillLoopContext:
     bound_tool_ids: list[str]
     model: BaseChatModel
     max_tool_iterations: int
-    # tool/MCP errors abort the node (spec §3.5); orchestrator loops relax this
     strict_tool_errors: bool = True
 
 
+@dataclass
+class FallbackLoopContext:
+    """Self-service full-catalog fallback (spec §7.0)."""
+
+    model: BaseChatModel
+    max_tool_iterations: int
+
+
+@dataclass
+class AgenticLoopContext:
+    """Agentic orchestrator (spec §7.2): exposure-gated registry middlewares."""
+
+    model: BaseChatModel
+    max_tool_iterations: int
+
+
+ToolsMode = Literal["scoped", "exposed", "full_catalog"]
+
+
+async def _record_tool_call(
+    name: str, kind: str | None, source: str | None, entity_id: str | None
+) -> UUID | None:
+    ctx = get_run_context()
+    if ctx is None:
+        return None
+    step_id: UUID = await ctx.recorder.start_step(
+        "tool_call",
+        tier="tool",
+        kind=kind,
+        source=source,
+        entity_id=entity_id,
+        entity_name=name,
+        parent_step_id=CURRENT_STEP_ID.get(),
+    )
+    return step_id
+
+
+async def _finish_tool_call(
+    step_id: UUID | None,
+    *,
+    status: str,
+    output: str | None,
+    error: str | None,
+    usage: dict[str, int],
+    kind: str | None,
+    source: str | None,
+) -> None:
+    ctx = get_run_context()
+    if ctx is None or step_id is None:
+        return
+    obs.TOOL_CALLS_TOTAL.labels(kind=kind or "-", source=source or "-", status=status).inc()
+    await ctx.recorder.finish_step(
+        step_id,
+        status=status,
+        output={"result": (output or "")[:4000]} if output else None,
+        error=error,
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+    )
+
+
 class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
-    """Dynamic-tools hook: resolves live tool objects from the tool registry
-    at each model call (spec §7.0). Scoped mode resolves the bound ids only —
-    a reconnected MCP server or re-ingested tool is visible on the next loop
-    iteration with no rebuild.
-    """
+    """Dynamic-tools hook (spec §7.0): resolves live tool objects from the
+    tool registry at each model call. Scoped mode = a skill's bound ids only;
+    exposed mode = direct_exposure tools; full-catalog = every active tool.
+    In exposed mode the run's full_catalog flag escalates live."""
 
     def __init__(
         self,
         *,
+        mode: ToolsMode,
         scoped_tool_ids: list[str] | None = None,
-        full_catalog: bool = False,
         strict_tool_errors: bool = False,
     ) -> None:
         super().__init__()
-        self._scoped_tool_ids = scoped_tool_ids
-        self._full_catalog = full_catalog
+        self._mode = mode
+        self._scoped_tool_ids = scoped_tool_ids or []
         self._strict_tool_errors = strict_tool_errors
         self._current: dict[str, BaseTool] = {}
+        self._meta: dict[str, dict[str, Any]] = {}
+
+    def _effective_mode(self) -> ToolsMode:
+        ctx = get_run_context()
+        if self._mode == "exposed" and ctx is not None and ctx.flags.full_catalog:
+            return "full_catalog"
+        return self._mode
 
     async def _resolve(self) -> list[BaseTool]:
-        from app.factory.worker import resolve_tools_by_ids
+        from app.factory.worker import materialize_tool, resolve_tools_by_ids
 
-        ids = [UUID(t) for t in self._scoped_tool_ids or []]
-        tools = await resolve_tools_by_ids(ids)
+        mode = self._effective_mode()
+        if mode == "scoped":
+            tools = await resolve_tools_by_ids([UUID(t) for t in self._scoped_tool_ids])
+            rows = await self._rows_by_ids([UUID(t) for t in self._scoped_tool_ids])
+        else:
+            async with get_session_factory()() as session:
+                stmt = select(Tool).where(Tool.deleted_at.is_(None), Tool.status == "active")
+                if mode == "exposed":
+                    stmt = stmt.where(Tool.direct_exposure.is_(True))
+                rows = list((await session.execute(stmt)).scalars())
+            tools = []
+            for row in rows:
+                tool = materialize_tool(
+                    {
+                        "kind": row.kind,
+                        "tool_name": row.tool_name,
+                        "tool_key": row.tool_key,
+                        "mcp_server_id": str(row.mcp_server_id) if row.mcp_server_id else None,
+                        "description": row.description,
+                        "input_schema": row.input_schema,
+                    }
+                )
+                if tool is not None:
+                    tools.append(tool)
         self._current = {t.name: t for t in tools}
+        self._meta = {}
+        for row in rows:
+            from app.factory.worker import sanitize_tool_name
+
+            self._meta[sanitize_tool_name(row.tool_key)] = {
+                "kind": row.kind,
+                "source": row.source,
+                "id": str(row.id),
+            }
         return tools
+
+    async def _rows_by_ids(self, ids: list[UUID]) -> list[Tool]:
+        if not ids:
+            return []
+        async with get_session_factory()() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(Tool).where(
+                            Tool.id.in_(ids),
+                            Tool.deleted_at.is_(None),
+                            Tool.status == "active",
+                        )
+                    )
+                ).scalars()
+            )
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         tools = await self._resolve()
-        return await handler(request.override(tools=tools))
+        return await handler(request.override(tools=[*request.tools, *tools]))
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         name = request.tool_call["name"]
         tool = self._current.get(name)
-        result = await handler(request.override(tool=tool) if tool is not None else request)
-        if (
-            self._strict_tool_errors
-            and isinstance(result, ToolMessage)
-            and result.status == "error"
-        ):
+        if tool is None:
+            return await handler(request)
+        meta = self._meta.get(name, {})
+        step_id = await _record_tool_call(
+            name, meta.get("kind"), meta.get("source"), meta.get("id")
+        )
+        holder: dict[str, int] = {}
+        token = TOOL_USAGE_HOLDER.set(holder)
+        try:
+            result = await handler(request.override(tool=tool))
+        finally:
+            TOOL_USAGE_HOLDER.reset(token)
+        is_error = isinstance(result, ToolMessage) and result.status == "error"
+        content = str(getattr(result, "content", result))
+        await _finish_tool_call(
+            step_id,
+            status="failed" if is_error else "completed",
+            output=None if is_error else content,
+            error=content if is_error else None,
+            usage=holder,
+            kind=meta.get("kind"),
+            source=meta.get("source"),
+        )
+        if self._strict_tool_errors and is_error:
             raise ToolExecutionFailed(f"tool {name!r} failed: {result.content}")
         return result
 
 
-@dataclass
-class _StackParts:
-    middlewares: list[AgentMiddleware[Any, Any]] = field(default_factory=list)
+class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
+    """Injects exposed skills (spec §7.0): summaries into the system prompt
+    and each skill as a callable capability whose handler runs the inline
+    skill loop — with only its bound tools (isolation is never suspended)."""
+
+    def __init__(self, *, mode: Literal["exposed", "full_catalog"] = "exposed") -> None:
+        super().__init__()
+        self._mode = mode
+        self._current: dict[str, dict[str, Any]] = {}
+
+    def _effective_full(self) -> bool:
+        ctx = get_run_context()
+        return self._mode == "full_catalog" or bool(ctx and ctx.flags.full_catalog)
+
+    async def _snapshots(self) -> list[dict[str, Any]]:
+        from app.factory.worker import snapshot_skill
+
+        async with get_session_factory()() as session:
+            stmt = select(Skill).where(Skill.deleted_at.is_(None), Skill.status == "active")
+            if not self._effective_full():
+                stmt = stmt.where(Skill.direct_exposure.is_(True))
+            skills = list((await session.execute(stmt)).scalars())
+            return [await snapshot_skill(session, s) for s in skills]
+
+    def _tool_for(self, snap: dict[str, Any]) -> BaseTool:
+        from app.factory.worker import sanitize_tool_name
+
+        name = f"use_skill_{sanitize_tool_name(snap['name'])}"
+
+        async def run(task: str) -> str:
+            from app.orchestrator.ladder import run_inline_skill
+
+            ctx = get_run_context()
+            if ctx is not None:
+                await ctx.recorder.record_route(
+                    capability={"type": "direct_skill", "id": snap["id"]},
+                    rung="fallback" if self._effective_full() else "direct_skill",
+                    resolved_to={"entity_id": snap["id"], "entity_name": snap["name"]},
+                    kind="skill",
+                )
+            result = await run_inline_skill(snap, task, parent_step_id=CURRENT_STEP_ID.get())
+            if result.get("status") != "ok":
+                return f"skill failed: {result.get('error')}"
+            return str(result.get("output", ""))
+
+        return StructuredTool.from_function(
+            coroutine=run,
+            name=name,
+            description=f"Run the {snap['name']!r} skill: {snap.get('description') or ''} "
+            f"(argument: task — the concrete instruction for the skill)",
+        )
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        snaps = await self._snapshots()
+        self._current = {}
+        tools: list[BaseTool] = []
+        lines: list[str] = []
+        for snap in snaps:
+            tool = self._tool_for(snap)
+            self._current[tool.name] = snap
+            tools.append(tool)
+            lines.append(f"- {tool.name}: {snap.get('description') or snap['name']}")
+        system = request.system_message
+        section = "\n\nAvailable skills (each runs an isolated specialist loop):\n" + (
+            "\n".join(lines) if lines else "(none)"
+        )
+        base = system.text if system is not None else ""
+        request = request.override(
+            tools=[*request.tools, *tools],
+            system_message=SystemMessage(content=base + section),
+        )
+        return await handler(request)
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        name = request.tool_call["name"]
+        if name in self._current:
+            snap = self._current[name]
+            return await handler(request.override(tool=self._tool_for(snap)))
+        return await handler(request)
 
 
-def build_middleware_stack(context: SkillLoopContext) -> list[AgentMiddleware[Any, Any]]:
-    """One helper, used everywhere (spec §7.0). M4 extends the accepted
-    contexts with the graph-fallback and agentic-orchestrator stacks."""
+class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
+    """Deepagents-style dispatch (spec §7.0): exposes dispatch tools built
+    live from sub agent cards; the handler is the resolution-ladder executor.
+    interrupt() raised inside the dispatched graph propagates to the parent
+    for HITL; handlers are idempotent because resume replays the tool call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._current: dict[str, dict[str, Any]] = {}
+
+    async def _cards(self) -> list[dict[str, Any]]:
+        async with get_session_factory()() as session:
+            agents = list(
+                (
+                    await session.execute(
+                        select(SubAgent).where(
+                            SubAgent.deleted_at.is_(None), SubAgent.status == "active"
+                        )
+                    )
+                ).scalars()
+            )
+            return [
+                {
+                    "id": str(a.id),
+                    "name": a.name,
+                    "kind": a.kind,
+                    "description": a.description,
+                    "skills": [s.name for s in a.skills],
+                }
+                for a in agents
+            ]
+
+    def _tool_for(self, card: dict[str, Any]) -> BaseTool:
+        from app.factory.worker import sanitize_tool_name
+
+        name = f"dispatch_{sanitize_tool_name(card['name'])}"
+
+        async def run(task: str) -> str:
+            from app.orchestrator.ladder import execute_resolution, resolve_capability
+
+            resolution = await resolve_capability({"type": "sub_agent", "id": card["id"]})
+            ctx = get_run_context()
+            if ctx is not None:
+                await ctx.recorder.record_route(
+                    capability={"type": "sub_agent", "id": card["id"]},
+                    rung=resolution.rung,
+                    resolved_to=resolution.as_route(),
+                    kind=resolution.kind,
+                    source=resolution.source,
+                )
+            result = await execute_resolution(resolution, task, f"agentic:{card['name']}")
+            if result.get("status") != "ok":
+                return f"sub agent failed: {result.get('error')}"
+            return str(result.get("output", ""))
+
+        return StructuredTool.from_function(
+            coroutine=run,
+            name=name,
+            description=(
+                f"Dispatch to sub agent {card['name']!r} "
+                f"(skills: {', '.join(card['skills']) or 'code-defined'}): "
+                f"{card.get('description') or ''} (argument: task)"
+            ),
+        )
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        cards = await self._cards()
+        self._current = {}
+        tools: list[BaseTool] = []
+        for card in cards:
+            tool = self._tool_for(card)
+            self._current[tool.name] = card
+            tools.append(tool)
+        return await handler(request.override(tools=[*request.tools, *tools]))
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        name = request.tool_call["name"]
+        if name in self._current:
+            return await handler(request.override(tool=self._tool_for(self._current[name])))
+        return await handler(request)
+
+
+def build_middleware_stack(
+    context: SkillLoopContext | FallbackLoopContext | AgenticLoopContext,
+) -> list[AgentMiddleware[Any, Any]]:
+    """One helper, used everywhere (spec §7.0)."""
     if isinstance(context, SkillLoopContext):
         return [
             SummarizationMiddleware(model=context.model),
-            # +1: an N-iteration tool loop is N tool rounds plus the final
-            # answer call; exceeding it must fail the node (spec §3.7)
+            # +1: an N-iteration tool loop is N tool rounds plus the final answer
             ModelCallLimitMiddleware(
                 run_limit=context.max_tool_iterations + 1, exit_behavior="error"
             ),
             ToolsRegistryMiddleware(
+                mode="scoped",
                 scoped_tool_ids=context.bound_tool_ids,
                 strict_tool_errors=context.strict_tool_errors,
             ),
         ]
+    if isinstance(context, FallbackLoopContext):
+        return [
+            SummarizationMiddleware(model=context.model),
+            ModelCallLimitMiddleware(
+                run_limit=context.max_tool_iterations + 1, exit_behavior="error"
+            ),
+            ToolsRegistryMiddleware(mode="full_catalog"),
+            SkillsRegistryMiddleware(mode="full_catalog"),
+        ]
+    if isinstance(context, AgenticLoopContext):
+        return [
+            TodoListMiddleware(),
+            SummarizationMiddleware(model=context.model),
+            ModelCallLimitMiddleware(
+                run_limit=max(context.max_tool_iterations * 3, 12), exit_behavior="error"
+            ),
+            ToolsRegistryMiddleware(mode="exposed"),
+            SkillsRegistryMiddleware(mode="exposed"),
+            SubAgentsRegistryMiddleware(),
+        ]
     raise TypeError(f"unknown middleware context: {type(context).__name__}")
+
+
+@contextlib.contextmanager
+def current_step(step_id: UUID | None) -> Any:
+    token = CURRENT_STEP_ID.set(step_id)
+    try:
+        yield
+    finally:
+        CURRENT_STEP_ID.reset(token)

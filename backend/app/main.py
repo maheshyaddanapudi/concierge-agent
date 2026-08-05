@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
@@ -33,8 +33,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from app.seed.loader import seed_all
 
         await seed_all(session)
+    from app.db import close_checkpointer, get_checkpointer
     from app.mcp.manager import McpManager, set_manager
 
+    await get_checkpointer()  # create checkpoint tables up front
     manager = McpManager()
     set_manager(manager)
     # connect persisted servers without blocking app readiness
@@ -43,9 +45,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     startup_task.cancel()
     await manager.stop()
     set_manager(None)
+    await close_checkpointer()
 
 
 def create_app(with_lifespan: bool = True) -> FastAPI:
+    from app.config import get_config
+    from app.obs import configure_logging
+
+    configure_logging(get_config().log_level)
     register_builtin_providers()
     scan_native()
     app = FastAPI(title="Concierge Agent", lifespan=lifespan if with_lifespan else None)
@@ -60,6 +67,12 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return app
 

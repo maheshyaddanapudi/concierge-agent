@@ -190,17 +190,43 @@ def _make_mcp_proxy(row: dict[str, Any]) -> BaseTool:
 
 
 def _make_native_tool(row: dict[str, Any]) -> BaseTool | None:
+    import inspect
+
     from app.native.provider import native_tools
 
     entry = native_tools().get(row["tool_name"])
     if entry is None:
         logger.warning("native_tool_missing", tool_name=row["tool_name"])
         return None
+    accepts_config = "config" in inspect.signature(entry.fn).parameters
+
+    async def call(**kwargs: Any) -> Any:
+        """Wrap the native callable with usage capture so nested subgraph LLM
+        calls report tokens onto the tool_call step (spec §5b guardrail 3)."""
+        from langchain_core.callbacks import UsageMetadataCallbackHandler
+
+        from app.orchestrator.middleware import TOOL_USAGE_HOLDER
+
+        usage_handler = UsageMetadataCallbackHandler()
+        if accepts_config:
+            kwargs["config"] = {"callbacks": [usage_handler]}
+        result = await entry.fn(**kwargs)
+        holder = TOOL_USAGE_HOLDER.get()
+        if holder is not None:
+            for usage in usage_handler.usage_metadata.values():
+                holder["input_tokens"] = holder.get("input_tokens", 0) + usage.get(
+                    "input_tokens", 0
+                )
+                holder["output_tokens"] = holder.get("output_tokens", 0) + usage.get(
+                    "output_tokens", 0
+                )
+        return result
+
     return StructuredTool(
         name=sanitize_tool_name(row["tool_key"]),
         description=row.get("description") or entry.description,
         args_schema=entry.input_schema,
-        coroutine=entry.fn,
+        coroutine=call,
     )
 
 
@@ -407,10 +433,18 @@ def _make_hitl_node(node: dict[str, Any]) -> Any:
         )
         note = str(decision.get("note", ""))
         if decision.get("decision") == "deny":
-            return {"node_outputs": {node_id: {"status": "denied", "note": note or "denied"}}}
+            return {
+                "node_outputs": {
+                    node_id: {"node_type": "hitl", "status": "denied", "note": note or "denied"}
+                }
+            }
         return {
             "node_outputs": {
-                node_id: {"status": "ok", "output": f"approved{': ' + note if note else ''}"}
+                node_id: {
+                    "node_type": "hitl",
+                    "status": "ok",
+                    "output": f"approved{': ' + note if note else ''}",
+                }
             }
         }
 

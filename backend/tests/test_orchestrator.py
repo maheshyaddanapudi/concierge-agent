@@ -1,0 +1,848 @@
+"""Orchestrator API contract (spec §7, §11): chat → run → HITL happy path,
+capability resolution ladder (one test per rung + precedence), plan
+validate/repair, full-catalog fallback + isolation, cancel/retry, both modes
+over the same fixture registries, SSE contract, answer UI, /metrics."""
+
+import asyncio
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import select
+
+from app.db import get_session_factory
+from app.llm import fake as fake_llm
+from app.models import RunStep, Tool
+from app.native.provider import native_sub_agent, native_sub_agents, native_tool, native_tools
+from app.settings_store import update_settings
+from tests.factory_helpers import create_skill, create_sub_agent, create_tool
+
+API = "/api/v1"
+
+# ── test-only native tools ───────────────────────────────────────
+
+if "orch_echo" not in native_tools():
+
+    @native_tool("orch_echo", "echo a message back")
+    async def _orch_echo(message: str) -> str:
+        return f"orch-echo:{message}"
+
+    @native_tool("orch_slow", "sleeps then returns")
+    async def _orch_slow() -> str:
+        await asyncio.sleep(3)
+        return "slow done"
+
+    @native_tool("orch_inserter", "inserts a new exposed tool row when called")
+    async def _orch_inserter() -> str:
+        async with get_session_factory()() as session:
+            session.add(
+                Tool(
+                    name="midloop_tool",
+                    kind="native",
+                    tool_name="orch_echo",
+                    tool_key=f"midloop-{uuid4().hex[:6]}",
+                    source="dynamic",
+                    direct_exposure=True,
+                    input_schema={"type": "object", "properties": {}},
+                )
+            )
+            await session.commit()
+        return "inserted"
+
+
+@pytest.fixture(autouse=True)
+async def _orchestrator_settings() -> None:
+    async with get_session_factory()() as session:
+        await update_settings(
+            session,
+            {
+                "default_model": "fake:scripted",
+                "answer_ui_enabled": False,
+                "orchestrator_mode": "graph",
+            },
+        )
+
+
+def plan_call(
+    entries: list[dict[str, Any]] | None = None,
+    direct_answer: str | None = None,
+    no_confident_match: bool = False,
+) -> None:
+    fake_llm.push_ai(
+        "",
+        tool_calls=[
+            {
+                "name": "PlannerOutput",
+                "args": {
+                    "entries": entries or [],
+                    "direct_answer": direct_answer,
+                    "no_confident_match": no_confident_match,
+                },
+                "id": f"p{uuid4().hex[:6]}",
+            }
+        ],
+    )
+
+
+async def send_chat(client: AsyncClient, message: str = "do the thing") -> str:
+    resp = await client.post(f"{API}/chat", json={"message": message})
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["run_id"])
+
+
+async def wait_run(
+    client: AsyncClient, run_id: str, statuses: set[str], timeout_s: float = 20.0
+) -> dict[str, Any]:
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        run = (await client.get(f"{API}/runs/{run_id}")).json()
+        if run["status"] in statuses:
+            return dict(run)
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"run did not reach {statuses}; last: {run['status']}")
+
+
+def steps_of_type(run: dict[str, Any], step_type: str) -> list[dict[str, Any]]:
+    return [s for s in run["steps"] if s["step_type"] == step_type]
+
+
+def route_rungs(run: dict[str, Any]) -> list[str]:
+    return [s["output"].get("rung") for s in steps_of_type(run, "route") if s.get("output")]
+
+
+class TestGraphModeBasics:
+    async def test_direct_answer_no_capability(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="Hello! Nothing to dispatch.")
+        run_id = await send_chat(client, "hello")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed"
+        assert run["final_answer"] == "Hello! Nothing to dispatch."
+        assert run["orchestrator_mode"] == "graph"
+        assert steps_of_type(run, "plan")
+        assert run["total_output_tokens"] > 0
+
+    async def test_multi_turn_history_reaches_planner(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="first answer")
+        run_id = await send_chat(client, "first message")
+        run = await wait_run(client, run_id, {"completed"})
+        conversation_id = run["conversation_id"]
+        plan_call(direct_answer="second answer")
+        resp = await client.post(
+            f"{API}/chat",
+            json={"conversation_id": conversation_id, "message": "follow-up"},
+        )
+        run2 = await wait_run(client, str(resp.json()["run_id"]), {"completed"})
+        assert run2["conversation_id"] == conversation_id
+        conv = (await client.get(f"{API}/conversations/{conversation_id}")).json()
+        contents = [m["content"] for m in conv["messages"]]
+        assert contents == ["first message", "first answer", "follow-up", "second answer"]
+
+
+class TestResolutionLadder:
+    async def test_rung1_direct_tool(self, client: AsyncClient) -> None:
+        from app.factory.worker import sanitize_tool_name
+
+        tool = await create_tool(
+            tool_name="orch_echo", tool_key=f"echo-{uuid4().hex[:4]}", direct_exposure=True
+        )
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_tool", "id": str(tool.id)},
+                    "task": "echo hello",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": sanitize_tool_name(tool.tool_key),
+                    "args": {"message": "hello"},
+                    "id": "t1",
+                }
+            ],
+        )
+        fake_llm.push_ai("Echo result delivered.")  # aggregator
+        run_id = await send_chat(client, "use the echo tool")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "direct_tool" in route_rungs(run)
+        tool_steps = steps_of_type(run, "tool_call")
+        assert any("orch-echo:hello" in str(s.get("output")) for s in tool_steps)
+
+    async def test_rung1_direct_skill(self, client: AsyncClient) -> None:
+        skill = await create_skill(name=f"exposed-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "run the skill",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("inline skill result")
+        fake_llm.push_ai("Aggregated: inline skill result")
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "direct_skill" in route_rungs(run)
+        assert any(s["status"] == "completed" for s in steps_of_type(run, "skill"))
+
+    async def test_rung2_native_covers_skill(self, client: AsyncClient) -> None:
+        skill = await create_skill(name=f"covered-{uuid4().hex[:4]}")
+        agent_name = f"native-cover-{uuid4().hex[:4]}"
+
+        @native_sub_agent(agent_name, "covers the skill", covers_skill_ids=[str(skill.id)])
+        def build_cover(checkpointer: Any) -> Any:
+            from langgraph.graph import END, START, StateGraph
+
+            from app.factory.worker import WorkerState
+
+            async def work(state: WorkerState) -> dict[str, Any]:
+                return {
+                    "node_outputs": {"native-work": {"status": "ok", "output": "native handled it"}}
+                }
+
+            g = StateGraph(WorkerState)
+            g.add_node("native-work", work)
+            g.add_edge(START, "native-work")
+            g.add_edge("native-work", END)
+            return g.compile(checkpointer=checkpointer)
+
+        from app.seed.loader import upsert_native_sub_agents
+
+        async with get_session_factory()() as session:
+            await upsert_native_sub_agents(session)
+
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do covered work",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("Aggregated: native handled it")
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "native_sub_agent" in route_rungs(run)
+        native_sub_agents().pop(agent_name, None)
+
+    async def test_rung3_custom_sub_agent(self, client: AsyncClient) -> None:
+        skill = await create_skill(name=f"cust-{uuid4().hex[:4]}")
+        await create_sub_agent(
+            {
+                "nodes": [{"id": "n", "type": "skill", "skill_id": str(skill.id)}],
+                "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            },
+            name=f"custom-cover-{uuid4().hex[:4]}",
+        )
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do custom work",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("custom worker node output")
+        fake_llm.push_ai("Aggregated: custom output")
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "custom_sub_agent" in route_rungs(run)
+
+    async def test_rung4_ephemeral_dynamic_worker(self, client: AsyncClient) -> None:
+        skill = await create_skill(name=f"lonely-{uuid4().hex[:4]}")
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "nobody covers this",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("ephemeral output")
+        fake_llm.push_ai("Aggregated: ephemeral output")
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "dynamic_worker" in route_rungs(run)
+        route = next(
+            s for s in steps_of_type(run, "route") if s["output"]["rung"] == "dynamic_worker"
+        )
+        assert route["output"]["resolved_to"]["kind"] == "dynamic"
+        assert route["output"]["resolved_to"]["entity_id"] is None
+
+    async def test_precedence_direct_beats_native_beats_custom(self, client: AsyncClient) -> None:
+        skill = await create_skill(name=f"prec-{uuid4().hex[:4]}", direct_exposure=True)
+        agent_name = f"native-prec-{uuid4().hex[:4]}"
+
+        @native_sub_agent(agent_name, "also covers", covers_skill_ids=[str(skill.id)])
+        def build_prec(checkpointer: Any) -> Any:
+            from langgraph.graph import END, START, StateGraph
+
+            from app.factory.worker import WorkerState
+
+            async def work(state: WorkerState) -> dict[str, Any]:
+                return {"node_outputs": {"w": {"status": "ok", "output": "native"}}}
+
+            g = StateGraph(WorkerState)
+            g.add_node("w", work)
+            g.add_edge(START, "w")
+            g.add_edge("w", END)
+            return g.compile(checkpointer=checkpointer)
+
+        from app.seed.loader import upsert_native_sub_agents
+
+        async with get_session_factory()() as session:
+            await upsert_native_sub_agents(session)
+        await create_sub_agent(
+            {
+                "nodes": [{"id": "n", "type": "skill", "skill_id": str(skill.id)}],
+                "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            },
+            name=f"custom-prec-{uuid4().hex[:4]}",
+        )
+
+        # exposed → rung 1 wins
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "t",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("inline result")
+        fake_llm.push_ai("agg")
+        run = await wait_run(client, await send_chat(client), {"completed", "failed"})
+        assert "direct_skill" in route_rungs(run)
+
+        # unexposed → native (rung 2) beats custom (rung 3)
+        async with get_session_factory()() as session:
+            from app.models import Skill as SkillModel
+
+            row = await session.get(SkillModel, skill.id)
+            assert row is not None
+            row.direct_exposure = False
+            await session.commit()
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "t",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("agg2")
+        run = await wait_run(client, await send_chat(client), {"completed", "failed"})
+        assert "native_sub_agent" in route_rungs(run)
+        native_sub_agents().pop(agent_name, None)
+
+
+class TestPlanRepairAndFailure:
+    async def test_invalid_then_repaired(self, client: AsyncClient) -> None:
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "sub_agent", "id": str(uuid4())},
+                    "task": "t",
+                    "depends_on": [],
+                }
+            ]
+        )
+        plan_call(direct_answer="repaired fine")
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed"
+        assert run["final_answer"] == "repaired fine"
+
+    async def test_invalid_twice_fails_with_raw_outputs(self, client: AsyncClient) -> None:
+        bogus = str(uuid4())
+        for _ in range(2):
+            plan_call(
+                entries=[
+                    {
+                        "id": "s1",
+                        "capability": {"type": "sub_agent", "id": bogus},
+                        "task": "t",
+                        "depends_on": [],
+                    }
+                ]
+            )
+        run_id = await send_chat(client)
+        run = await wait_run(client, run_id, {"failed"})
+        assert "plan" in str(run["error"]).lower()
+        assert len(run["plan"]["raw_planner_outputs"]) == 2
+
+
+class TestHitlHappyPath:
+    async def make_hitl_agent(self) -> Any:
+        s1 = await create_skill(name=f"pre-{uuid4().hex[:4]}")
+        s2 = await create_skill(name=f"post-{uuid4().hex[:4]}")
+        return await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(s1.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Save the result?"},
+                    {"id": "save", "type": "skill", "skill_id": str(s2.id)},
+                ],
+                "edges": [
+                    {"from": "START", "to": "work"},
+                    {"from": "work", "to": "gate"},
+                    {"from": "gate", "to": "save"},
+                    {"from": "save", "to": "END"},
+                ],
+            },
+            name=f"hitl-agent-{uuid4().hex[:4]}",
+        )
+
+    async def test_pause_pending_approve_resume(self, client: AsyncClient) -> None:
+        agent = await self.make_hitl_agent()
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "sub_agent", "id": str(agent.id)},
+                    "task": "work then save",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("work output")
+        run_id = await send_chat(client, "hitl flow")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+
+        pending = (await client.get(f"{API}/hitl/pending")).json()
+        assert any(p["run_id"] == run_id for p in pending)
+
+        fake_llm.push_ai("save output")
+        fake_llm.push_ai("Aggregated: saved")
+        resp = await client.post(
+            f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": "go"}
+        )
+        assert resp.status_code == 200
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+
+        hitl_steps = steps_of_type(run, "hitl")
+        assert len(hitl_steps) == 1
+        work_steps = [s for s in steps_of_type(run, "skill") if s.get("node_id") == "work"]
+        assert len(work_steps) == 1  # idempotent replay — no duplicate dispatch
+
+    async def test_deny_routes_to_end(self, client: AsyncClient) -> None:
+        agent = await self.make_hitl_agent()
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "sub_agent", "id": str(agent.id)},
+                    "task": "work then save",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("work output")
+        run_id = await send_chat(client, "deny flow")
+        await wait_run(client, run_id, {"paused_hitl"})
+        fake_llm.push_ai("Aggregated despite denial")
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "deny", "note": "no"})
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert not any(s.get("node_id") == "save" for s in run["steps"])
+
+
+class TestFallback:
+    async def test_no_confident_match_uses_full_catalog(self, client: AsyncClient) -> None:
+        unexposed = await create_tool(
+            tool_name="orch_echo", tool_key=f"hidden-{uuid4().hex[:4]}", direct_exposure=False
+        )
+        plan_call(no_confident_match=True)
+        fake_llm.clear_seen_tools()
+        fake_llm.push_ai("fallback handled it")  # fallback loop answers directly
+        fake_llm.push_ai("Aggregated: fallback handled it")
+        run_id = await send_chat(client, "something nothing covers")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "fallback" in route_rungs(run)
+        from app.factory.worker import sanitize_tool_name
+
+        seen = [names for names in fake_llm.seen_tools() if names]
+        assert any(sanitize_tool_name(unexposed.tool_key) in names for names in seen), (
+            "full catalog must include unexposed tools"
+        )
+
+    async def test_fallback_skill_isolation_holds(self, client: AsyncClient) -> None:
+        bound = await create_tool(tool_name="orch_echo", tool_key=f"iso-{uuid4().hex[:4]}")
+        await create_tool(tool_name="orch_echo", tool_key=f"noise-{uuid4().hex[:4]}")
+        skill = await create_skill(name=f"iso-skill-{uuid4().hex[:4]}", tools=[bound])
+        from app.factory.worker import sanitize_tool_name
+
+        plan_call(no_confident_match=True)
+        fake_llm.clear_seen_tools()
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": f"use_skill_{sanitize_tool_name(skill.name)}",
+                    "args": {"task": "isolated work"},
+                    "id": "s1",
+                }
+            ],
+        )
+        fake_llm.push_ai("skill inner result")  # inline skill loop
+        fake_llm.push_ai("fallback final")  # fallback loop wraps up
+        fake_llm.push_ai("Aggregated: fallback final")
+        run_id = await send_chat(client, "needs the isolated skill")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        skill_calls = [
+            names
+            for names in fake_llm.seen_tools()
+            if names == [sanitize_tool_name(bound.tool_key)]
+        ]
+        assert skill_calls, "the fallback-invoked skill loop must see only its bound tool"
+
+    async def test_fallback_disabled_fails(self, client: AsyncClient) -> None:
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_full_fallback_enabled": False})
+        plan_call(no_confident_match=True)
+        run_id = await send_chat(client, "nothing matches")
+        run = await wait_run(client, run_id, {"failed"})
+        assert "fallback is disabled" in run["error"]
+
+
+class TestCancelRetry:
+    async def test_cancel_running(self, client: AsyncClient) -> None:
+        tool = await create_tool(
+            tool_name="orch_slow", tool_key=f"slow-{uuid4().hex[:4]}", direct_exposure=True
+        )
+        skill = await create_skill(
+            name=f"slow-skill-{uuid4().hex[:4]}", tools=[tool], direct_exposure=True
+        )
+        from app.factory.worker import sanitize_tool_name
+
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "slow work",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[{"name": sanitize_tool_name(tool.tool_key), "args": {}, "id": "sl1"}],
+        )
+        run_id = await send_chat(client, "start slow work")
+        await asyncio.sleep(0.5)
+        resp = await client.post(f"{API}/runs/{run_id}/cancel")
+        assert resp.status_code == 200
+        run = await wait_run(client, run_id, {"cancelled"})
+        assert run["status"] == "cancelled"
+        fake_llm.clear_script()
+
+    async def test_retry_failed_run(self, client: AsyncClient) -> None:
+        bogus = str(uuid4())
+        for _ in range(2):
+            plan_call(
+                entries=[
+                    {
+                        "id": "s1",
+                        "capability": {"type": "sub_agent", "id": bogus},
+                        "task": "t",
+                        "depends_on": [],
+                    }
+                ]
+            )
+        run_id = await send_chat(client)
+        await wait_run(client, run_id, {"failed"})
+        plan_call(direct_answer="second try works")
+        resp = await client.post(f"{API}/runs/{run_id}/retry")
+        assert resp.status_code == 201
+        new_run = await wait_run(client, str(resp.json()["run_id"]), {"completed"})
+        assert new_run["final_answer"] == "second try works"
+
+
+class TestAgenticMode:
+    @pytest.fixture(autouse=True)
+    async def _agentic(self) -> None:
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_mode": "agentic"})
+
+    async def test_simple_answer_and_labels(self, client: AsyncClient) -> None:
+        fake_llm.push_ai("agentic direct answer")
+        run_id = await send_chat(client, "hello agentic")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["orchestrator_mode"] == "agentic"
+        assert run["final_answer"] == "agentic direct answer"
+        assert steps_of_type(run, "aggregate")
+
+    async def test_todo_plan_events_stream(self, client: AsyncClient) -> None:
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {
+                        "todos": [
+                            {"content": "step one", "status": "in_progress"},
+                            {"content": "step two", "status": "pending"},
+                        ]
+                    },
+                    "id": "td1",
+                }
+            ],
+        )
+        fake_llm.push_ai("done with todos")
+        run_id = await send_chat(client, "multi step request")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        from uuid import UUID as _UUID
+
+        from app.orchestrator.context import EVENT_BUS
+
+        history, queue = EVENT_BUS.subscribe(_UUID(run_id))
+        EVENT_BUS.unsubscribe(_UUID(run_id), queue)
+        plan_events = [e for e in history if e["type"] == "plan"]
+        assert any(
+            e["payload"].get("mode") == "agentic"
+            and any(t["content"] == "step one" for t in e["payload"].get("todos", []))
+            for e in plan_events
+        )
+
+    async def test_dispatch_tool_and_hitl(self, client: AsyncClient) -> None:
+        from app.factory.worker import sanitize_tool_name
+
+        s1 = await create_skill(name=f"ag-pre-{uuid4().hex[:4]}")
+        agent = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(s1.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Continue?"},
+                ],
+                "edges": [
+                    {"from": "START", "to": "work"},
+                    {"from": "work", "to": "gate"},
+                    {"from": "gate", "to": "END"},
+                ],
+            },
+            name=f"agentic-target-{uuid4().hex[:4]}",
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": f"dispatch_{sanitize_tool_name(agent.name)}",
+                    "args": {"task": "do the work"},
+                    "id": "d1",
+                }
+            ],
+        )
+        fake_llm.push_ai("work node out")
+        run_id = await send_chat(client, "use the sub agent")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+
+        fake_llm.push_ai("agentic final after approval")
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": ""})
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "custom_sub_agent" in route_rungs(run)
+
+    async def test_mid_loop_tool_appearance(self, client: AsyncClient) -> None:
+        """Middleware live-sync (spec §7.0): a tool ingested mid-loop is
+        callable on the next model call, no rebuild."""
+        from app.factory.worker import sanitize_tool_name
+
+        inserter = await create_tool(
+            tool_name="orch_inserter",
+            tool_key=f"inserter-{uuid4().hex[:4]}",
+            direct_exposure=True,
+        )
+        fake_llm.clear_seen_tools()
+        fake_llm.push_ai(
+            "",
+            tool_calls=[{"name": sanitize_tool_name(inserter.tool_key), "args": {}, "id": "i1"}],
+        )
+        fake_llm.push_ai("saw the new tool")
+        run_id = await send_chat(client, "insert mid-loop")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        seen = fake_llm.seen_tools()
+        assert not any(n.startswith("midloop-") for n in seen[0])
+        assert any(n.startswith("midloop-") for n in seen[-1]), (
+            "second model call must see the tool ingested between calls"
+        )
+
+    async def test_use_full_catalog_escalation(self, client: AsyncClient) -> None:
+        unexposed = await create_tool(
+            tool_name="orch_echo", tool_key=f"esc-{uuid4().hex[:4]}", direct_exposure=False
+        )
+        from app.factory.worker import sanitize_tool_name
+
+        fake_llm.clear_seen_tools()
+        fake_llm.push_ai("", tool_calls=[{"name": "use_full_catalog", "args": {}, "id": "fc1"}])
+        fake_llm.push_ai("escalated and done")
+        run_id = await send_chat(client, "need more tools")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "fallback" in route_rungs(run)
+        seen = fake_llm.seen_tools()
+        key = sanitize_tool_name(unexposed.tool_key)
+        assert key not in seen[0]
+        assert key in seen[-1]
+
+
+class TestAnswerUi:
+    async def test_answer_ui_generated_as_a2ui(self, client: AsyncClient) -> None:
+        async with get_session_factory()() as session:
+            await update_settings(session, {"answer_ui_enabled": True})
+        plan_call(direct_answer="Revenue was down 12% in FY2024.")
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": "AnswerUi",
+                    "args": {
+                        "components": [
+                            {"type": "stat", "label": "Revenue change", "value": "-12%"},
+                            {"type": "text", "markdown": "Driven by churn in Q3."},
+                        ]
+                    },
+                    "id": "ui1",
+                }
+            ],
+        )
+        run_id = await send_chat(client, "revenue?")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        messages = run["answer_ui"]["a2ui"]
+        assert messages[0]["createSurface"]["catalogId"].startswith("https://a2ui.org/")
+        components = messages[1]["updateComponents"]["components"]
+        assert any(c["component"] == "Text" and "-12%" in str(c.get("text")) for c in components)
+        assert any(c["id"] == "root" for c in components)
+
+    async def test_answer_ui_failure_safe(self, client: AsyncClient) -> None:
+        async with get_session_factory()() as session:
+            await update_settings(session, {"answer_ui_enabled": True})
+        plan_call(direct_answer="Plain answer.")
+        fake_llm.push_ai("not a structured payload at all")
+        run_id = await send_chat(client, "plain?")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed"
+        assert run["answer_ui"] is None
+
+
+class TestSseAndMetrics:
+    async def test_sse_stream_replays_contract_events(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="streamed answer")
+        run_id = await send_chat(client, "stream me")
+        await wait_run(client, run_id, {"completed"})
+        events: list[str] = []
+        async with client.stream("GET", f"{API}/chat/stream/{run_id}") as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                if line.startswith("event:"):
+                    events.append(line.split(":", 1)[1].strip())
+                if "done" in events:
+                    break
+        assert "run_status" in events
+        assert "plan" in events
+        assert "token" in events
+        assert events[-1] == "done"
+
+    async def test_metrics_exposed(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="metric answer")
+        run_id = await send_chat(client, "metrics")
+        await wait_run(client, run_id, {"completed"})
+        body = (await client.get("/metrics")).text
+        assert "concierge_runs_total" in body
+        assert "concierge_steps_total" in body
+
+
+async def _count_steps(run_id: str) -> int:
+    async with get_session_factory()() as session:
+        from uuid import UUID as _UUID
+
+        return len(
+            list(
+                (
+                    await session.execute(select(RunStep).where(RunStep.run_id == _UUID(run_id)))
+                ).scalars()
+            )
+        )
+
+
+class TestRunHousekeeping:
+    async def test_delete_and_purge(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="a")
+        run_id = await send_chat(client, "one")
+        await wait_run(client, run_id, {"completed"})
+        assert (await client.delete(f"{API}/runs/{run_id}")).status_code == 204
+        assert (await client.get(f"{API}/runs/{run_id}")).status_code == 404
+
+        plan_call(direct_answer="b")
+        run_id2 = await send_chat(client, "two")
+        await wait_run(client, run_id2, {"completed"})
+        assert (await client.delete(f"{API}/runs")).status_code == 204
+        assert (await client.get(f"{API}/runs")).json() == []
+
+    async def test_run_and_steps_recorded(self, client: AsyncClient) -> None:
+        plan_call(direct_answer="recorded")
+        run_id = await send_chat(client, "record me")
+        run = await wait_run(client, run_id, {"completed"})
+        assert await _count_steps(run_id) >= 1
+        assert run["total_input_tokens"] > 0
+
+    async def test_delete_running_run_conflict(self, client: AsyncClient) -> None:
+        tool = await create_tool(
+            tool_name="orch_slow", tool_key=f"slow2-{uuid4().hex[:4]}", direct_exposure=True
+        )
+        skill = await create_skill(
+            name=f"slow2-{uuid4().hex[:4]}", tools=[tool], direct_exposure=True
+        )
+        from app.factory.worker import sanitize_tool_name
+
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "slow",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai(
+            "", tool_calls=[{"name": sanitize_tool_name(tool.tool_key), "args": {}, "id": "s"}]
+        )
+        run_id = await send_chat(client, "slow again")
+        await asyncio.sleep(0.3)
+        assert (await client.delete(f"{API}/runs/{run_id}")).status_code == 409
+        await client.post(f"{API}/runs/{run_id}/cancel")
+        await wait_run(client, run_id, {"cancelled"})
+        fake_llm.clear_script()
