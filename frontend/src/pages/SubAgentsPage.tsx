@@ -99,13 +99,17 @@ function FlowNode({ data }: { data: { label: string; kind: string; error?: boole
 const nodeTypes = { concierge: FlowNode }
 
 function layout(workflow: Workflow): { nodes: Node[]; edges: Edge[] } {
-  // simple layered layout: BFS depth from START
+  // simple layered layout: BFS depth from START — depth-capped so cycles or
+  // self-loops mid-edit can never freeze the preview
   const depth: Record<string, number> = { START: 0 }
   const queue = ['START']
+  const maxDepth = workflow.nodes.length + 2
   while (queue.length) {
     const current = queue.shift()!
     for (const e of workflow.edges.filter((e) => e.from === current)) {
+      if (e.to === e.from) continue
       const d = (depth[current] ?? 0) + 1
+      if (d > maxDepth) continue
       if (depth[e.to] === undefined || d > depth[e.to]) {
         depth[e.to] = d
         if (e.to !== 'END') queue.push(e.to)
