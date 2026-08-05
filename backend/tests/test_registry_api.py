@@ -551,3 +551,14 @@ class TestSettings:
         assert resp.status_code == 422
         resp = await client.patch(f"{API}/settings", json={"default_model_params": {"bogus": 1}})
         assert resp.status_code == 422
+
+
+class TestProvidersPanel:
+    async def test_providers_listed_with_configured_status(self, client: AsyncClient) -> None:
+        providers = (await client.get(f"{API}/providers")).json()
+        by_id = {p["provider_id"]: p for p in providers}
+        assert {"anthropic", "google_genai", "openai", "fake"} <= set(by_id)
+        assert by_id["fake"]["configured"] is True  # FAKE_LLM_ENABLED in tests
+        assert by_id["anthropic"]["configured"] is False
+        model = by_id["anthropic"]["models"][0]
+        assert {"id", "display_name", "supports_effort"} <= set(model)

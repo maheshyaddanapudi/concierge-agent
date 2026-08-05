@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: in development — M1–M4 complete.** The full API surface (registries, MCP, chat/SSE, runs, settings) is live; the admin UI lands in M5. `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
+> **Status: in development — M1–M5 complete.** Full API + admin UI live; M6 (compose polish + acceptance script) remains. `spec.md` is the single source of truth; implementation proceeds milestone by milestone via spec-driven development (see `CLAUDE.md`). This README is updated as milestones land.
 
 ## Architecture at a glance
 
@@ -44,7 +44,7 @@ Key design decisions (full detail in spec.md):
 
 ## Stack
 
-Python 3.12 · FastAPI · LangGraph · LangChain (`create_agent`, middleware, MCP adapters) · SQLAlchemy 2 + Alembic · Postgres 16 · React 18 + Vite + TypeScript + Tailwind · react-flow · docker-compose (`db`, `backend`, `frontend`).
+Python 3.12 · FastAPI · LangGraph · LangChain (`create_agent`, middleware, MCP adapters) · SQLAlchemy 2 + Alembic · Postgres 16 · React 19 + Vite + TypeScript + Tailwind · react-flow · docker-compose (`db`, `backend`, `frontend`).
 
 ## Getting started
 
@@ -76,7 +76,7 @@ docker-compose.yml
 | M2 | MCP manager: stdio + http connect, ingest, listChanged, health | ✅ complete |
 | M3 | Worker factory + validation (branch, parallel, error edges, HITL compile) | ✅ complete |
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ✅ complete |
-| M5 | Admin UI: all seven pages incl. Settings command center | ⬜ pending |
+| M5 | Admin UI: all seven pages incl. Settings command center | ✅ complete |
 | M6 | Test suites green + compose polish + acceptance script passes | ⬜ pending |
 
 ## Development

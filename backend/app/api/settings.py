@@ -25,6 +25,23 @@ async def patch_settings(updates: dict[str, Any], session: SessionDep) -> dict[s
         raise HTTPException(status_code=422, detail="; ".join(exc.errors)) from exc
 
 
+@router.get("/providers")
+async def list_providers_endpoint() -> list[dict[str, Any]]:
+    """Read-only provider adapters panel (spec §2.1, §8.7)."""
+    from dataclasses import asdict
+
+    from app.llm import list_providers
+
+    return [
+        {
+            "provider_id": p.provider_id,
+            "configured": p.is_configured(),
+            "models": [asdict(m) for m in p.list_models()],
+        }
+        for p in list_providers()
+    ]
+
+
 @router.get("/hitl/pending")
 async def hitl_pending(session: SessionDep) -> list[dict[str, Any]]:
     """All currently paused runs across chats (spec §8.7)."""

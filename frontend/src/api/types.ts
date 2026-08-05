@@ -1,0 +1,189 @@
+export type Source = 'static' | 'dynamic'
+export type Status = 'active' | 'inactive' | 'error'
+export type RunStatus = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
+
+export interface RegistryRecord {
+  id: string
+  name: string
+  description: string
+  source: Source
+  status: Status
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface McpServer extends RegistryRecord {
+  transport: 'stdio' | 'http'
+  command: string | null
+  args: string[] | null
+  env: Record<string, string> | null
+  url: string | null
+  headers: Record<string, string> | null
+  last_connected_at: string | null
+  last_error: string | null
+  tool_count: number
+}
+
+export interface Tool extends RegistryRecord {
+  kind: 'mcp' | 'native'
+  mcp_server_id: string | null
+  tool_name: string
+  native_ref: string | null
+  tool_key: string
+  direct_exposure: boolean
+  input_schema: Record<string, unknown> | null
+}
+
+export interface ModelParams {
+  effort?: 'none' | 'low' | 'medium' | 'high' | null
+  temperature?: number | null
+  max_output_tokens?: number | null
+}
+
+export interface Skill extends RegistryRecord {
+  kind: 'native' | 'custom'
+  persona: string
+  instructions: string
+  direct_exposure: boolean
+  model: string | null
+  model_params: ModelParams | null
+  tools: Tool[]
+}
+
+export interface WorkflowNode {
+  id: string
+  type: 'skill' | 'hitl'
+  skill_id?: string
+  prompt?: string
+  instructions?: string
+}
+
+export interface WorkflowEdge {
+  from: string
+  to: string
+  condition?: string
+  on?: 'success' | 'error'
+}
+
+export interface Workflow {
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+}
+
+export interface SubAgent extends RegistryRecord {
+  kind: 'native' | 'custom'
+  persona: string
+  model: string | null
+  model_params: ModelParams | null
+  workflow: Workflow | null
+  native_ref: string | null
+  covers_skill_ids: string[] | null
+  skills: Skill[]
+}
+
+export interface RunStep {
+  id: string
+  parent_step_id: string | null
+  sub_agent_id: string | null
+  node_id: string | null
+  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate'
+  input: Record<string, unknown> | null
+  output: Record<string, unknown> | null
+  model: string | null
+  input_tokens: number
+  output_tokens: number
+  status: string
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface Run {
+  id: string
+  conversation_id: string
+  chat_message: string
+  status: RunStatus
+  orchestrator_mode: 'graph' | 'agentic'
+  plan: Record<string, unknown> | null
+  snapshot?: Record<string, unknown> | null
+  final_answer: string | null
+  answer_ui: { a2ui: unknown[] } | null
+  error: string | null
+  started_at: string | null
+  finished_at: string | null
+  total_input_tokens: number
+  total_output_tokens: number
+  steps?: RunStep[]
+}
+
+export interface Conversation {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  run_count: number
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  run_id: string
+  answer_ui?: { a2ui: unknown[] } | null
+}
+
+export interface ConversationDetail {
+  id: string
+  title: string
+  messages: ChatMessage[]
+  runs: Run[]
+}
+
+export interface ProviderInfo {
+  provider_id: string
+  configured: boolean
+  models: {
+    id: string
+    display_name: string
+    supports_effort: boolean
+    supports_temperature: boolean
+    supports_max_output_tokens: boolean
+  }[]
+}
+
+export type Settings = Record<string, unknown> & {
+  orchestrator_mode: 'graph' | 'agentic'
+  orchestrator_full_fallback_enabled: boolean
+  default_model: string
+  default_model_params: ModelParams | null
+  planner_model: string | null
+  planner_model_params: ModelParams | null
+  aggregator_model: string | null
+  aggregator_model_params: ModelParams | null
+  max_parallel_dispatch: number
+  max_plan_steps: number
+  max_tool_iterations: number
+  dynamic_worker_fallback_enabled: boolean
+  direct_exposure_cap_warning: number
+  answer_ui_enabled: boolean
+  mcp_health_interval_s: number
+  log_level: string
+  langsmith_enabled: boolean
+  langsmith_endpoint: string
+  langsmith_project: string
+  otlp_endpoint: string
+}
+
+export interface HitlPending {
+  run_id: string
+  conversation_id: string
+  chat_message: string
+  started_at: string
+}
+
+export interface SseEvent {
+  type: string
+  run_id: string
+  ts: string
+  payload: Record<string, unknown>
+}

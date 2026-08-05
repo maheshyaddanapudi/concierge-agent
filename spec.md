@@ -22,7 +22,7 @@ Non-goals: authentication/authorization (assumed safe), multi-tenancy, productio
 | Backend | Python 3.12, FastAPI, LangGraph, langchain-mcp-adapters, SQLAlchemy 2 + Alembic |
 | LLM | **Provider-agnostic** via LangChain `init_chat_model`. Every model reference is a `provider:model` string (e.g. `anthropic:claude-sonnet-4-6`, `google_genai:gemini-2.5-pro`). POC default `anthropic:claude-sonnet-4-6`. Per-sub-agent model override field |
 | DB | Postgres 16 (registries, run history, LangGraph checkpointer) |
-| Frontend | React 18 + Vite + TypeScript + Tailwind. `@xyflow/react` (react-flow) for DAG preview. SSE for streaming |
+| Frontend | React 19 + Vite + TypeScript + Tailwind (React ≥19 required by the official `@a2ui/react` answer-UI renderer). `@xyflow/react` (react-flow) for DAG preview. SSE for streaming |
 | Runtime | docker-compose: `db`, `backend`, `frontend`. One command: `docker compose up`. **No message broker, no task queue, no Redis, no Celery** — runs execute as asyncio tasks inside the single FastAPI process; SSE is plain HTTP; HITL pause/resume rides the LangGraph Postgres checkpointer. Postgres is the only stateful infrastructure. |
 
 ### 2.1 Model provider abstraction (non-negotiable basic design)
