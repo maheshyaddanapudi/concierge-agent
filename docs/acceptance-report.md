@@ -38,6 +38,25 @@ read of `/tmp/site-notes.txt` → work/hitl/finish nodes with router steps → a
 `extras.read_text_file` — a tool from an MCP server plugged *after* the run had
 already paused — → the aggregate step with the final answer.
 
+## Genuine-model verification (ANTHROPIC_API_KEY configured)
+
+After the scripted walk, the LLM-dependent steps were re-run with **real
+`anthropic:claude-sonnet-4-6` decisions** — no `/_fake/script` anywhere — driven
+through the UI in a real browser (`walkC-genuine.log`, `genuine-01..27.png`):
+
+- **Page tour** — all seven admin pages with the Anthropic provider live through the port (`genuine-01..10`).
+- **Rung 1** — the genuine planner routed "list the files in /tmp" to the exposed MCP tool: `rungs=[direct_tool]`, real listing in the trace (`genuine-11..12`).
+- **Sub agent + HITL** — the genuine planner dispatched to site-analyst, the worker really read `/tmp/site-notes.txt`, paused at the gate, showed in the Settings HITL queue, was approved with a note, and resumed idempotently: `rungs=[custom_sub_agent]`, one hitl step, one work step (`genuine-13..18`).
+- **Conversation history** — the follow-up answer correctly recalled the file just read (`genuine-19`).
+- **Agentic mode** — the genuine concierge chose `dispatch_site-analyst` on its own, paused for approval, and the resume replayed the dispatch tool through fresh middleware instances: `dispatch=[agentic:site-analyst:completed]`, `hitl=[approve:completed]` (`genuine-21..26`).
+- **Unexposed skill** — asked to "run the notes-formatter skill", the genuine planner escalated to the full catalog and invoked the isolated skill loop (route steps `fallback` → `notes-formatter`). The scripted walk and pytest cover the rung-4 ephemeral-worker ladder path.
+
+The genuine pass also surfaced (and fixed) two defects the fake provider cannot
+catch: duplicate registry names produced duplicate bound tool names (a real
+provider 400 — now id-suffixed on collision), and stdio MCP subprocesses lost
+deployment network env (now passed through). A UI gap found during the browser
+walk was fixed too: reopening a conversation now re-attaches to its paused run.
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
