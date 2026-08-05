@@ -671,7 +671,82 @@ class TestAgenticMode:
         await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": ""})
         run = await wait_run(client, run_id, {"completed", "failed"})
         assert run["status"] == "completed", run["error"]
-        assert "custom_sub_agent" in route_rungs(run)
+        assert run["final_answer"] == "agentic final after approval"
+        # resume rebuilds the agent (fresh middleware instances), so the
+        # interrupted dispatch tool call must be replayed — the paused
+        # dispatch step adopted and finished, the hitl decision recorded,
+        # and nothing duplicated (spec §7.0 idempotent replay)
+        dispatches = [
+            s for s in steps_of_type(run, "skill") if s.get("node_id") == f"agentic:{agent.name}"
+        ]
+        assert len(dispatches) == 1, f"expected one dispatch step, got {len(dispatches)}"
+        assert dispatches[0]["status"] == "completed"
+        hitl_steps = steps_of_type(run, "hitl")
+        assert len(hitl_steps) == 1 and hitl_steps[0]["status"] == "completed"
+        work_steps = [s for s in steps_of_type(run, "skill") if s.get("node_id") == "work"]
+        assert len(work_steps) == 1, "work node must run exactly once across pause/resume"
+        assert route_rungs(run).count("custom_sub_agent") == 1, "route must not re-record on replay"
+
+    async def test_double_hitl_resume_replay_alignment(self, client: AsyncClient) -> None:
+        """Two consecutive hitl gates: each resume replays the dispatch tool
+        from scratch, and stored resume values must stay index-aligned so each
+        gate receives its own decision (spec §7.0 idempotent replay)."""
+        from app.factory.worker import sanitize_tool_name
+
+        agent = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "gate1", "type": "hitl", "prompt": "First?"},
+                    {"id": "gate2", "type": "hitl", "prompt": "Second?"},
+                ],
+                "edges": [
+                    {"from": "START", "to": "gate1"},
+                    {"from": "gate1", "to": "gate2"},
+                    {"from": "gate2", "to": "END"},
+                ],
+            },
+            name=f"double-gate-{uuid4().hex[:4]}",
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": f"dispatch_{sanitize_tool_name(agent.name)}",
+                    "args": {"task": "run the gates"},
+                    "id": "dg1",
+                }
+            ],
+        )
+        run_id = await send_chat(client, "double gate")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+
+        await client.post(
+            f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": "first-note"}
+        )
+        # second pause: status alone is racy (still paused_hitl until the
+        # resume task starts), so also require gate1's recorded hitl step
+        deadline = asyncio.get_event_loop().time() + 20
+        while True:
+            run = (await client.get(f"{API}/runs/{run_id}")).json()
+            gate1_done = any(s["node_id"] == "gate1" for s in steps_of_type(run, "hitl"))
+            if run["status"] == "paused_hitl" and gate1_done:
+                break
+            assert run["status"] != "failed", run["error"]
+            assert asyncio.get_event_loop().time() < deadline, "second pause never reached"
+            await asyncio.sleep(0.1)
+
+        fake_llm.push_ai("all gates passed")
+        await client.post(
+            f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": "second-note"}
+        )
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["final_answer"] == "all gates passed"
+        hitl_steps = {s["node_id"]: s for s in steps_of_type(run, "hitl")}
+        assert set(hitl_steps) == {"gate1", "gate2"}
+        assert "first-note" in str(hitl_steps["gate1"]["output"])
+        assert "second-note" in str(hitl_steps["gate2"]["output"])
 
     async def test_mid_loop_tool_appearance(self, client: AsyncClient) -> None:
         """Middleware live-sync (spec §7.0): a tool ingested mid-loop is

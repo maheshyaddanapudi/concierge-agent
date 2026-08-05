@@ -213,6 +213,11 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         name = request.tool_call["name"]
         tool = self._current.get(name)
         if tool is None:
+            # HITL resume replays the interrupted tool call before any model
+            # call runs, so a fresh instance must resolve its registry here.
+            await self._resolve()
+            tool = self._current.get(name)
+        if tool is None:
             return await handler(request)
         meta = self._meta.get(name, {})
         step_id = await _record_tool_call(
@@ -292,15 +297,21 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
             f"(argument: task — the concrete instruction for the skill)",
         )
 
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+    async def _refresh(self) -> list[BaseTool]:
         snaps = await self._snapshots()
         self._current = {}
         tools: list[BaseTool] = []
-        lines: list[str] = []
         for snap in snaps:
             tool = self._tool_for(snap)
             self._current[tool.name] = snap
             tools.append(tool)
+        return tools
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        tools = await self._refresh()
+        lines: list[str] = []
+        for tool in tools:
+            snap = self._current[tool.name]
             lines.append(f"- {tool.name}: {snap.get('description') or snap['name']}")
         system = request.system_message
         section = "\n\nAvailable skills (each runs an isolated specialist loop):\n" + (
@@ -315,6 +326,10 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         name = request.tool_call["name"]
+        if name not in self._current and name.startswith("use_skill_"):
+            # HITL resume replays the interrupted tool call before any model
+            # call runs, so a fresh instance must resolve its registry here.
+            await self._refresh()
         if name in self._current:
             snap = self._current[name]
             return await handler(request.override(tool=self._tool_for(snap)))
@@ -359,11 +374,19 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
         name = f"dispatch_{sanitize_tool_name(card['name'])}"
 
         async def run(task: str) -> str:
-            from app.orchestrator.ladder import execute_resolution, resolve_capability
+            from app.orchestrator.ladder import (
+                execute_resolution,
+                find_running_dispatch,
+                resolve_capability,
+            )
 
             resolution = await resolve_capability({"type": "sub_agent", "id": card["id"]})
             ctx = get_run_context()
-            if ctx is not None:
+            node_id = f"agentic:{card['name']}"
+            # HITL resume replays this handler — the route was already
+            # recorded before the pause when the dispatch step is still open
+            replay = ctx is not None and await find_running_dispatch(ctx.run_id, node_id)
+            if ctx is not None and not replay:
                 await ctx.recorder.record_route(
                     capability={"type": "sub_agent", "id": card["id"]},
                     rung=resolution.rung,
@@ -371,7 +394,7 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
                     kind=resolution.kind,
                     source=resolution.source,
                 )
-            result = await execute_resolution(resolution, task, f"agentic:{card['name']}")
+            result = await execute_resolution(resolution, task, node_id)
             if result.get("status") != "ok":
                 return f"sub agent failed: {result.get('error')}"
             return str(result.get("output", ""))
@@ -386,7 +409,7 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             ),
         )
 
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+    async def _refresh(self) -> list[BaseTool]:
         cards = await self._cards()
         self._current = {}
         tools: list[BaseTool] = []
@@ -394,10 +417,18 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             tool = self._tool_for(card)
             self._current[tool.name] = card
             tools.append(tool)
+        return tools
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        tools = await self._refresh()
         return await handler(request.override(tools=[*request.tools, *tools]))
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         name = request.tool_call["name"]
+        if name not in self._current and name.startswith("dispatch_"):
+            # HITL resume replays the interrupted tool call before any model
+            # call runs, so a fresh instance must resolve its registry here.
+            await self._refresh()
         if name in self._current:
             return await handler(request.override(tool=self._tool_for(self._current[name])))
         return await handler(request)

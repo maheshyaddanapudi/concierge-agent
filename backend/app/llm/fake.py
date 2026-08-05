@@ -117,6 +117,8 @@ class ScriptedChatModel(BaseChatModel):
                 time.sleep(float(delay))
         else:
             msg = self._default_message(_SEEN_TOOLS[-1] if _SEEN_TOOLS else [])
+        # real providers stamp model_name; usage callbacks key on it
+        msg.response_metadata.setdefault("model_name", f"fake:{self.model_name}")
         return ChatResult(generations=[ChatGeneration(message=msg)])
 
     def _default_message(self, tool_names: list[str]) -> AIMessage:

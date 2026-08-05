@@ -260,10 +260,13 @@ async def run_inline_skill(
             "", skill_snapshot.get("persona", ""), skill_snapshot.get("instructions", "")
         )
         agent = create_agent(model, tools=[], system_prompt=prompt, middleware=stack)
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=task)]},
-            config={"callbacks": ctx.callbacks},
-        )
+        from app.orchestrator.middleware import current_step
+
+        with current_step(step_id):
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=task)]},
+                config={"callbacks": ctx.callbacks},
+            )
         messages = result["messages"]
         text = messages[-1].content
         usage = _usage_from_messages(messages)
@@ -401,24 +404,39 @@ async def invoke_worker_with_hitl(
     # idempotent replay: a paused thread resumes; a fresh one starts
     snapshot = await worker.aget_state(config)
     pending_interrupt = None
+    suppress_emit = False
     if snapshot is not None and snapshot.next:
         for t in snapshot.tasks:
             if t.interrupts:
                 pending_interrupt = t.interrupts[0].value
-        recorded.update((snapshot.values or {}).get("node_outputs", {}).keys())
+        outputs = (snapshot.values or {}).get("node_outputs", {})
+        recorded.update(outputs.keys())
+        if pending_interrupt is not None:
+            # replay: each hitl node completed before this pause consumed one
+            # resume value — burn that many interrupt() calls so the pending
+            # one lines up with the resume value being delivered now, and
+            # don't re-emit the hitl_request that was emitted before pausing
+            prior_hitl = sum(
+                1 for v in outputs.values() if isinstance(v, dict) and v.get("node_type") == "hitl"
+            )
+            for _ in range(prior_hitl):
+                interrupt(pending_interrupt)
+            suppress_emit = True
         graph_input: Any = None
     else:
         graph_input = {"task": task, "messages": []}
 
     while True:
         if pending_interrupt is not None:
-            ctx.recorder.emit(
-                "hitl_request",
-                {
-                    "prompt": pending_interrupt.get("prompt"),
-                    "node_id": pending_interrupt.get("node_id"),
-                },
-            )
+            if not suppress_emit:
+                ctx.recorder.emit(
+                    "hitl_request",
+                    {
+                        "prompt": pending_interrupt.get("prompt"),
+                        "node_id": pending_interrupt.get("node_id"),
+                    },
+                )
+            suppress_emit = False
             decision = interrupt(pending_interrupt)
             graph_input = Command(resume=decision)
             pending_interrupt = None
@@ -437,6 +455,29 @@ async def invoke_worker_with_hitl(
         return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
 
 
+async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
+    """A dispatch step left `running` marks a HITL pause — its presence tells
+    a replayed handler to adopt it instead of recording a duplicate."""
+    from app.models import RunStep
+
+    async with get_session_factory()() as session:
+        row = (
+            (
+                await session.execute(
+                    select(RunStep).where(
+                        RunStep.run_id == run_id,
+                        RunStep.node_id == node_id,
+                        RunStep.step_type == "skill",
+                        RunStep.status == "running",
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        return row.id if row is not None else None
+
+
 async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -> dict[str, Any]:
     """Execute a resolved capability, recording a dispatch step (spec §7.1)."""
     ctx = require_run_context()
@@ -445,18 +486,20 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
     if resolution.rung == "direct_skill":
         return await run_inline_skill(resolution.payload["skill"], task)
 
-    step_id = await ctx.recorder.start_step(
-        "skill",
-        tier="sub_agent",
-        kind=resolution.kind,
-        source=resolution.source,
-        entity_id=resolution.entity_id,
-        entity_name=resolution.entity_name,
-        sub_agent_id=resolution.entity_id,
-        node_id=entry_id,
-        input={"task": task},
-        emit_dispatch=True,
-    )
+    step_id = await find_running_dispatch(ctx.run_id, entry_id)
+    if step_id is None:
+        step_id = await ctx.recorder.start_step(
+            "skill",
+            tier="sub_agent",
+            kind=resolution.kind,
+            source=resolution.source,
+            entity_id=resolution.entity_id,
+            entity_name=resolution.entity_name,
+            sub_agent_id=resolution.entity_id,
+            node_id=entry_id,
+            input={"task": task},
+            emit_dispatch=True,
+        )
     try:
         checkpointer = await get_checkpointer()
         if resolution.rung == "native_sub_agent":
@@ -466,16 +509,19 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
         else:  # dynamic_worker
             snapshot = build_ephemeral_snapshot(resolution.payload["skills"], task)
             worker = get_compiled_worker(snapshot, checkpointer)
-        result = await invoke_worker_with_hitl(
-            worker,
-            task,
-            thread_id=f"{ctx.run_id}:{entry_id}",
-            sub_agent_id=resolution.entity_id,
-            sub_agent_name=resolution.entity_name,
-            kind=resolution.kind,
-            source=resolution.source,
-            parent_step_id=step_id,
-        )
+        from app.orchestrator.middleware import current_step
+
+        with current_step(step_id):
+            result = await invoke_worker_with_hitl(
+                worker,
+                task,
+                thread_id=f"{ctx.run_id}:{entry_id}",
+                sub_agent_id=resolution.entity_id,
+                sub_agent_name=resolution.entity_name,
+                kind=resolution.kind,
+                source=resolution.source,
+                parent_step_id=step_id,
+            )
         await ctx.recorder.finish_step(step_id, output=result, emit_dispatch=True)
         return result
     except Exception as exc:
