@@ -153,6 +153,16 @@ class TestModelParamsMapping:
         assert model.temperature == 0.2
         assert model.max_tokens == 2000
 
+    def test_claude5_effort_maps_to_adaptive_output_config(self) -> None:
+        """Claude 5 family uses adaptive thinking + output_config.effort —
+        the legacy budgeted-thinking knob is rejected by the API."""
+        model = get_model("anthropic:claude-sonnet-5", ModelParams(effort="medium"))
+        thinking = getattr(model, "thinking", None)
+        assert thinking is not None and thinking["type"] == "adaptive"
+        assert "budget_tokens" not in thinking
+        output_config = getattr(model, "output_config", None)
+        assert output_config == {"effort": "medium"}
+
     def test_anthropic_effort_none_disables_thinking(self) -> None:
         model = get_model("anthropic:claude-sonnet-4-6", ModelParams(effort="none"))
         assert getattr(model, "thinking", None) is None

@@ -17,6 +17,7 @@ from app.llm.registry import model_provider
 
 # effort → Anthropic extended-thinking budget tokens
 _ANTHROPIC_THINKING_BUDGET = {"low": 1024, "medium": 8192, "high": 32768}
+_CLAUDE5_PREFIXES = ("claude-sonnet-5", "claude-opus-5", "claude-fable-5")
 # effort → Gemini thinking budget tokens ('none' disables thinking)
 _GEMINI_THINKING_BUDGET = {"none": 0, "low": 1024, "medium": 8192, "high": 24576}
 # effort → OpenAI reasoning effort string
@@ -65,10 +66,16 @@ class AnthropicProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {}
         if params:
             if params.effort and params.effort != "none":
-                kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": _ANTHROPIC_THINKING_BUDGET[params.effort],
-                }
+                if model.startswith(_CLAUDE5_PREFIXES):
+                    # the Claude 5 family replaces budgeted thinking with
+                    # adaptive thinking steered by output_config.effort
+                    kwargs["thinking"] = {"type": "adaptive"}
+                    kwargs["output_config"] = {"effort": params.effort}
+                else:
+                    kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": _ANTHROPIC_THINKING_BUDGET[params.effort],
+                    }
             if params.temperature is not None:
                 kwargs["temperature"] = params.temperature
             if params.max_output_tokens is not None:
