@@ -1097,3 +1097,50 @@ class TestParallelHitl:
         assert all(s["status"] == "completed" for s in dispatches)
         work_steps = [s for s in steps_of_type(run, "skill") if s.get("node_id") == "work"]
         assert len(work_steps) == 2, "each worker's work node runs exactly once"
+
+
+class TestLiveEvents:
+    async def test_activity_and_thinking_events_stream(self, client: AsyncClient) -> None:
+        """spec §7.1: every step transition emits `activity` (the chat's live
+        ticker), and streamed reasoning emits `thinking` — separate from
+        `token` prose."""
+        from uuid import UUID as _UUID
+
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.context import EVENT_BUS
+
+        skill = await create_skill(name=f"act-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do it",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("skill out")
+        fake_llm.push_message(
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "pondering the merge", "signature": "s"},
+                    {"type": "text", "text": "final merged answer"},
+                ]
+            )
+        )
+        run_id = await send_chat(client, "activity stream test")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        history, queue = EVENT_BUS.subscribe(_UUID(run_id))
+        EVENT_BUS.unsubscribe(_UUID(run_id), queue)
+        acts = [e for e in history if e["type"] == "activity"]
+        assert any(
+            e["payload"].get("step_type") == "skill" and e["payload"].get("entity_name")
+            for e in acts
+        ), "running steps must announce themselves with an entity name"
+        assert any(e["payload"].get("status") == "completed" for e in acts)
+        thinks = [e for e in history if e["type"] == "thinking"]
+        assert any("pondering" in str(e["payload"].get("text")) for e in thinks)
+        assert run["final_answer"] == "final merged answer"

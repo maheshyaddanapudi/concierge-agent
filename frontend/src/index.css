@@ -140,3 +140,89 @@ pre {
 .a2ui-answer h3 {
   @apply font-display text-accent-300;
 }
+
+/* ── themes (spec §8.7) ─────────────────────────────────────────
+   default = the mission-control @theme above. The three brand-flavored
+   themes override the same custom properties; applied via
+   <html data-theme="..."> and persisted in localStorage. */
+
+/* anthropic — warm paper-dark neutrals, Claude terracotta accent */
+:root[data-theme='anthropic'] {
+  --color-void-950: #141312;
+  --color-void-900: #1c1a18;
+  --color-void-850: #232019;
+  --color-void-800: #2b2822;
+  --color-accent-300: #eba58a;
+  --color-accent-400: #da7756;
+  --color-accent-500: #cc785c;
+  --color-accent-600: #a85b38;
+  --color-slate-950: #141312;
+  --color-slate-900: #201d1a;
+  --color-slate-800: #33302a;
+  --color-slate-700: #4a463d;
+  --color-slate-600: #6b6559;
+  --color-slate-500: #8c8577;
+  --color-slate-400: #aaa294;
+  --color-slate-300: #c8c1b2;
+  --color-slate-200: #e2ddd1;
+  --color-slate-100: #f0ede4;
+  --color-indigo-300: #eba58a;
+  --color-indigo-400: #da7756;
+  --color-indigo-500: #cc785c;
+  --color-indigo-600: #a85b38;
+  --color-indigo-900: #4a2617;
+}
+
+/* openai — pure neutral grays, ChatGPT green accent */
+:root[data-theme='openai'] {
+  --color-void-950: #0d0d0d;
+  --color-void-900: #171717;
+  --color-void-850: #1e1e1e;
+  --color-void-800: #262626;
+  --color-accent-300: #6be0bd;
+  --color-accent-400: #2ebd94;
+  --color-accent-500: #10a37f;
+  --color-accent-600: #0c8266;
+  --color-slate-950: #0d0d0d;
+  --color-slate-900: #171717;
+  --color-slate-800: #2a2a2a;
+  --color-slate-700: #3f3f3f;
+  --color-slate-600: #565656;
+  --color-slate-500: #737373;
+  --color-slate-400: #9a9a9a;
+  --color-slate-300: #bdbdbd;
+  --color-slate-200: #dcdcdc;
+  --color-slate-100: #f0f0f0;
+  --color-indigo-300: #6be0bd;
+  --color-indigo-400: #2ebd94;
+  --color-indigo-500: #10a37f;
+  --color-indigo-600: #0c8266;
+  --color-indigo-900: #0a3d31;
+}
+
+/* google — cool gray surfaces, Gemini blue accent */
+:root[data-theme='google'] {
+  --color-void-950: #131314;
+  --color-void-900: #1e1f20;
+  --color-void-850: #242628;
+  --color-void-800: #2d2f31;
+  --color-accent-300: #8ab4f8;
+  --color-accent-400: #669df6;
+  --color-accent-500: #4285f4;
+  --color-accent-600: #1a73e8;
+  --color-slate-950: #131314;
+  --color-slate-900: #1e1f20;
+  --color-slate-800: #2d2f31;
+  --color-slate-700: #444746;
+  --color-slate-600: #5e6164;
+  --color-slate-500: #80868b;
+  --color-slate-400: #9aa0a6;
+  --color-slate-300: #bdc1c6;
+  --color-slate-200: #dee1e6;
+  --color-slate-100: #f1f3f4;
+  --color-indigo-300: #8ab4f8;
+  --color-indigo-400: #669df6;
+  --color-indigo-500: #4285f4;
+  --color-indigo-600: #1a73e8;
+  --color-indigo-900: #17335c;
+}

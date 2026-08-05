@@ -91,6 +91,20 @@ class RunRecorder:
             if value is not None:
                 span.set_attribute(f"concierge.{key}", str(value))
         self._spans[step_id] = span
+        # live activity feed (spec §7.1): every step transition, so the chat
+        # can show what the run is doing right now without exposing payloads
+        self.emit(
+            "activity",
+            {
+                "step_id": str(step_id),
+                "step_type": step_type,
+                "tier": tier,
+                "kind": kind,
+                "entity_name": entity_name,
+                "node_id": node_id,
+                "status": "running",
+            },
+        )
         if emit_dispatch:
             self.emit(
                 "dispatch_start",
@@ -156,6 +170,7 @@ class RunRecorder:
             span.set_attribute("concierge.status", status)
             span.set_attribute("concierge.duration_ms", duration_ms)
             span.end()
+        self.emit("activity", {"step_id": str(step_id), "status": status})
         if emit_dispatch:
             self.emit(
                 "dispatch_end",

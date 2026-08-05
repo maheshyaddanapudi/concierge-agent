@@ -151,6 +151,23 @@ feature). The API was used only to read traces for the verification matrix.
 - Agentic: completed — 2 sub agents, 2 gates approved on cards; the concierge
   handled the /tmp listing and reformat itself (`ui-only-2*`).
 
+## Chat UX + themes verification
+
+`walkI-ux.log`, `ux-*.png`, `theme-*.png`. New chat behaviors verified live
+(genuine model, thinking on):
+
+- **Live activity ticker** — while a run works, the chat shows the step executing
+  right now (`skill · site-analyst`, tool names, plan) from the new `activity` SSE
+  events; payloads stay in traces (`ux-01`).
+- **Thinking layout** — streamed reasoning renders as its own dimmed collapsible
+  block, never mixed into the answer prose (`ux-03`).
+- **Stop** — the Send button becomes ■ Stop while a run is in flight; clicking it
+  cancelled the run mid-execution (`ux-05/06`).
+- **Queued message** — one message queued during a run, edited while waiting, and
+  auto-sent (edited text preserved) when the run finished (`ux-07/08/09`).
+- **Themes** — default / anthropic / openai / google, switched from Settings,
+  stored client-side (`theme-*-settings/chat.png`).
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and

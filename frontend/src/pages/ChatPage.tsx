@@ -269,22 +269,51 @@ function EventShell({
 
 // ── live run rendering ───────────────────────────────────────────
 
-function LiveRun({ runId, onDone }: { runId: string; onDone: () => void }) {
+function LiveRun({
+  runId,
+  onDone,
+  onStatus,
+}: {
+  runId: string
+  onDone: () => void
+  onStatus?: (status: string) => void
+}) {
   const [events, setEvents] = useState<LiveEvent[]>([])
   const [tokens, setTokens] = useState('')
+  const [thinking, setThinking] = useState('')
+  const [active, setActive] = useState<Record<string, string>>({})
   const [hitlResolved, setHitlResolved] = useState(false)
 
   useEffect(() => {
     setEvents([])
     setTokens('')
+    setThinking('')
+    setActive({})
     const stop = streamRun(
       runId,
       (event) => {
         if (event.type === 'token') {
           setTokens((t) => t + String(event.payload.text ?? ''))
+        } else if (event.type === 'thinking') {
+          setThinking((t) => t + String(event.payload.text ?? ''))
+        } else if (event.type === 'activity') {
+          // live ticker: what the run is doing right now (payloads stay in traces)
+          const p = event.payload
+          setActive((a) => {
+            const next = { ...a }
+            const id = String(p.step_id)
+            if (p.status === 'running') {
+              const what = String(p.entity_name ?? p.node_id ?? '')
+              next[id] = what ? `${String(p.step_type)} · ${what}` : String(p.step_type)
+            } else {
+              delete next[id]
+            }
+            return next
+          })
         } else {
           setEvents((es) => [...es, event])
           if (event.type === 'hitl_request') setHitlResolved(false)
+          if (event.type === 'run_status') onStatus?.(String(event.payload.status))
         }
       },
       onDone,
@@ -292,6 +321,8 @@ function LiveRun({ runId, onDone }: { runId: string; onDone: () => void }) {
     return stop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId])
+
+  const ticker = Object.values(active).slice(-3)
 
   const dispatchState = useMemo(() => {
     const ended = new Map<string, string>()
@@ -364,6 +395,22 @@ function LiveRun({ runId, onDone }: { runId: string; onDone: () => void }) {
             return null
         }
       })}
+      {ticker.length > 0 && (
+        <div className="flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-widest text-slate-500">
+          <span className="size-1.5 animate-pulse rounded-full bg-accent-400" />
+          {ticker.join('  ›  ')}
+        </div>
+      )}
+      {thinking && (
+        <details className="animate-rise rounded-md border border-slate-800/60 bg-void-900/40 px-3 py-2">
+          <summary className="cursor-pointer select-none font-mono text-[10px] uppercase tracking-widest text-slate-500">
+            ∴ model thinking
+          </summary>
+          <div className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-500">
+            {thinking}
+          </div>
+        </details>
+      )}
       {tokens && (
         <div className="animate-rise whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
           {tokens}
@@ -387,6 +434,8 @@ export function ChatPage() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const { data: detail } = useConversation(conversationId)
   const [liveRunId, setLiveRunId] = useState<string | null>(null)
+  const [liveStatus, setLiveStatus] = useState<string>('running')
+  const [queued, setQueued] = useState(false)
   const [message, setMessage] = useState('')
   const [searchParams] = useSearchParams()
   const invalidate = useInvalidate()
@@ -413,14 +462,34 @@ export function ChatPage() {
 
   const send = async () => {
     if (!message.trim()) return
+    if (liveRunId) {
+      // one message can wait its turn; it stays editable in the composer
+      setQueued(true)
+      return
+    }
     const body: Record<string, unknown> = { message }
     if (conversationId) body.conversation_id = conversationId
     const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
     setConversationId(result.conversation_id)
     setLiveRunId(result.run_id)
+    setLiveStatus('running')
     setMessage('')
     invalidate('conversations')
   }
+
+  const stopRun = async () => {
+    if (!liveRunId) return
+    await api.post(`/runs/${liveRunId}/cancel`).catch(() => {})
+  }
+
+  // fire the queued message once the current run is done
+  useEffect(() => {
+    if (liveRunId === null && queued) {
+      setQueued(false)
+      if (message.trim()) void send()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveRunId, queued])
 
   const liveDone = () => {
     invalidate('conversations', 'runs')
@@ -515,18 +584,34 @@ export function ChatPage() {
           )}
           {liveRunId && (
             <div className="max-w-[85%]">
-              <LiveRun runId={liveRunId} onDone={liveDone} />
+              <LiveRun runId={liveRunId} onDone={liveDone} onStatus={setLiveStatus} />
             </div>
           )}
           <div ref={bottomRef} />
         </div>
 
         <div className="border-t border-slate-800/70 bg-void-950/60 p-4 backdrop-blur">
+          {queued && liveRunId && (
+            <div className="mb-1.5 flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-widest text-amber-400">
+              <span className="animate-blink">⏳</span> 1 message queued — sends when the agent
+              finishes (edit it below)
+              <button
+                className="text-slate-500 underline-offset-2 hover:text-slate-300 hover:underline"
+                onClick={() => setQueued(false)}
+              >
+                discard
+              </button>
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <TextArea
               rows={2}
               value={message}
-              placeholder="Ask the concierge… (Enter to send, Shift+Enter for newline)"
+              placeholder={
+                liveRunId
+                  ? 'Type a message to queue it — it sends when the agent finishes…'
+                  : 'Ask the concierge… (Enter to send, Shift+Enter for newline)'
+              }
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -536,9 +621,20 @@ export function ChatPage() {
               }}
               className="!font-sans !text-sm"
             />
-            <Button variant="primary" onClick={send} disabled={!message.trim()}>
-              Send ⏎
-            </Button>
+            {liveRunId && liveStatus !== 'completed' ? (
+              <div className="flex flex-col gap-1.5">
+                <Button variant="danger" onClick={stopRun}>
+                  ■ Stop
+                </Button>
+                <Button variant="secondary" onClick={send} disabled={!message.trim() || queued}>
+                  Queue ⏎
+                </Button>
+              </div>
+            ) : (
+              <Button variant="primary" onClick={send} disabled={!message.trim()}>
+                Send ⏎
+              </Button>
+            )}
           </div>
         </div>
       </div>

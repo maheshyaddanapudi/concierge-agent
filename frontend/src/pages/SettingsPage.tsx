@@ -12,6 +12,7 @@ import {
   useSettings,
 } from '../api/hooks'
 import type { ModelParams } from '../api/types'
+import { THEMES, applyTheme, currentTheme, type Theme } from '../theme'
 import {
   Button,
   ErrorNote,
@@ -169,6 +170,7 @@ export function SettingsPage() {
   const invalidate = useInvalidate()
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [theme, setTheme] = useState<Theme>(currentTheme())
 
   const act = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label)
@@ -388,6 +390,38 @@ export function SettingsPage() {
             ))}
           </div>
         )}
+      </Section>
+
+      <Section title="Appearance">
+        <Field label="Theme" hint="stored in this browser — applies instantly, no backend setting">
+          <div className="flex flex-wrap gap-2">
+            {THEMES.map((t) => (
+              <Button
+                key={t}
+                variant={theme === t ? 'primary' : 'secondary'}
+                onClick={() => {
+                  applyTheme(t)
+                  setTheme(t)
+                }}
+              >
+                <span
+                  className="mr-1.5 inline-block size-2 rounded-full"
+                  style={{
+                    background:
+                      t === 'default'
+                        ? '#14b8a6'
+                        : t === 'anthropic'
+                          ? '#cc785c'
+                          : t === 'openai'
+                            ? '#10a37f'
+                            : '#4285f4',
+                  }}
+                />
+                {t}
+              </Button>
+            ))}
+          </div>
+        </Field>
       </Section>
 
       <Section title="Data">

@@ -27,3 +27,17 @@ def text_from_content(content: Any) -> str:
                     parts.append(text)
         return "".join(parts)
     return str(content)
+
+
+def thinking_from_content(content: Any) -> str:
+    """Concatenate reasoning text so it can be shown as its own layout —
+    never mixed into the prose (see text_from_content)."""
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            text = block.get("thinking")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
