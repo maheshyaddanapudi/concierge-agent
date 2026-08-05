@@ -105,6 +105,38 @@ agent both flagged by the LLM judge and cancelled; a legitimate borderline flag
 confirmed via "Save anyway"), and proves implicit sub agent selection works with a
 **path-free description**. See `complete_retest/README.md` for the shot-by-shot map.
 
+## Multi-capability orchestration (one neutral prompt, no capability vocabulary)
+
+`walkF-multiagent.log`, `walkG-complex.log`, `multi-*.png`. A four-part prompt in
+plain user language ("give me the gist of…", "find out from the web and keep what
+you learn in a file…", "turn these rough notes into a bullet list", "what's sitting
+in /tmp?") with thinking enabled, against a registry offering two HITL-gated sub
+agents, an unmapped skill, and an unmapped exposed tool:
+
+- **Graph mode** (`multi-06*`): the planner decomposed unprompted into
+  `custom_sub_agent→site-analyst` + `custom_sub_agent→research-concierge` +
+  `direct_tool→sitefiles.list_directory`, answered the trivial reformat itself, and
+  the run paused at **two parallel HITL gates approved one at a time** before
+  aggregating all four answers.
+- **Agentic mode** (`multi-05*`): the concierge dispatched both sub agents
+  sequentially (two gates, two approvals), called the exposed tool directly for the
+  /tmp listing, and inlined the reformat — all four parts answered, ~30 traced tool
+  calls including the real web fetch and the workspace file write.
+- Neither model delegated the trivial reformat to the unmapped `notes-formatter`
+  skill — both rationally inlined it; the rung-4 unmapped-skill path is proven
+  separately (explicit ask → fallback → isolated skill loop; plus the scripted
+  walk and pytest ladder coverage).
+
+This scenario surfaced and fixed three real orchestration bugs the simpler walks
+could not reach: (1) parallel HITL gates erroring on resume (one decision now
+answers one live gate and the run re-pauses for the rest, stale interrupts are
+skipped, finished workers replay from their recorded results); (2) plans that mix
+a `direct_answer` with capability entries silently dropped the entries (both now
+execute and merge at aggregation); (3) the seeded `max_tool_iterations` was too
+tight for genuine web research with thinking (runtime setting, raised in the demo
+stack; the agentic mode's retry → full-catalog escalation recovery worked as
+designed while the budget was still tight — `walkF-multiagent.log`).
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
