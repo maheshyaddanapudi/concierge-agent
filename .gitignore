@@ -219,3 +219,7 @@ __marimo__/
 
 # environment-local build artifacts (proxy CA injected at image build)
 .build-ca.crt
+
+# Node
+node_modules/
+frontend/dist/
