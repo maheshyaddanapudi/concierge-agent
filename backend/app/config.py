@@ -6,6 +6,7 @@ database, never in the UI, never logged.
 
 from functools import lru_cache
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,15 @@ class AppConfig(BaseSettings):
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_env_means_unset(cls, v: object, info: ValidationInfo) -> object:
+        # compose passes `${VAR:-}`, so a variable absent from .env arrives
+        # as "" — treat that as unset, not as a value to parse
+        if isinstance(v, str) and v.strip() == "" and info.field_name is not None:
+            return cls.model_fields[info.field_name].get_default()
+        return v
 
 
 @lru_cache
