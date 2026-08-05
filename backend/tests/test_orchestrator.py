@@ -138,6 +138,31 @@ class TestGraphModeBasics:
         contents = [m["content"] for m in conv["messages"]]
         assert contents == ["first message", "first answer", "follow-up", "second answer"]
 
+    async def test_direct_answer_plus_entries_both_execute(self, client: AsyncClient) -> None:
+        """A plan may answer a trivial part directly AND dispatch entries for
+        the rest — the entries must still run, and the direct part must be
+        merged by the aggregator rather than short-circuiting the run."""
+        skill = await create_skill(name=f"mix-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do part two",
+                    "depends_on": [],
+                }
+            ],
+            direct_answer="part one handled directly",
+        )
+        fake_llm.push_ai("part two result")
+        fake_llm.push_ai("Merged: both parts")
+        run_id = await send_chat(client, "two part request")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "direct_skill" in route_rungs(run), "the planned entry must still dispatch"
+        assert run["final_answer"] == "Merged: both parts"
+        assert steps_of_type(run, "aggregate"), "aggregator must merge, not short-circuit"
+
 
 class TestResolutionLadder:
     async def test_rung1_direct_tool(self, client: AsyncClient) -> None:

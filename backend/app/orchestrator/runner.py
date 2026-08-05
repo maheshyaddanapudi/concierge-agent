@@ -229,7 +229,9 @@ async def _pending_interrupts(graph: Any, config: dict[str, Any]) -> tuple[list[
     return pending, live
 
 
-async def _resume_command(graph: Any, config: dict[str, Any], resume: dict[str, Any]) -> Command:
+async def _resume_command(
+    graph: Any, config: dict[str, Any], resume: dict[str, Any]
+) -> Command[Any]:
     """One POST /hitl decision answers ONE gate. Parallel dispatch can leave
     several interrupts pending at once — target the first LIVE one by id so
     the run pauses again for the remaining gates instead of erroring."""

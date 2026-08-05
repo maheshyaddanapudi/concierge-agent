@@ -184,7 +184,10 @@ async def resolve_node(state: OrchestratorState) -> dict[str, Any]:
 
 
 def after_plan(state: OrchestratorState) -> str:
-    if state.get("direct_answer") is not None:
+    # a direct_answer only short-circuits when the planner produced NO
+    # entries — for multi-part requests it may answer the trivial part
+    # directly while still planning capability entries for the rest
+    if state.get("direct_answer") is not None and not state.get("entries"):
         return "aggregate"
     if state.get("use_fallback"):
         return "fallback"
@@ -309,13 +312,17 @@ async def fallback_node(state: OrchestratorState) -> dict[str, Any]:
 async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
     """Final merge; aggregator tokens stream as SSE `token` events."""
     ctx = require_run_context()
-    if state.get("direct_answer") is not None:
+    if state.get("direct_answer") is not None and not state.get("entries"):
         answer = str(state["direct_answer"])
         ctx.recorder.emit("token", {"text": answer})
         return {"answer": answer}
     ref, model = await _aggregator_model()
     step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator", model=ref)
-    outputs = state.get("outputs", {})
+    outputs = dict(state.get("outputs", {}))
+    if state.get("direct_answer"):
+        # the planner answered part of the request itself — merge it with
+        # the dispatched outputs instead of discarding either
+        outputs["planner-direct"] = {"status": "ok", "output": str(state["direct_answer"])}
     formatted = "\n\n".join(
         f"[{entry_id}] status={o.get('status')}\n" + str(o.get("output") or o.get("error") or "")
         for entry_id, o in sorted(outputs.items())
