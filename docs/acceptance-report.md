@@ -57,6 +57,44 @@ provider 400 — now id-suffixed on collision), and stdio MCP subprocesses lost
 deployment network env (now passed through). A UI gap found during the browser
 walk was fixed too: reopening a conversation now re-attaches to its paused run.
 
+## Determinism verification (genuine model, chat-driven, UI screenshots)
+
+`walkD-determinism.log`, `walkD-results.json`, `walkD2-results.json`, `determinism-*.png`.
+Question under test: does the system dispatch a sub agent *without* being told to,
+and which layers of the system are deterministic?
+
+**Implicit routing (nobody names the sub agent)** — "Please summarize the file
+/tmp/site-notes.txt for me":
+
+- *With a decoy in the registry* (the `extras.read_text_file` tool left exposed from
+  the live-sync test, rooted at `/etc`): graph mode picked the exposed tool 3/3 times
+  (rung 1 is cheaper than a sub agent), the tool denied the path, and the runs
+  completed with honest "could not read" answers. Agentic mode did the same 2/2.
+- *Decoy removed* (`determinism-03`): the same prompt dispatched **site-analyst by
+  description alone**, 3/3 — graph ×2 and agentic ×1 — each pausing at the HITL gate
+  and completing after approval (`determinism-08/09/10 a–e`).
+- Conclusion: **yes, sub agents kick off unprompted** — selection is description-driven
+  model judgment over the live registry, and the *exposure configuration decides the
+  candidate set*. Registry hygiene (what is exposed, how things are described) is the
+  steering wheel.
+
+**Repeatability of the constrained path** — "Use the site-analyst sub agent…" ×3:
+route identical 3/3 (`custom_sub_agent→site-analyst`), DAG node order identical 3/3
+(dispatch → work → gate → finish), HITL exactly once each. Bounded variation stayed
+inside the skill loop (the work node called its bound tool once in one run, twice in
+the others) and in the answer prose — never in the route, the DAG order, or isolation.
+
+**Deterministic ladder rule** — same skill ask with exposure flipped: exposed →
+`direct_skill→summarize-site` (rung 1, no HITL); unexposed → `custom_sub_agent→site-analyst`
+(rung 3, HITL gate) (`determinism-06/07`). The rung tracked the registry rule exactly,
+not the model's mood.
+
+| Layer | Verdict | Evidence |
+|---|---|---|
+| Resolution ladder, DAG order, HITL mechanics, tool isolation | Deterministic | batch C ×3 identical, batch D rule flip, 163 pytest |
+| Planner/router/skill-loop choices (schema-forced, catalog-bound, call-limited) | Partially deterministic | batch C: same route/path, varying inner tool iterations |
+| Capability selection on ambiguous asks, answer prose, todos | Non-deterministic (steerable via exposure/descriptions/params) | batches A/B vs A′/B′ flip after registry change |
+
 ## Hard-constraint audit
 
 `constraint-audit.txt` (executed greps + counts): exactly three compose services and
