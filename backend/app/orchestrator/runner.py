@@ -251,7 +251,11 @@ async def _emit_pending_hitl(graph: Any, config: dict[str, Any], ctx: RunContext
         value = intr.value if isinstance(intr.value, dict) else {}
         ctx.recorder.emit(
             "hitl_request",
-            {"prompt": value.get("prompt"), "node_id": value.get("node_id")},
+            {
+                "prompt": value.get("prompt"),
+                "node_id": value.get("node_id"),
+                "step_id": value.get("dispatch_step_id"),
+            },
         )
 
 

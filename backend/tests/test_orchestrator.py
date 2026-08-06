@@ -1353,3 +1353,86 @@ class TestChatPresentationContracts:
         assert roles == ["user", "error"]
         assert "planner exploded" in conv["messages"][1]["content"]
         assert conv["messages"][1]["run_id"] == run_id
+
+
+class TestLineageAndCallsigns:
+    """Chat grouping lineage (spec §7.1/§8.5): hitl_request carries the owning
+    dispatch step, activity carries parent_step_id; ephemeral workers get
+    per-run phonetic callsigns with their skill composition."""
+
+    async def test_hitl_request_carries_dispatch_step_and_activity_parents(
+        self, client: AsyncClient
+    ) -> None:
+        from uuid import UUID as _U
+
+        from app.factory.worker import sanitize_tool_name
+        from app.orchestrator.context import EVENT_BUS
+        from app.settings_store import update_settings
+
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_mode": "agentic"})
+        s1 = await create_skill(name=f"lin-{uuid4().hex[:4]}")
+        agent = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(s1.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Continue?"},
+                ],
+                "edges": [
+                    {"from": "START", "to": "work"},
+                    {"from": "work", "to": "gate"},
+                    {"from": "gate", "to": "END"},
+                ],
+            },
+            name=f"lineage-{uuid4().hex[:4]}",
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": f"dispatch_{sanitize_tool_name(agent.name)}",
+                    "args": {"task": "work"},
+                    "id": "d1",
+                }
+            ],
+        )
+        fake_llm.push_ai("work out")
+        run_id = await send_chat(client, "lineage test")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+        history, queue = EVENT_BUS.subscribe(_U(run_id))
+        EVENT_BUS.unsubscribe(_U(run_id), queue)
+        dispatch = next(e for e in history if e["type"] == "dispatch_start")
+        gate = next(e for e in history if e["type"] == "hitl_request")
+        assert gate["payload"]["step_id"] == dispatch["payload"]["step_id"]
+        acts = [e for e in history if e["type"] == "activity" and e["payload"].get("step_type")]
+        assert any(
+            a["payload"].get("parent_step_id") == dispatch["payload"]["step_id"] for a in acts
+        ), "worker-internal steps must carry the dispatch step as parent"
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": ""})
+        fake_llm.push_ai("done")
+        await wait_run(client, run_id, {"completed", "failed"})
+
+    async def test_worker_callsigns_sequence_and_composition(self) -> None:
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.ladder import resolve_capability
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "callsign test")
+        set_run_context(
+            RunContext(
+                run_id=run.id, mode="agentic", recorder=RunRecorder(run.id),
+                settings={}, callbacks=[],
+            )
+        )
+        s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}")
+        s2 = await create_skill(name=f"cs-two-{uuid4().hex[:4]}")
+        r1 = await resolve_capability(
+            {"type": "spin_worker", "skill_ids": [str(s1.id), str(s2.id)]}
+        )
+        r2 = await resolve_capability({"type": "spin_worker", "skill_ids": [str(s2.id)]})
+        assert r1.entity_name == f"worker-alpha ({s1.name}+{s2.name})"
+        assert r2.entity_name == f"worker-bravo ({s2.name})"
+        assert r1.payload["callsign"] == "worker-alpha"
+        assert r2.payload["callsign"] == "worker-bravo"

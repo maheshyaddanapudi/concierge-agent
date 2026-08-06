@@ -206,14 +206,22 @@ async def _dynamic_resolution(session: Any, skill_ids: list[str]) -> Resolution:
         snaps.append(await snapshot_skill(session, skill))
     if not snaps:
         raise ResolutionError("spin_worker needs at least one skill")
+    # callsign + composition: worker-alpha (web-research+file-ops) — the
+    # per-run callsign keeps parallel ephemeral workers distinguishable in
+    # rails/ticker/trace; composition says what it wraps without opening it
+    from app.orchestrator.context import get_run_context
+
+    ctx = get_run_context()
+    callsign = ctx.next_worker_callsign() if ctx is not None else "worker-alpha"
+    composition = "+".join(str(s.get("name", "?")) for s in snaps)
     return Resolution(
         rung="dynamic_worker",
         tier="sub_agent",
         kind="dynamic",
         source="dynamic",
         entity_id=None,
-        entity_name="ephemeral-worker",
-        payload={"skills": snaps},
+        entity_name=f"{callsign} ({composition})",
+        payload={"skills": snaps, "callsign": callsign},
     )
 
 
@@ -456,12 +464,22 @@ async def invoke_worker_with_hitl(
                     {
                         "prompt": pending_interrupt.get("prompt"),
                         "node_id": pending_interrupt.get("node_id"),
+                        # spec §7.1: gates carry the dispatch step they belong
+                        # to so the chat can nest the card under its sub agent
+                        "step_id": str(parent_step_id) if parent_step_id else None,
                     },
                 )
             suppress_emit = False
             # worker_thread lets the runner tell live gates from stale ones
-            # when several parallel dispatches interrupt at once
-            decision = interrupt({**pending_interrupt, "worker_thread": thread_id})
+            # when several parallel dispatches interrupt at once; the dispatch
+            # step id rides along so resume re-announcements keep lineage
+            decision = interrupt(
+                {
+                    **pending_interrupt,
+                    "worker_thread": thread_id,
+                    "dispatch_step_id": str(parent_step_id) if parent_step_id else None,
+                }
+            )
             graph_input = Command(resume=decision)
             pending_interrupt = None
         state = await worker.ainvoke(graph_input, config=config)

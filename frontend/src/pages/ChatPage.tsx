@@ -151,14 +151,44 @@ function RouteCard({ payload }: { payload: Record<string, unknown> }) {
   )
 }
 
+// one nested line inside a dispatch group: a skill node, tool call, or gate
+// the sub agent is running right now (spec §8.5 — grouped under its owner)
+type ChildStep = {
+  id: string
+  parent: string | null
+  stepType: string
+  name: string | null
+  nodeId: string | null
+  status: string
+}
+
+function ChildStepLine({ step }: { step: ChildStep }) {
+  const failed = step.status === 'failed'
+  const done = step.status !== 'running'
+  return (
+    <div className="flex items-center gap-2 pl-4 font-mono text-[10px] uppercase tracking-wider">
+      <span className={failed ? 'text-rose-400' : done ? 'text-slate-500' : 'text-accent-400'}>
+        {failed ? '✕' : done ? '■' : '▶'}
+      </span>
+      <span className="text-slate-500">{step.stepType}</span>
+      <span className={failed ? 'text-rose-300' : done ? 'text-slate-400' : 'text-accent-300'}>
+        {step.name ?? step.nodeId ?? ''}
+      </span>
+      <span className="ml-auto text-slate-600">{failed ? 'failed' : done ? 'done' : '…'}</span>
+    </div>
+  )
+}
+
 function DispatchCard({
   payload,
   done,
   failed,
+  children,
 }: {
   payload: Record<string, unknown>
   done: boolean
   failed: boolean
+  children?: React.ReactNode
 }) {
   return (
     <div
@@ -189,6 +219,7 @@ function DispatchCard({
           {failed ? 'failed' : done ? 'complete' : 'running'}
         </span>
       </div>
+      {children != null && <div className="mt-2 space-y-1.5">{children}</div>}
       {!done && !failed && <div className="sweep-track mt-2" />}
     </div>
   )
@@ -287,6 +318,7 @@ function LiveRun({
   const [tokens, setTokens] = useState('')
   const [thinking, setThinking] = useState('')
   const [active, setActive] = useState<Record<string, string>>({})
+  const [steps, setSteps] = useState<Record<string, ChildStep>>({})
   const [hitlResolved, setHitlResolved] = useState(false)
 
   useEffect(() => {
@@ -294,6 +326,7 @@ function LiveRun({
     setTokens('')
     setThinking('')
     setActive({})
+    setSteps({})
     const stop = streamRun(
       runId,
       (event) => {
@@ -314,6 +347,27 @@ function LiveRun({
               delete next[id]
             }
             return next
+          })
+          // step registry with lineage: children render nested under their
+          // owning dispatch rail (spec §8.5 grouping)
+          setSteps((s) => {
+            const id = String(p.step_id)
+            if (p.status === 'running' && p.step_type != null) {
+              return {
+                ...s,
+                [id]: {
+                  id,
+                  parent: p.parent_step_id != null ? String(p.parent_step_id) : null,
+                  stepType: String(p.step_type),
+                  name: p.entity_name != null ? String(p.entity_name) : null,
+                  nodeId: p.node_id != null ? String(p.node_id) : null,
+                  status: 'running',
+                },
+              }
+            }
+            const prev = s[id]
+            if (!prev) return s
+            return { ...s, [id]: { ...prev, status: String(p.status ?? 'completed') } }
           })
         } else {
           setEvents((es) => [...es, event])
@@ -340,6 +394,25 @@ function LiveRun({
   // keep only the latest plan card (todo list updates supersede)
   const lastPlanIdx = events.map((e) => e.type).lastIndexOf('plan')
   const lastHitlIdx = events.map((e) => e.type).lastIndexOf('hitl_request')
+  // the active gate's owning dispatch step — nests the card under its rail
+  const hitlTarget =
+    lastHitlIdx >= 0 && events[lastHitlIdx].payload.step_id != null
+      ? String(events[lastHitlIdx].payload.step_id)
+      : null
+  const railIds = useMemo(
+    () =>
+      new Set(
+        events.filter((e) => e.type === 'dispatch_start').map((e) => String(e.payload.step_id)),
+      ),
+    [events],
+  )
+  const childrenOf = (railId: string): ChildStep[] =>
+    Object.values(steps).filter(
+      (s) =>
+        s.parent === railId &&
+        s.id !== railId &&
+        ['skill', 'tool_call', 'hitl'].includes(s.stepType),
+    )
 
   return (
     <div className="space-y-2">
@@ -352,17 +425,39 @@ function LiveRun({
           case 'dispatch_start': {
             const stepId = String(event.payload.step_id)
             const status = dispatchState.get(stepId)
+            const kids = childrenOf(stepId)
+            const ownGate = hitlTarget === stepId
             return (
               <DispatchCard
                 key={i}
                 payload={event.payload}
                 done={status !== undefined}
                 failed={status === 'failed'}
-              />
+              >
+                {kids.length > 0 || ownGate ? (
+                  <>
+                    {kids.map((s) => (
+                      <ChildStepLine key={s.id} step={s} />
+                    ))}
+                    {ownGate && (
+                      <div className="pl-4">
+                        <HitlCard
+                          payload={events[lastHitlIdx].payload}
+                          runId={runId}
+                          resolved={hitlResolved}
+                          onResolved={() => setHitlResolved(true)}
+                        />
+                      </div>
+                    )}
+                  </>
+                ) : null}
+              </DispatchCard>
             )
           }
           case 'hitl_request':
-            return i === lastHitlIdx ? (
+            // gates with a known owner render nested inside that rail above;
+            // ownerless gates (root-level capabilities) render here
+            return i === lastHitlIdx && (hitlTarget == null || !railIds.has(hitlTarget)) ? (
               <HitlCard
                 key={i}
                 payload={event.payload}

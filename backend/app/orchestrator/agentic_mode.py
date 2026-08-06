@@ -46,7 +46,10 @@ def _spin_worker_tool() -> StructuredTool:
             kind="dynamic",
             source="dynamic",
         )
-        result = await execute_resolution(resolution, task, "agentic:spin_worker")
+        # unique node id per spin: parallel workers must not share the
+        # checkpoint thread ("agentic:spin_worker" would collide)
+        node_id = f"agentic:{resolution.payload.get('callsign', 'spin_worker')}"
+        result = await execute_resolution(resolution, task, node_id)
         if result.get("status") != "ok":
             return f"worker failed: {result.get('error')}"
         return str(result.get("output", ""))

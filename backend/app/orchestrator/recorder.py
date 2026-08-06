@@ -97,6 +97,7 @@ class RunRecorder:
             "activity",
             {
                 "step_id": str(step_id),
+                "parent_step_id": str(parent_step_id) if parent_step_id else None,
                 "step_type": step_type,
                 "tier": tier,
                 "kind": kind,
