@@ -190,7 +190,28 @@ async def _dynamic_resolution(session: Any, skill_ids: list[str]) -> Resolution:
         raise ResolutionError("dynamic worker fallback is disabled")
     snaps: list[dict[str, Any]] = []
     for sid in skill_ids:
-        skill = await session.get(Skill, UUID(sid))
+        try:
+            skill = await session.get(Skill, UUID(sid))
+        except ValueError:
+            # the agentic model sometimes passes a skill NAME here — accept a
+            # unique active-name match rather than failing the whole run
+            matches = list(
+                (
+                    await session.execute(
+                        select(Skill).where(
+                            Skill.name == sid,
+                            Skill.deleted_at.is_(None),
+                            Skill.status == "active",
+                        )
+                    )
+                ).scalars()
+            )
+            if len(matches) != 1:
+                raise ResolutionError(
+                    f"{sid!r} is not a skill id (uuid) and does not name exactly one "
+                    "active skill — pass registry skill ids"
+                ) from None
+            skill = matches[0]
         if skill is None or skill.deleted_at is not None or skill.status != "active":
             raise ResolutionError(f"skill {sid} is not active")
         snaps.append(await snapshot_skill(session, skill))

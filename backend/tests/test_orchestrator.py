@@ -1144,3 +1144,51 @@ class TestLiveEvents:
         thinks = [e for e in history if e["type"] == "thinking"]
         assert any("pondering" in str(e["payload"].get("text")) for e in thinks)
         assert run["final_answer"] == "final merged answer"
+
+
+class TestSpinWorkerIdTolerance:
+    """spin_worker gets its skill_ids from the agentic MODEL — malformed ids
+    must degrade (name fallback or tool-level error message), never kill the
+    run with a raw ValueError."""
+
+    async def test_dynamic_resolution_accepts_unique_skill_name(self) -> None:
+        from app.orchestrator.ladder import resolve_capability
+
+        skill = await create_skill(name=f"byname-{uuid4().hex[:6]}")
+        res = await resolve_capability({"type": "spin_worker", "skill_ids": [skill.name]})
+        assert res.rung == "dynamic_worker"
+        assert res.payload["skills"][0]["id"] == str(skill.id)
+
+    async def test_dynamic_resolution_rejects_garbage_as_resolution_error(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        with pytest.raises(ResolutionError):
+            await resolve_capability({"type": "spin_worker", "skill_ids": ["no-such-skill"]})
+
+    async def test_dynamic_resolution_rejects_ambiguous_name(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        name = f"dup-{uuid4().hex[:6]}"
+        await create_skill(name=name)
+        await create_skill(name=name)
+        with pytest.raises(ResolutionError):
+            await resolve_capability({"type": "spin_worker", "skill_ids": [name]})
+
+    async def test_spin_worker_tool_degrades_to_error_message(self) -> None:
+        from app.orchestrator.agentic_mode import _spin_worker_tool
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.recorder import RunRecorder
+
+        run_id = uuid4()
+        set_run_context(
+            RunContext(
+                run_id=run_id,
+                mode="agentic",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
+            )
+        )
+        tool = _spin_worker_tool()
+        out = await tool.coroutine(skill_ids=["not-a-skill"], task="anything")
+        assert "could not spin a worker" in out
