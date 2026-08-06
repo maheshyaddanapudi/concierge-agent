@@ -126,7 +126,7 @@ export interface Conversation {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
   answer_ui?: { a2ui: unknown[] } | null

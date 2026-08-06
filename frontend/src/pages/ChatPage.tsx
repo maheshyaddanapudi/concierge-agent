@@ -180,6 +180,11 @@ function DispatchCard({
             {String(payload.kind)}
           </span>
         )}
+        {payload.entity_name != null && (
+          <span className={failed ? 'text-rose-300' : done ? 'text-slate-400' : 'text-accent-300'}>
+            {String(payload.entity_name)}
+          </span>
+        )}
         <span className="ml-auto text-slate-600">
           {failed ? 'failed' : done ? 'complete' : 'running'}
         </span>
@@ -590,6 +595,14 @@ export function ChatPage() {
               <div key={i} className="flex justify-end">
                 <div className="max-w-[70%] break-words rounded-lg rounded-br-sm border border-accent-500/30 bg-accent-500/10 px-3.5 py-2 text-sm text-slate-100">
                   {m.content}
+                </div>
+              </div>
+            ) : m.role === 'error' ? (
+              // a run that produced no answer still shows why — same look as
+              // the live error event, so reloads keep user→response pairing
+              <div key={i} className="max-w-[85%]">
+                <div className="break-words rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                  ✕ {m.content}
                 </div>
               </div>
             ) : (

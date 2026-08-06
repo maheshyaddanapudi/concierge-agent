@@ -1307,3 +1307,49 @@ class TestToolFailureContainment:
 
         with pytest.raises(ToolExecutionFailed):
             await mw.awrap_tool_call(self._request(), handler)
+
+
+class TestChatPresentationContracts:
+    """dispatch events carry the entity name (spec §7.1) and reloaded
+    conversations keep user→response interleaving for failed runs."""
+
+    async def test_dispatch_events_carry_entity_name(self, client: AsyncClient) -> None:
+        from uuid import UUID as _U
+
+        from app.orchestrator.context import EVENT_BUS
+
+        skill = await create_skill(name=f"named-disp-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do it",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("skill output")
+        fake_llm.push_ai("Aggregated.")
+        run_id = await send_chat(client, "named dispatch test")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        history, queue = EVENT_BUS.subscribe(_U(run_id))
+        EVENT_BUS.unsubscribe(_U(run_id), queue)
+        starts = [e for e in history if e["type"] == "dispatch_start"]
+        ends = [e for e in history if e["type"] == "dispatch_end"]
+        assert starts and ends
+        assert any(e["payload"].get("entity_name") == skill.name for e in starts)
+        assert any(e["payload"].get("entity_name") == skill.name for e in ends)
+
+    async def test_failed_run_error_appears_in_conversation(self, client: AsyncClient) -> None:
+        fake_llm.push_error(RuntimeError("planner exploded for the test"))
+        fake_llm.push_error(RuntimeError("planner exploded for the test"))
+        run_id = await send_chat(client, "history error test")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        conv = (await client.get(f"{API}/conversations/{run['conversation_id']}")).json()
+        roles = [m["role"] for m in conv["messages"]]
+        assert roles == ["user", "error"]
+        assert "planner exploded" in conv["messages"][1]["content"]
+        assert conv["messages"][1]["run_id"] == run_id

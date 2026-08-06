@@ -95,6 +95,16 @@ async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[s
                     "answer_ui": run.answer_ui,
                 }
             )
+        elif run.status in {"failed", "cancelled"} and run.error:
+            # reloaded history mirrors the live view: a run that produced no
+            # answer still shows WHY, keeping user→response interleaving
+            messages.append(
+                {
+                    "role": "error",
+                    "content": run.error,
+                    "run_id": str(run.id),
+                }
+            )
     return {
         "id": str(conversation.id),
         "title": conversation.title,

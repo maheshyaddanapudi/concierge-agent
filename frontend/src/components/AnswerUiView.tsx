@@ -34,6 +34,10 @@ export function AnswerUiView({ messages }: { messages: unknown[] }) {
   if (!processor || surfaces.length === 0) return null
   return (
     <div className="a2ui-answer mt-2 rounded-lg border border-accent-500/20 bg-slate-900/40 p-3">
+      {/* labeled as a companion view so it never reads as a second answer */}
+      <div className="mb-2 font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">
+        answer panel · structured view
+      </div>
       <MarkdownContext.Provider value={renderMarkdown}>
         {surfaces.map((surface) => (
           <A2uiSurface key={surface.id} surface={surface} />

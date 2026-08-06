@@ -108,7 +108,13 @@ class RunRecorder:
         if emit_dispatch:
             self.emit(
                 "dispatch_start",
-                {"step_id": str(step_id), "tier": tier, "kind": kind, "entity_id": entity_id},
+                {
+                    "step_id": str(step_id),
+                    "tier": tier,
+                    "kind": kind,
+                    "entity_id": entity_id,
+                    "entity_name": entity_name,
+                },
             )
         return step_id
 
@@ -179,6 +185,7 @@ class RunRecorder:
                     "tier": labels.get("tier"),
                     "kind": labels.get("kind"),
                     "entity_id": labels.get("entity_id"),
+                    "entity_name": labels.get("entity_name"),
                     "status": status,
                 },
             )
