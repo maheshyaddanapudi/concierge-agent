@@ -11,3 +11,6 @@ Respond with the JSON object only.
 Text:
 
 {text}
+
+Strict format requirements: "key_points" and "entities" MUST be JSON arrays
+of strings (never a single string, never null — use [] when nothing applies).

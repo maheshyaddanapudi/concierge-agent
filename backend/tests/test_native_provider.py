@@ -188,3 +188,36 @@ class TestSubgraphTool:
         result = await summarize_and_structure("raw text to summarize")
         assert result["title"] == "T"
         assert result["key_points"] == ["k1"]
+
+
+class TestSummarizeRepairRetry:
+    """Structured-output schema violations get one repair retry with the
+    validation errors fed back (same strict+repair pattern as the planner)."""
+
+    async def test_invalid_first_attempt_then_repair_succeeds(self) -> None:
+        from app.db import get_session_factory
+        from app.llm import fake as fake_llm
+        from app.native.tools import summarize_and_structure
+        from app.settings_store import update_settings
+
+        async with get_session_factory()() as session:
+            await update_settings(session, {"default_model": "fake:scripted"})
+        fake_llm.push_error(ValueError("key_points: Input should be a valid list"))
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": "StructuredSummary",
+                    "args": {
+                        "title": "T",
+                        "summary": "S.",
+                        "key_points": ["a", "b", "c"],
+                        "entities": ["X"],
+                    },
+                    "id": "sas-repair",
+                }
+            ],
+        )
+        out = await summarize_and_structure("raw text to summarize")
+        assert out["key_points"] == ["a", "b", "c"]
+        assert out["entities"] == ["X"]

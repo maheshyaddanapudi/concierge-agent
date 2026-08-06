@@ -46,7 +46,17 @@ def build_summarize_graph() -> Any:
         ref, params = await _resolve_default_model()
         model = get_model(ref, params).with_structured_output(StructuredSummary)
         prompt = load_prompt("summarize_and_structure").format(text=state["text"])
-        result = await model.ainvoke(prompt, config=config)
+        try:
+            result = await model.ainvoke(prompt, config=config)
+        except Exception as exc:
+            # strict schema + one repair retry (same pattern as planner
+            # validation, spec §7.1): feed the validation errors back once
+            repair = (
+                f"{prompt}\n\nYour previous attempt failed schema validation:\n{exc}\n"
+                "Return a JSON object matching the schema EXACTLY — key_points and "
+                "entities MUST be JSON arrays of strings."
+            )
+            result = await model.ainvoke(repair, config=config)
         assert isinstance(result, StructuredSummary)
         return {"result": result.model_dump()}
 
