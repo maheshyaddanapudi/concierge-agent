@@ -236,6 +236,33 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         token = TOOL_USAGE_HOLDER.set(holder)
         try:
             result = await handler(request.override(tool=tool))
+        except Exception as exc:
+            from langgraph.errors import GraphInterrupt
+
+            if isinstance(exc, GraphInterrupt):
+                raise
+            # infrastructure failure inside the tool (dead MCP server, native
+            # call crash) — spec §5: a dead server surfaces as a TOOL error.
+            # Strict loops keep node error-edge semantics; agentic/fallback
+            # loops get an error ToolMessage so the loop can self-correct
+            # instead of the whole run dying on a raw exception.
+            await _finish_tool_call(
+                step_id,
+                status="failed",
+                output=None,
+                error=str(exc),
+                usage=holder,
+                kind=meta.get("kind"),
+                source=meta.get("source"),
+            )
+            if self._strict_tool_errors:
+                raise ToolExecutionFailed(f"tool {name!r} failed: {exc}") from exc
+            return ToolMessage(
+                content=f"tool {name!r} failed: {exc}",
+                name=name,
+                tool_call_id=request.tool_call["id"],
+                status="error",
+            )
         finally:
             TOOL_USAGE_HOLDER.reset(token)
         is_error = isinstance(result, ToolMessage) and result.status == "error"

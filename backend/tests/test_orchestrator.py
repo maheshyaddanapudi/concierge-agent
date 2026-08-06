@@ -1226,3 +1226,84 @@ class TestSpinWorkerStrictIds:
 
         await mw.awrap_model_call(_Req(), handler)
         assert f"(skill id: {skill.id})" in seen["system"]
+
+
+class TestToolFailureContainment:
+    """spec §5: a dead MCP server (or any exception inside a tool) surfaces
+    as a TOOL error. Agentic/fallback loops receive an error ToolMessage and
+    keep going; strict skill loops keep node error-edge semantics."""
+
+    @staticmethod
+    def _mw_with_raising_tool(strict: bool) -> Any:
+        from langchain_core.tools import StructuredTool
+
+        from app.orchestrator.middleware import ToolsRegistryMiddleware
+
+        async def boom() -> str:
+            raise RuntimeError("MCP server dead-beef is not connected")
+
+        tool = StructuredTool.from_function(coroutine=boom, name="boom_tool", description="boom")
+        mw = ToolsRegistryMiddleware(mode="exposed", strict_tool_errors=strict)
+        mw._current = {"boom_tool": tool}
+        mw._meta = {"boom_tool": {"kind": "mcp", "source": "dynamic", "id": str(uuid4())}}
+        return mw, tool
+
+    @staticmethod
+    def _request() -> Any:
+        class _Req:
+            tool_call = {"name": "boom_tool", "id": "call_1", "args": {}}
+
+            def override(self, **kw: Any) -> "_Req":
+                req = _Req()
+                for key, value in kw.items():
+                    setattr(req, key, value)
+                return req
+
+        return _Req()
+
+    async def test_agentic_mode_contains_tool_exception(self) -> None:
+        from langchain_core.messages import ToolMessage
+
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "containment test agentic")
+        run_id = run.id
+        set_run_context(
+            RunContext(
+                run_id=run_id, mode="agentic", recorder=RunRecorder(run_id),
+                settings={}, callbacks=[],
+            )
+        )
+        mw, tool = self._mw_with_raising_tool(strict=False)
+
+        async def handler(req: Any) -> Any:
+            return await req.tool.ainvoke(req.tool_call["args"])
+
+        result = await mw.awrap_tool_call(self._request(), handler)
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "is not connected" in str(result.content)
+
+    async def test_strict_mode_keeps_error_edge_semantics(self) -> None:
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.middleware import ToolExecutionFailed
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "containment test strict")
+        run_id = run.id
+        set_run_context(
+            RunContext(
+                run_id=run_id, mode="graph", recorder=RunRecorder(run_id),
+                settings={}, callbacks=[],
+            )
+        )
+        mw, tool = self._mw_with_raising_tool(strict=True)
+
+        async def handler(req: Any) -> Any:
+            return await req.tool.ainvoke(req.tool_call["args"])
+
+        with pytest.raises(ToolExecutionFailed):
+            await mw.awrap_tool_call(self._request(), handler)
