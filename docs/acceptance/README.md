@@ -77,6 +77,28 @@ Same registries, same ladder policy, same recording labels; different orchestrat
 
 ## Post-campaign refresh (user-directed)
 
+### Second refresh — hierarchical grouping + themed gate card
+
+After the live-run view gained hierarchical grouping (each sub-agent rail
+now nests its own skill runs, tool calls, and approval card via
+`parent_step_id`/`step_id` lineage) and the HITL card was retinted per
+brand theme (monochrome for openai, Google blue for google, warm amber for
+anthropic/default), every screenshot showing a gate moment was re-captured
+through the UI from re-runs of the same scenarios on the new build:
+
+- `06-trial-graph-thinking-on/05-t1-hitl-gate-1.png`
+- `07-trial-graph-thinking-off/04-t2-hitl-gate-1.png` + `05-t2-hitl-gate-2.png`
+- `08-trial-agentic-thinking-on/05-t3-hitl-gate-1.png`
+- `09-trial-agentic-thinking-off/04-t4-hitl-gate-1.png` + `05-t4-hitl-gate-2.png`
+- `11-hitl-deny-and-queue/01-deny-card.png`
+
+`08-trial-agentic-thinking-on/06-t3-hitl-gate-2.png` was removed: how many
+times a worker asks for approval is decided by the model per run, and the
+refresh runs for T3 gated once. The multi-gate story is still evidenced by
+stage 07 and stage 09 (both retain a gate-1 + gate-2 pair).
+
+### First refresh
+
 Two screenshots were re-captured manually through the UI on build `d9bbe98`
 after chat-presentation review; the rest of the set is the original single
 pass:
