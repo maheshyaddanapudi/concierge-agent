@@ -336,7 +336,7 @@ Runs top to bottom on a fresh `docker compose up`, no restarts:
 4. Toggle `direct_exposure` on one tool; verify next chat's trace shows a rung-1 `route` step.
 5. Build custom sub agent with a branch, an error edge, and an HITL node; introduce a validation error, see it rejected inline, fix, save.
 6. Chat: multi-turn — message 1 invokes the new sub agent (approve the HITL card mid-run); message 2 is a follow-up referencing message 1's result and succeeds using conversation history.
-7. Ask something no sub agent covers → trace shows rung-4 ephemeral `dynamic` worker.
+7. Ask something no capability covers → the planner reports no confident match and the trace shows the `fallback` route rung (full-catalog fallback, §7.0/§7.2 — unexposed skills are invisible to the planner by design, so it never force-spins a worker). The rung-4 ephemeral `dynamic` worker remains reachable when a plan or the agentic loop names specific skills via `spin_worker(skill_ids)` and is covered per-rung by the API test suite.
 8. Kill the new MCP server process → invoke again → error edge path taken, run completes via fallback branch; server shows `error` status; reconnect from Settings.
 9. Runs page: full trace with nested native-tool steps, tokens, route reasons; cancel a running run; retry a failed one.
 10. Settings: change planner model → next run's trace labels show it; if a second provider key is configured, switch `default_model` to that provider (e.g. `google_genai:gemini-2.5-pro`) and rerun step 6's chat successfully — same registries, same code; open HITL queue; purge run history.
