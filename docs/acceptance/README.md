@@ -75,6 +75,22 @@ Same registries, same ladder policy, same recording labels; different orchestrat
 5. `summarize-and-structure` structured output occasionally failed schema validation (non-array fields) → one planner-style repair retry (`2d8559e`).
 6. Theme polish surfaced by evidence review: the toggle knob rode the button's default padding and drifted outside its track (invisible white-on-white in light themes), and the a2ui answer cards stayed dark on light themes because the global `color-scheme: dark` forced their `light-dark()` styling — fixed with an explicit knob anchor + visibility ring and per-theme `color-scheme` (`4c66119`); this evidence set is captured on the fixed build.
 
+## Post-campaign refresh (user-directed)
+
+Two screenshots were re-captured manually through the UI on build `d9bbe98`
+after chat-presentation review; the rest of the set is the original single
+pass:
+
+- `08-trial-agentic-thinking-on/05-t3-hitl-gate-1.png` — dispatch rails now
+  show the running entity's NAME on every tier (`SUB_AGENT · CUSTOM ·
+  site-analyst`, `SKILL · CUSTOM · notes-formatter`), from the same
+  reproduced scenario (agentic + thinking on, BIG prompt, first gate).
+- `13-failure-retry-cancel/11-retried-run-conversation-bottom.png` — reloaded
+  history now interleaves correctly: the failed run shows its ✕ error bubble
+  (matching the live view) between the original prompt and the retry, and the
+  A2UI panel is captioned "answer panel · structured view" so it reads as a
+  companion to the text answer rather than a duplicate response.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
