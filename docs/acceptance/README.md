@@ -18,7 +18,7 @@ Prompt discipline: chat prompts never name a capability, skill, tool, or sub age
 | `07-trial-graph-thinking-off/` | Trial T2 (same assertions, thinking off, anthropic theme) | §7.1 |
 | `08-trial-agentic-thinking-on/` | Trial T3 + live todos + gates + trace; **mid-conversation tool exposure used live in the same session** | §7.2, §14.11 |
 | `09-trial-agentic-thinking-off/` | Trial T4 (google theme) | §7.2 |
-| `10-fallback-uncovered-ask/` | Uncovered ask → planner no-confident-match → **full-catalog fallback rung** in trace | §7.0, §8.5, §14.7* |
+| `10-fallback-uncovered-ask/` | Uncovered ask → planner no-confident-match → **full-catalog fallback rung** in trace | §7.0, §8.5, §14.7 |
 | `11-hitl-deny-and-queue/` | **Deny** with note + denied outcome; second paused run resolved from the **Settings HITL queue** | §8.5, §8.7 |
 | `12-stop-and-queued-message/` | Send→Stop mid-run → cancelled; **queued draft auto-fires** after the run ends | §8.5 |
 | `13-failure-retry-cancel/` | MCP deactivate → run degrades via error branch → reactivate + reconnect-all; **fallbacks disabled via UI → genuine failed run with clear message → re-enable → Retry (re-plan) → completed**; cancel + delete from Runs page | §8.6, §14.8–9 |
@@ -33,14 +33,14 @@ Prompt discipline: chat prompts never name a capability, skill, tool, or sub age
 
 One neutral four-part prompt (file gist · web research saved to workspace · notes reformatting · directory listing), zero capability vocabulary, across all four mode × thinking combinations:
 
-| Trial | Mode | Thinking | Sub agents dispatched | Direct skill | Direct tool | HITL gates | Status |
-|---|---|---|---|---|---|---|---|
-| T1 | graph | on (med/high) | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory | 1 approved | completed |
-| T2 | graph | off | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory | 1 approved | completed |
-| T3 | agentic | on (med/high) | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory (loop tool call) | 2 approved | completed |
-| T4 | agentic | off | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory (loop tool call) | 2 approved | completed |
+| Trial | Mode | Thinking | Sub agents dispatched | Direct skill | Direct tool | HITL gates | Fallback | Status |
+|---|---|---|---|---|---|---|---|---|
+| T1 | graph | on (med/high) | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory | 1 approved | none | completed |
+| T2 | graph | off | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory | 2 approved | none | completed |
+| T3 | agentic | on (med/high) | site-analyst, research-concierge | notes-formatter | sitefiles.list_directory (loop tool call) | 2 approved | none | completed |
+| T4 | agentic | off | research-concierge, site-analyst | notes-formatter | sitefiles.list_directory (loop tool call) | 2 approved | none | completed |
 
-Every trial produced **two different sub agents + a direct skill call + a direct tool call**, chosen by the orchestrator alone. T3/T4 additionally logged a `use_full_catalog` escalation (traced as rung `fallback`) that the loop used to recover from a transient inner-tool hiccup — visible in their traces. The research part fetched the live web (sources cited) and wrote `/workspace/langgraph-notes.txt`.
+Every trial produced **two different sub agents + a direct skill call + a direct tool call**, chosen by the orchestrator alone, with zero fallbacks — a fully clean matrix. The research part fetched the live web (sources cited) and wrote the findings to a `/workspace` file.
 
 ## Acceptance script (spec §14) mapping
 
@@ -50,7 +50,7 @@ Every trial produced **two different sub agents + a direct skill call + a direct
 4. Expose a tool, rung-1 route in next trace → `03-tools/` + T1 trace (`direct_tool` rung) ✅
 5. Sub agent with branch + HITL; validation error rejected inline, fixed, saved → `05-sub-agents/` ✅
 6. Multi-turn: message 1 invokes the new sub agent with HITL approve; message 2 follows up via history → `06-trial-graph-thinking-on/` ✅
-7. Uncovered ask → see *spec observation* below: the run engages the **full-catalog fallback** (`10-fallback-uncovered-ask/`), per §7.2 ✅*
+7. Uncovered ask → no confident match → **full-catalog fallback rung** in the trace (§14.7 as amended to match §7.2) → `10-fallback-uncovered-ask/` ✅
 8. Server down → error path → run completes via error branch; server status visible; reconnect from Settings → `13-failure-retry-cancel/` ✅
 9. Full trace with nested steps/tokens/route reasons; cancel a running run; retry a failed one → trial traces + `13-failure-retry-cancel/` ✅
 10. Model change reflected (Sonnet 5 set via UI, visible in trace labels); HITL queue; purge → `01`, `11`, `17` ✅ (second-provider switch N/A: only the Anthropic key is configured; providers panel in `01` shows google/openai unconfigured)
@@ -64,7 +64,7 @@ Same registries, same ladder policy, same recording labels; different orchestrat
 - **Capability access**: graph mode resolves each plan entry through the pure-code ladder (`route` steps show the rung chosen and why). Agentic mode receives capabilities *as tools* — the three registry middlewares project the live registries into every model call, and each invocation is still logged as a route-equivalent step, which is why the traces stay comparable.
 - **Parallelism**: graph mode dispatches independent plan entries concurrently (`Send`); agentic mode is sequential except for parallel tool calls within a single turn.
 - **Failure posture**: graph mode fails a run when the plan can't validate/resolve (see the forced failure in `13`); the agentic loop self-corrects — tool errors come back as messages, with `use_full_catalog` escalation and `spin_worker` (strict UUID contract, corrective feedback) as traced fallbacks.
-- **HITL**: identical interrupt/resume machinery — the same approval card pauses either mode (1 gate in graph trials, 2 in agentic ones here, because the agentic loop dispatched the two gated workflows separately).
+- **HITL**: identical interrupt/resume machinery — the same approval card pauses either mode.
 
 ## Bugs found by this campaign cycle (all fixed, tested, committed before the final pass)
 
@@ -73,9 +73,9 @@ Same registries, same ladder policy, same recording labels; different orchestrat
 3. Structlog never rendered tracebacks (`format_exc_info` missing) (`a70c467`).
 4. A dead MCP server raised through the tool proxy and killed agentic runs → contained as an error `ToolMessage` (strict skill loops keep error-edge semantics) (`768cc4e`).
 5. `summarize-and-structure` structured output occasionally failed schema validation (non-array fields) → one planner-style repair retry (`2d8559e`).
+6. Theme polish surfaced by evidence review: the toggle knob rode the button's default padding and drifted outside its track (invisible white-on-white in light themes), and the a2ui answer cards stayed dark on light themes because the global `color-scheme: dark` forced their `light-dark()` styling — fixed with an explicit knob anchor + visibility ring and per-theme `color-scheme` (`4c66119`); this evidence set is captured on the fixed build.
 
-## Observations & proposals
+## Observations
 
-- **Spec §14 step 7 vs §7.2**: step 7 expects an uncovered ask to show a rung-4 dynamic worker, but §7.2 (later, more specific) says a no-confident-match engages the full-catalog fallback "rather than … force-spinning a worker" — and rung 4 is invisible to the graph planner by design (unexposed skills aren't in its summaries). The implementation follows §7.2; rung 4 remains reachable via agentic `spin_worker` and is covered per-rung by the API test suite. **Proposal**: reword §14.7 to "trace shows the full-catalog fallback rung (or a dynamic worker when the planner names uncovered skills via spin_worker)".
+- Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
 - The fallback banner renders during live runs (route rails are a live-stream affordance; reloaded conversations show answers, with routing detail in the trace — where rung `fallback` is recorded, satisfying §7.0's tracing invariant).
-- During stage 14's global "Reconnect all", the `fetch` stdio server transiently flipped to `error` (captured honestly in `14-runs-and-ops/`); a single reconnect restored it — the status pill + reconnect flow behaving as specified.

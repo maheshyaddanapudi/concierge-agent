@@ -12,19 +12,19 @@
 ━━ 05-sub-agents
   throwaway deleted: true
 ━━ 06-trial-graph-thinking-on
-  t1: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=1 tokens=14908->4378
+  t1: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=1 tokens=14265->3978
   t1 routes: custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | direct_skill→notes-formatter | direct_tool→sitefiles.list_directory
   follow-up (history): completed
 ━━ 07-trial-graph-thinking-off
-  t2: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=1 tokens=12641->3129
+  t2: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=2 tokens=21957->6799
   t2 routes: custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | direct_skill→notes-formatter | direct_tool→sitefiles.list_directory
 ━━ 08-trial-agentic-thinking-on
-  t3: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=true gates=2 tokens=17388->5203
-  t3 routes: direct_skill→notes-formatter | custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | fallback→full-catalog escalation
+  t3: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=2 tokens=16817->5963
+  t3 routes: direct_skill→notes-formatter | custom_sub_agent→site-analyst | custom_sub_agent→research-concierge
   live-sync follow-up: completed
 ━━ 09-trial-agentic-thinking-off
-  t4: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=true gates=2 tokens=18733->5807
-  t4 routes: direct_skill→notes-formatter | custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | fallback→full-catalog escalation
+  t4: completed · agents=[research-concierge,site-analyst](2) directSkill=true directTool=true fallback=false gates=2 tokens=19126->6037
+  t4 routes: direct_skill→notes-formatter | custom_sub_agent→research-concierge | custom_sub_agent→site-analyst
 ━━ 10-fallback-uncovered-ask
   uncovered ask: completed rungs=[fallback]
 ━━ 11-hitl-deny-and-queue
@@ -42,7 +42,7 @@
   retry after re-enable: completed
   error-branch recovery (no failed status) — retry demoed on cancel below if possible
 ━━ 14-runs-and-ops
-  servers after ops: fetch:error filesystem:active sitefiles:active
+  servers after ops: fetch:active filesystem:active sitefiles:active
 ━━ 15-static-guards
 ━━ 16-theme-gallery
 ━━ 17-data-purge
