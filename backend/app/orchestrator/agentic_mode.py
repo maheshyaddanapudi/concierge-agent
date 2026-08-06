@@ -27,8 +27,11 @@ logger = structlog.get_logger("orchestrator.agentic")
 
 def _spin_worker_tool() -> StructuredTool:
     async def spin_worker(skill_ids: list[str], task: str) -> str:
-        """Build a one-off ephemeral worker over the given registry skill ids
-        (rung-4 fallback) and run it on the task."""
+        """Build a one-off ephemeral worker over registry skills (rung-4
+        fallback) and run it on the task. skill_ids MUST be registry skill
+        ids (uuids) exactly as shown in the Available skills catalog — never
+        skill names; if a skill is not in the catalog, call use_full_catalog
+        first to see the full registry."""
         ctx = require_run_context()
         try:
             resolution = await resolve_capability({"type": "spin_worker", "skill_ids": skill_ids})

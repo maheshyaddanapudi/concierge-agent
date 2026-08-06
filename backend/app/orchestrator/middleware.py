@@ -331,7 +331,12 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
         lines: list[str] = []
         for tool in tools:
             snap = self._current[tool.name]
-            lines.append(f"- {tool.name}: {snap.get('description') or snap['name']}")
+            # the registry id is part of the catalog line: spin_worker's
+            # contract is ids-only, so the model must be able to quote them
+            lines.append(
+                f"- {tool.name} (skill id: {snap.get('id')}): "
+                f"{snap.get('description') or snap['name']}"
+            )
         system = request.system_message
         section = "\n\nAvailable skills (each runs an isolated specialist loop):\n" + (
             "\n".join(lines) if lines else "(none)"

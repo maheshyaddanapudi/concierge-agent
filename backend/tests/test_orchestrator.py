@@ -1146,18 +1146,21 @@ class TestLiveEvents:
         assert run["final_answer"] == "final merged answer"
 
 
-class TestSpinWorkerIdTolerance:
-    """spin_worker gets its skill_ids from the agentic MODEL — malformed ids
-    must degrade (name fallback or tool-level error message), never kill the
-    run with a raw ValueError."""
+class TestSpinWorkerStrictIds:
+    """spin_worker gets its skill_ids from the agentic MODEL. The contract is
+    strict — registry uuids only, never names — and violations must surface
+    as corrective tool feedback (ResolutionError → message), never as a raw
+    ValueError that kills the run. The model can comply because the injected
+    skills catalog carries each skill's registry id."""
 
-    async def test_dynamic_resolution_accepts_unique_skill_name(self) -> None:
-        from app.orchestrator.ladder import resolve_capability
+    async def test_dynamic_resolution_rejects_names_with_guidance(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
 
         skill = await create_skill(name=f"byname-{uuid4().hex[:6]}")
-        res = await resolve_capability({"type": "spin_worker", "skill_ids": [skill.name]})
-        assert res.rung == "dynamic_worker"
-        assert res.payload["skills"][0]["id"] == str(skill.id)
+        with pytest.raises(ResolutionError) as exc:
+            await resolve_capability({"type": "spin_worker", "skill_ids": [skill.name]})
+        assert "uuid" in str(exc.value)
+        assert "use_full_catalog" in str(exc.value)
 
     async def test_dynamic_resolution_rejects_garbage_as_resolution_error(self) -> None:
         from app.orchestrator.ladder import ResolutionError, resolve_capability
@@ -1165,14 +1168,19 @@ class TestSpinWorkerIdTolerance:
         with pytest.raises(ResolutionError):
             await resolve_capability({"type": "spin_worker", "skill_ids": ["no-such-skill"]})
 
-    async def test_dynamic_resolution_rejects_ambiguous_name(self) -> None:
+    async def test_dynamic_resolution_accepts_valid_uuid(self) -> None:
+        from app.orchestrator.ladder import resolve_capability
+
+        skill = await create_skill(name=f"byid-{uuid4().hex[:6]}")
+        res = await resolve_capability({"type": "spin_worker", "skill_ids": [str(skill.id)]})
+        assert res.rung == "dynamic_worker"
+        assert res.payload["skills"][0]["id"] == str(skill.id)
+
+    async def test_dynamic_resolution_rejects_unknown_uuid(self) -> None:
         from app.orchestrator.ladder import ResolutionError, resolve_capability
 
-        name = f"dup-{uuid4().hex[:6]}"
-        await create_skill(name=name)
-        await create_skill(name=name)
         with pytest.raises(ResolutionError):
-            await resolve_capability({"type": "spin_worker", "skill_ids": [name]})
+            await resolve_capability({"type": "spin_worker", "skill_ids": [str(uuid4())]})
 
     async def test_spin_worker_tool_degrades_to_error_message(self) -> None:
         from app.orchestrator.agentic_mode import _spin_worker_tool
@@ -1192,3 +1200,29 @@ class TestSpinWorkerIdTolerance:
         tool = _spin_worker_tool()
         out = await tool.coroutine(skill_ids=["not-a-skill"], task="anything")
         assert "could not spin a worker" in out
+        assert "uuid" in out
+
+    async def test_skills_catalog_prompt_lines_carry_registry_ids(self) -> None:
+        from app.orchestrator.middleware import SkillsRegistryMiddleware
+
+        skill = await create_skill(name=f"catalog-{uuid4().hex[:6]}", direct_exposure=True)
+        mw = SkillsRegistryMiddleware(mode="exposed")
+
+        class _Req:
+            tools: list[Any] = []
+            system_message = None
+
+            def override(self, **kw: Any) -> "_Req":
+                req = _Req()
+                for key, value in kw.items():
+                    setattr(req, key, value)
+                return req
+
+        seen: dict[str, Any] = {}
+
+        async def handler(req: Any) -> str:
+            seen["system"] = req.system_message.text if req.system_message is not None else ""
+            return "ok"
+
+        await mw.awrap_model_call(_Req(), handler)
+        assert f"(skill id: {skill.id})" in seen["system"]

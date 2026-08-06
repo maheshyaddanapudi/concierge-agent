@@ -191,27 +191,16 @@ async def _dynamic_resolution(session: Any, skill_ids: list[str]) -> Resolution:
     snaps: list[dict[str, Any]] = []
     for sid in skill_ids:
         try:
-            skill = await session.get(Skill, UUID(sid))
+            skill_id = UUID(sid)
         except ValueError:
-            # the agentic model sometimes passes a skill NAME here — accept a
-            # unique active-name match rather than failing the whole run
-            matches = list(
-                (
-                    await session.execute(
-                        select(Skill).where(
-                            Skill.name == sid,
-                            Skill.deleted_at.is_(None),
-                            Skill.status == "active",
-                        )
-                    )
-                ).scalars()
-            )
-            if len(matches) != 1:
-                raise ResolutionError(
-                    f"{sid!r} is not a skill id (uuid) and does not name exactly one "
-                    "active skill — pass registry skill ids"
-                ) from None
-            skill = matches[0]
+            # strict contract: skill_ids are registry uuids, never names —
+            # reject with guidance instead of crashing the run
+            raise ResolutionError(
+                f"{sid!r} is not a registry skill id (uuid). Pass skill ids exactly "
+                "as shown in the Available skills catalog; if the skill is not "
+                "listed, unlock the full registry first with use_full_catalog."
+            ) from None
+        skill = await session.get(Skill, skill_id)
         if skill is None or skill.deleted_at is not None or skill.status != "active":
             raise ResolutionError(f"skill {sid} is not active")
         snaps.append(await snapshot_skill(session, skill))
