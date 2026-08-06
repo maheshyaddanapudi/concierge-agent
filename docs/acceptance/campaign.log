@@ -1,0 +1,50 @@
+━━ 00-fresh-slate
+  seeds: servers=2 skills=2 subagents=1
+━━ 01-settings-models
+  models: default=anthropic:claude-sonnet-5/medium planner=anthropic:claude-sonnet-5/high
+━━ 02-mcp-servers
+  sitefiles active: active
+━━ 03-tools
+  list_directory exposed: true
+━━ 04-skills
+  summarize-site saved clean
+  duplicate flagged=true saved=false
+━━ 05-sub-agents
+  throwaway deleted: true
+━━ 06-trial-graph-thinking-on
+  t1: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=1 tokens=14908->4378
+  t1 routes: custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | direct_skill→notes-formatter | direct_tool→sitefiles.list_directory
+  follow-up (history): completed
+━━ 07-trial-graph-thinking-off
+  t2: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=false gates=1 tokens=12641->3129
+  t2 routes: custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | direct_skill→notes-formatter | direct_tool→sitefiles.list_directory
+━━ 08-trial-agentic-thinking-on
+  t3: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=true gates=2 tokens=17388->5203
+  t3 routes: direct_skill→notes-formatter | custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | fallback→full-catalog escalation
+  live-sync follow-up: completed
+━━ 09-trial-agentic-thinking-off
+  t4: completed · agents=[site-analyst,research-concierge](2) directSkill=true directTool=true fallback=true gates=2 tokens=18733->5807
+  t4 routes: direct_skill→notes-formatter | custom_sub_agent→site-analyst | custom_sub_agent→research-concierge | fallback→full-catalog escalation
+━━ 10-fallback-uncovered-ask
+  uncovered ask: completed rungs=[fallback]
+━━ 11-hitl-deny-and-queue
+  deny exercised: true
+  queue resolution exercised: true
+━━ 12-stop-and-queued-message
+  stop exercised: true
+  queued message auto-sent: completed
+━━ 13-failure-retry-cancel
+  sitefiles status: inactive
+  run with server down: completed
+  fallback toggles: full_catalog=false dynamic=false
+  run with fallbacks disabled: failed · no capability confidently matches this request and the full-catalog fallback is disabled
+  fallback toggles: full_catalog=true dynamic=true
+  retry after re-enable: completed
+  error-branch recovery (no failed status) — retry demoed on cancel below if possible
+━━ 14-runs-and-ops
+  servers after ops: fetch:error filesystem:active sitefiles:active
+━━ 15-static-guards
+━━ 16-theme-gallery
+━━ 17-data-purge
+  runs after purge: 0
+WALK ONE COMPLETE
