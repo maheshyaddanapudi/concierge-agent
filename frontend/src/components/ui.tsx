@@ -154,14 +154,17 @@ export function Toggle({
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cx(
-          'relative h-5 w-9 rounded-full transition-colors',
-          checked ? 'bg-indigo-600' : 'bg-slate-700',
+          'relative h-5 w-9 shrink-0 rounded-full border p-0 transition-colors',
+          checked ? 'border-indigo-500/60 bg-indigo-600' : 'border-slate-600/60 bg-slate-700',
         )}
       >
         <span
           className={cx(
-            'absolute top-0.5 size-4 rounded-full bg-white transition-transform',
-            checked ? 'translate-x-4' : 'translate-x-0.5',
+            // explicit left anchor keeps the knob inside the 36px track on
+            // every browser (buttons carry default padding otherwise), and
+            // the ring keeps a white knob visible on light theme surfaces
+            'absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow-sm ring-1 ring-black/20 transition-transform',
+            checked && 'translate-x-4',
           )}
         />
       </button>

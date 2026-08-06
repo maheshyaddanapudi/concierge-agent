@@ -153,6 +153,9 @@ pre {
 :root[data-theme='anthropic'],
 :root[data-theme='openai'],
 :root[data-theme='google'] {
+  /* the brand themes are light: flip color-scheme so every light-dark()
+     consumer — the a2ui answer cards, native form controls — follows */
+  color-scheme: light;
   /* amber is the human-gate color: its text roles must darken on paper */
   --color-amber-200: #92400e;
   --color-amber-300: #b45309;
