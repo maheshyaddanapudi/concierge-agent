@@ -248,7 +248,7 @@ function HitlCard({
     }
   }
   return (
-    <div className="animate-rise rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 shadow-[0_0_24px_-8px_rgba(245,158,11,0.4)]">
+    <div className="animate-rise rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 shadow-[0_0_24px_-8px_var(--gate-glow)]">
       <div className="font-display flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-300">
         <span className="animate-blink">⏸</span> human approval required
       </div>
