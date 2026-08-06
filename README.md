@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: all six milestones complete.** Backend + admin UI live, all test suites green, and the 11-step acceptance script (spec.md §14) executed top to bottom against a fresh `docker compose up`. `spec.md` is the single source of truth; implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
+> **Status: all six milestones complete.** Backend + admin UI live, all test suites green, and the 11-step acceptance script (spec.md §14) executed top to bottom against a fresh `docker compose up`. Full manual-UI acceptance evidence — a single-pass, 125-screenshot campaign on genuine Claude Sonnet 5, covering both orchestrator modes × thinking on/off, all four themes, HITL approve/deny/queue, failure/retry, and every admin surface — lives in [docs/acceptance/](./docs/acceptance/README.md). `spec.md` is the single source of truth; implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
 
 ## Architecture at a glance
 
