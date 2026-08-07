@@ -317,16 +317,22 @@ async def _run_agentic(
 # ── control operations ───────────────────────────────────────────
 
 
-async def resume_run(run_id: UUID, decision: str, note: str = "") -> None:
+async def resume_run(
+    run_id: UUID, decision: str, note: str = "", answers: dict[str, Any] | None = None
+) -> None:
     """POST /runs/{id}/hitl (spec §7): resumes from checkpoint; approve
-    continues, deny routes the node to END with the note in state."""
+    continues, deny routes the node to END with the note in state; form-gate
+    answers ride into worker state (spec §3.5)."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
             raise ValueError("run not found")
         if run.status != "paused_hitl":
             raise ValueError(f"run is {run.status}, not paused_hitl")
-    start_run_task(run_id, resume={"decision": decision, "note": note})
+    resume: dict[str, Any] = {"decision": decision, "note": note}
+    if answers:
+        resume["answers"] = answers
+    start_run_task(run_id, resume=resume)
 
 
 async def cancel_run(run_id: UUID) -> None:

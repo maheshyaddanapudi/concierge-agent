@@ -28,6 +28,7 @@ DEFAULTS: dict[str, Any] = {
     "dynamic_worker_fallback_enabled": True,
     "direct_exposure_cap_warning": 10,
     "answer_ui_enabled": True,
+    "answer_ui_charts_enabled": True,
     "mcp_health_interval_s": 30,
     "log_level": "INFO",
     "langsmith_enabled": False,
@@ -59,6 +60,7 @@ _BOOL_KEYS = {
     "dynamic_worker_fallback_enabled",
     "langsmith_enabled",
     "answer_ui_enabled",
+    "answer_ui_charts_enabled",
     "retrieval_enabled",
 }
 _CACHE_MODES = {"bypass", "memory", "redis"}

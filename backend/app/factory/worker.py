@@ -85,6 +85,7 @@ async def snapshot_skill(session: AsyncSession, skill: Skill) -> dict[str, Any]:
         "model": skill.model,
         "model_params": skill.model_params,
         "direct_exposure": skill.direct_exposure,
+        "max_tool_iterations": skill.max_tool_iterations,
         "tools": [
             {
                 "id": str(t.id),
@@ -297,11 +298,13 @@ async def resolve_node_model(
     return ref, ModelParams.model_validate(raw) if raw else None
 
 
-async def _max_tool_iterations() -> int:
-    from app.settings_store import get_setting
+async def _max_tool_iterations(skill_snapshot: dict[str, Any] | None = None) -> int:
+    """Per-skill loop budget (spec §3.3): skill override → settings default."""
+    if skill_snapshot is not None and skill_snapshot.get("max_tool_iterations"):
+        return int(skill_snapshot["max_tool_iterations"])
+    from app.registry_cache import get_cache
 
-    async with get_session_factory()() as session:
-        return int(await get_setting(session, "max_tool_iterations"))
+    return int(await get_cache().setting("max_tool_iterations"))
 
 
 # ── graph compilation ────────────────────────────────────────────
@@ -358,7 +361,7 @@ def _make_skill_node(
                     skill_id=skill_snapshot["id"],
                     bound_tool_ids=[t["id"] for t in skill_snapshot.get("tools", [])],
                     model=model,
-                    max_tool_iterations=await _max_tool_iterations(),
+                    max_tool_iterations=await _max_tool_iterations(skill_snapshot),
                 )
             )
             agent = create_agent(model, tools=[], system_prompt=prompt, middleware=stack)
@@ -406,25 +409,26 @@ def _make_hitl_node(node: dict[str, Any]) -> Any:
     node_id = node["id"]
 
     async def run_hitl(state: WorkerState) -> dict[str, Any]:
-        decision: dict[str, Any] = interrupt(
-            {"prompt": node.get("prompt", "Approve?"), "node_id": node_id}
-        )
+        payload: dict[str, Any] = {"prompt": node.get("prompt", "Approve?"), "node_id": node_id}
+        if node.get("questions"):
+            payload["questions"] = node["questions"]  # form gate (spec §3.5)
+        decision: dict[str, Any] = interrupt(payload)
         note = str(decision.get("note", ""))
+        answers = decision.get("answers") or {}
         if decision.get("decision") == "deny":
             return {
                 "node_outputs": {
                     node_id: {"node_type": "hitl", "status": "denied", "note": note or "denied"}
                 }
             }
-        return {
-            "node_outputs": {
-                node_id: {
-                    "node_type": "hitl",
-                    "status": "ok",
-                    "output": f"approved{': ' + note if note else ''}",
-                }
-            }
-        }
+        summary = f"approved{': ' + note if note else ''}"
+        if answers:
+            answered = "; ".join(f"{k}={v}" for k, v in answers.items())
+            summary = f"{summary} — answers: {answered}"
+        out: dict[str, Any] = {"node_type": "hitl", "status": "ok", "output": summary}
+        if answers:
+            out["answers"] = answers
+        return {"node_outputs": {node_id: out}}
 
     return run_hitl
 

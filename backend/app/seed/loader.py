@@ -119,6 +119,7 @@ async def seed_native_skills(session: AsyncSession) -> None:
                 persona=doc.persona,
                 instructions=doc.instructions,
                 direct_exposure=doc.direct_exposure,
+                max_tool_iterations=doc.max_tool_iterations,
                 kind="native",
                 source="static",
                 tools=bound_tools,
@@ -128,6 +129,7 @@ async def seed_native_skills(session: AsyncSession) -> None:
             skill.description = doc.description
             skill.persona = doc.persona
             skill.instructions = doc.instructions
+            skill.max_tool_iterations = doc.max_tool_iterations
             skill.tools = bound_tools
         await session.commit()
 

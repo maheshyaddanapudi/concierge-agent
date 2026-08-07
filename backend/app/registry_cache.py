@@ -75,6 +75,7 @@ def _skill_record(s: Skill) -> dict[str, Any]:
         "model": s.model,
         "model_params": s.model_params,
         "direct_exposure": s.direct_exposure,
+        "max_tool_iterations": s.max_tool_iterations,
         "embedding": getattr(s, "embedding", None),
         "created_at": _iso(s.created_at),
         "updated_at": _iso(s.updated_at),

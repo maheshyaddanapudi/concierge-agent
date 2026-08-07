@@ -48,6 +48,7 @@ export interface Skill extends RegistryRecord {
   direct_exposure: boolean
   model: string | null
   model_params: ModelParams | null
+  max_tool_iterations: number | null
   tools: Tool[]
 }
 
@@ -108,7 +109,7 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui: unknown[] } | null
+  answer_ui: { a2ui?: unknown[]; charts?: unknown[] } | null
   error: string | null
   started_at: string | null
   finished_at: string | null
@@ -129,7 +130,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui: unknown[] } | null
+  answer_ui?: { a2ui?: unknown[]; charts?: unknown[] } | null
 }
 
 export interface ConversationDetail {

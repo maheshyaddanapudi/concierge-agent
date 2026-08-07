@@ -311,6 +311,11 @@ export function SettingsPage() {
             k="answer_ui_enabled"
             hint="model-generated A2UI panel under each answer"
           />
+          <BoolSetting
+            label="Charts in answer panel"
+            k="answer_ui_charts_enabled"
+            hint="allow chart components (bar/line/pie) — data extracted from the answer, never invented"
+          />
           <IntSetting label="Max parallel dispatch" k="max_parallel_dispatch" />
           <IntSetting label="Max plan steps" k="max_plan_steps" />
           <IntSetting

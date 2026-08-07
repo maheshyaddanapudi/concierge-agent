@@ -206,6 +206,9 @@ function SkillEditor({
   const [description, setDescription] = useState(skill?.description ?? '')
   const [persona, setPersona] = useState(skill?.persona ?? '')
   const [exposure, setExposure] = useState(skill?.direct_exposure ?? false)
+  const [maxIter, setMaxIter] = useState<string>(
+    skill?.max_tool_iterations != null ? String(skill.max_tool_iterations) : '',
+  )
   const [model, setModel] = useState<string | null>(skill?.model ?? null)
   const [params, setParams] = useState<ModelParams | null>(skill?.model_params ?? null)
   const [toolIds, setToolIds] = useState<string[]>(skill?.tools.map((t) => t.id) ?? [])
@@ -229,6 +232,7 @@ function SkillEditor({
       instructions,
       tool_ids: toolIds,
       direct_exposure: exposure,
+      max_tool_iterations: maxIter === '' ? null : Number(maxIter),
       model,
       model_params: cleanParams(params),
     }
@@ -252,6 +256,7 @@ function SkillEditor({
         description,
         instructions,
         tool_ids: toolIds,
+        max_tool_iterations: maxIter === '' ? null : Number(maxIter),
         exclude_id: skill?.id ?? null,
       })
       if (check.overlap) {
@@ -317,6 +322,20 @@ function SkillEditor({
         onParams={setParams}
         disabled={isStatic}
       />
+      <Field
+        label="Max tool iterations"
+        hint="per-skill loop budget (spec §3.3) — empty inherits the settings default; web-research ships with 20"
+      >
+        <TextInput
+          type="number"
+          min={1}
+          disabled={isStatic}
+          value={maxIter}
+          onChange={(e) => setMaxIter(e.target.value)}
+          className="max-w-28"
+          placeholder="default"
+        />
+      </Field>
       <Field label="Tool tags" hint="binding = availability, strictly — the loop sees only these">
         <TextInput
           placeholder="filter tools…"

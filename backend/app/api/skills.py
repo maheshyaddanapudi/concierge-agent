@@ -82,6 +82,7 @@ async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
         direct_exposure=body.direct_exposure,
         model=body.model,
         model_params=body.model_params,
+        max_tool_iterations=body.max_tool_iterations,
         kind="custom",
         source="dynamic",
         tools=tools,

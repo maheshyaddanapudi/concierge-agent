@@ -16,6 +16,7 @@ class SkillCreate(ApiModel):
     direct_exposure: bool = False
     model: str | None = None
     model_params: dict[str, Any] | None = None
+    max_tool_iterations: int | None = None
 
 
 class SkillOverlapCheck(ApiModel):
@@ -37,6 +38,7 @@ class SkillPatch(ApiModel):
     direct_exposure: bool | None = None
     model: str | None = None
     model_params: dict[str, Any] | None = None
+    max_tool_iterations: int | None = None
     status: Status | None = None
 
 
@@ -47,4 +49,5 @@ class SkillOut(RegistryOut):
     direct_exposure: bool
     model: str | None
     model_params: dict[str, Any] | None
+    max_tool_iterations: int | None = None
     tools: list[ToolOut] = []

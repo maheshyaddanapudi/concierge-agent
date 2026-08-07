@@ -233,7 +233,10 @@ async def run_inline_skill(
 
         model_ref, params = await resolve_node_model(skill_snapshot, {})
         model = get_model(model_ref, params)
-        max_iter = int(await get_cache().setting("max_tool_iterations"))
+        max_iter = int(
+            skill_snapshot.get("max_tool_iterations")
+            or await get_cache().setting("max_tool_iterations")
+        )
         stack = build_middleware_stack(
             SkillLoopContext(
                 skill_id=skill_snapshot.get("id"),
@@ -432,6 +435,8 @@ async def invoke_worker_with_hitl(
                     {
                         "prompt": pending_interrupt.get("prompt"),
                         "node_id": pending_interrupt.get("node_id"),
+                        # form gates (spec §3.5): questions ride to the card
+                        "questions": pending_interrupt.get("questions"),
                         # spec §7.1: gates carry the dispatch step they belong
                         # to so the chat can nest the card under its sub agent
                         "step_id": str(parent_step_id) if parent_step_id else None,

@@ -6,7 +6,8 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api, streamRun } from '../api/client'
 import { useConversation, useConversations, useInvalidate } from '../api/hooks'
 import type { SseEvent } from '../api/types'
-import { AnswerUiView } from '../components/AnswerUiView'
+import { AnswerPanel, type AnswerUiPayload } from '../components/AnswerPanel'
+import { Markdown } from '../components/Markdown'
 import { Button, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
 
 type LiveEvent = Pick<SseEvent, 'type' | 'payload'>
@@ -238,21 +239,73 @@ function HitlCard({
 }) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  interface GateQuestion {
+    id: string
+    prompt?: string
+    kind: 'approve' | 'choice' | 'text'
+    options?: string[]
+  }
+  const questions = (payload.questions as GateQuestion[] | null) ?? []
+  const isForm = questions.length > 0
+  const allAnswered = questions.every((q) => (answers[q.id] ?? '') !== '')
   const decide = async (decision: 'approve' | 'deny') => {
     setBusy(true)
     try {
-      await api.post(`/runs/${runId}/hitl`, { decision, note })
+      await api.post(`/runs/${runId}/hitl`, {
+        decision,
+        note,
+        ...(isForm && decision === 'approve' ? { answers } : {}),
+      })
       onResolved()
     } finally {
       setBusy(false)
     }
   }
+  const setAnswer = (id: string, value: string) =>
+    setAnswers((a) => ({ ...a, [id]: value }))
   return (
     <div className="animate-rise rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 shadow-[0_0_24px_-8px_var(--gate-glow)]">
       <div className="font-display flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-300">
         <span className="animate-blink">⏸</span> human approval required
       </div>
       <p className="mt-1.5 text-sm text-amber-100">{String(payload.prompt ?? 'Approve?')}</p>
+      {!resolved && isForm && (
+        <div className="mt-2.5 space-y-2.5">
+          {questions.map((q) => (
+            <div key={q.id}>
+              <div className="mb-1 font-mono text-[10px] tracking-wider text-amber-300 uppercase">
+                {q.prompt || q.id}
+              </div>
+              {q.kind === 'text' ? (
+                <input
+                  value={answers[q.id] ?? ''}
+                  onChange={(e) => setAnswer(q.id, e.target.value)}
+                  placeholder="type your answer…"
+                  className="w-full rounded-md border border-amber-500/30 bg-void-950/60 px-2.5 py-1.5 text-xs text-amber-100 placeholder:text-amber-500/40 focus:border-amber-400 focus:outline-none"
+                />
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {(q.kind === 'approve' ? ['yes', 'no'] : (q.options ?? [])).map((opt) => (
+                    <button
+                      key={opt}
+                      onClick={() => setAnswer(q.id, opt)}
+                      className={cx(
+                        'rounded-md border px-2.5 py-1 text-xs transition-colors',
+                        answers[q.id] === opt
+                          ? 'border-amber-400 bg-amber-500/25 text-amber-100'
+                          : 'border-amber-500/30 text-amber-200/70 hover:border-amber-400/60',
+                      )}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {!resolved ? (
         <div className="mt-2.5 space-y-2">
           <input
@@ -262,8 +315,12 @@ function HitlCard({
             className="w-full rounded-md border border-amber-500/30 bg-void-950/60 px-2.5 py-1.5 text-xs text-amber-100 placeholder:text-amber-500/40 focus:border-amber-400 focus:outline-none"
           />
           <div className="flex gap-2">
-            <Button variant="primary" disabled={busy} onClick={() => decide('approve')}>
-              ✓ Approve
+            <Button
+              variant="primary"
+              disabled={busy || (isForm && !allAnswered)}
+              onClick={() => decide('approve')}
+            >
+              {isForm ? '✓ Submit answers' : '✓ Approve'}
             </Button>
             <Button variant="danger" disabled={busy} onClick={() => decide('deny')}>
               ✕ Deny
@@ -512,8 +569,8 @@ function LiveRun({
         </details>
       )}
       {tokens && (
-        <div className="animate-rise whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
-          {tokens}
+        <div className="animate-rise break-words rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
+          <Markdown text={tokens} />
           <span className="animate-blink text-accent-400">▮</span>
         </div>
       )}
@@ -702,10 +759,10 @@ export function ChatPage() {
               </div>
             ) : (
               <div key={i} className="max-w-[85%]">
-                <div className="whitespace-pre-wrap break-words rounded-lg rounded-bl-sm border border-slate-800 bg-void-900/70 px-3.5 py-2 text-sm leading-relaxed text-slate-200">
-                  {m.content}
+                <div className="break-words rounded-lg rounded-bl-sm border border-slate-800 bg-void-900/70 px-3.5 py-2 text-sm leading-relaxed text-slate-200">
+                  <Markdown text={m.content} />
                 </div>
-                {m.answer_ui?.a2ui && <AnswerUiView messages={m.answer_ui.a2ui} />}
+                <AnswerPanel payload={m.answer_ui as AnswerUiPayload | null} />
                 <div className="mt-1 px-1 font-mono text-[9px] uppercase tracking-wider text-slate-600">
                   <Link to="/runs" className="hover:text-accent-400">
                     run trace ↗

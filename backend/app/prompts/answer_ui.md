@@ -16,6 +16,7 @@ Allowed component types and fields:
 - divider {}
 - link {label, url}
 - sources {urls: [..]}
+{chart_rules}
 
 User request:
 
