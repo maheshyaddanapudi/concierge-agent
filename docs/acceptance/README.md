@@ -233,6 +233,27 @@ loop budgets — exercised end to end with **Claude as default+planner
   budget** (`web-research` ships `max_tool_iterations: 20`, `40` shows the
   editor field) — the research-limit flake fix, completed clean.
 
+## Stage 22 — HITL card never stays armed after its gate is consumed (bugfix)
+
+User report: the chat HITL card sometimes stayed active-but-dead — Approve/
+Deny buttons still armed after the gate had already been decided. Root
+cause: the card's collapsed state relied only on a click-local flag, so a
+gate resolved through **any other surface** (the Settings HITL queue, a
+cancel) left the buttons up, and a failed decide (409: run no longer
+paused) left them armed too. Fix: the card now also collapses on evidence
+from the event stream — any `run_status` after the newest `hitl_request`
+that isn't `paused_hitl` means the gate was consumed — and a decide error
+collapses instead of re-arming. Verified live (Sonnet 5, graph mode,
+site-analyst approve gate):
+
+- `hitlfix-A1` — gate armed in chat (`paused_hitl`), buttons live.
+- `hitlfix-A2/A3` — the same gate approved from the **Settings HITL queue**
+  in a second tab; the chat card collapses to "resolved — resuming from
+  checkpoint…" with no buttons — the reported bug, fixed.
+- `hitlfix-A4` — run resumes and completes.
+- `hitlfix-B0/B1/B2` — regression: direct approve on the card itself still
+  collapses it and the run completes.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.

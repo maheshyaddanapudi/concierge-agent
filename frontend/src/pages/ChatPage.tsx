@@ -258,6 +258,11 @@ function HitlCard({
         ...(isForm && decision === 'approve' ? { answers } : {}),
       })
       onResolved()
+    } catch {
+      // 409: the run is no longer paused — this gate was resolved through
+      // another surface (HITL queue, cancel). Collapse rather than staying
+      // armed-but-dead.
+      onResolved()
     } finally {
       setBusy(false)
     }
@@ -451,6 +456,18 @@ function LiveRun({
   // keep only the latest plan card (todo list updates supersede)
   const lastPlanIdx = events.map((e) => e.type).lastIndexOf('plan')
   const lastHitlIdx = events.map((e) => e.type).lastIndexOf('hitl_request')
+  // a run_status event AFTER the newest gate means that gate was consumed —
+  // whether via this card, the Settings HITL queue, a cancel, or a resume
+  // replay. Never leave armed buttons on a gate the backend already closed.
+  const gateConsumed =
+    lastHitlIdx >= 0 &&
+    events.some(
+      (e, idx) =>
+        idx > lastHitlIdx &&
+        e.type === 'run_status' &&
+        String(e.payload.status) !== 'paused_hitl',
+    )
+  const gateResolved = hitlResolved || gateConsumed
   // the active gate's owning dispatch step — nests the card under its rail
   const hitlTarget =
     lastHitlIdx >= 0 && events[lastHitlIdx].payload.step_id != null
@@ -501,7 +518,7 @@ function LiveRun({
                         <HitlCard
                           payload={events[lastHitlIdx].payload}
                           runId={runId}
-                          resolved={hitlResolved}
+                          resolved={gateResolved}
                           onResolved={() => setHitlResolved(true)}
                         />
                       </div>
@@ -519,7 +536,7 @@ function LiveRun({
                 key={i}
                 payload={event.payload}
                 runId={runId}
-                resolved={hitlResolved}
+                resolved={gateResolved}
                 onResolved={() => setHitlResolved(true)}
               />
             ) : null
