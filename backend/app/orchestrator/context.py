@@ -56,6 +56,38 @@ class RunFlags:
     full_catalog: bool = False
 
 
+# ephemeral worker callsigns (spec §7.1 rung 4): sequential per run, so
+# parallel dynamic workers stay distinguishable in rails, ticker, and trace
+WORKER_CALLSIGNS = (
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliett",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+    "xray",
+    "yankee",
+    "zulu",
+)
+
+
 @dataclass
 class RunContext:
     run_id: UUID
@@ -64,6 +96,17 @@ class RunContext:
     flags: RunFlags = field(default_factory=RunFlags)
     settings: dict[str, Any] = field(default_factory=dict)
     callbacks: list[Any] = field(default_factory=list)
+    worker_count: int = 0
+    # retrieval (spec §7.4): the ranking query + ids pinned past ranking
+    query_text: str = ""
+    pinned_ids: set[str] = field(default_factory=set)
+
+    def next_worker_callsign(self) -> str:
+        n = self.worker_count
+        self.worker_count += 1
+        name = WORKER_CALLSIGNS[n % len(WORKER_CALLSIGNS)]
+        suffix = n // len(WORKER_CALLSIGNS)
+        return f"worker-{name}" if suffix == 0 else f"worker-{name}-{suffix + 1}"
 
 
 _CURRENT: ContextVar[RunContext | None] = ContextVar("run_context", default=None)

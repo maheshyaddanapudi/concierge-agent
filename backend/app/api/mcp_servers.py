@@ -62,7 +62,7 @@ async def create_server(body: McpServerCreate, session: SessionDep) -> McpServer
     manager = get_manager()
     if manager is not None:
         await manager.connect_server(server.id)
-        await session.refresh(server)
+    await session.refresh(server)
     counts = await _tool_counts(session, [server.id])
     return _to_out(server, counts.get(server.id, 0))
 
@@ -82,6 +82,9 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
     for field, value in changes.items():
         setattr(server, field, value)
     await session.commit()
+    # onupdate columns (updated_at) are expired by the flush — reload before
+    # serializing, or Pydantic's attribute access triggers lazy IO
+    await session.refresh(server)
     counts = await _tool_counts(session, [server.id])
     return _to_out(server, counts.get(server.id, 0))
 
@@ -116,6 +119,9 @@ async def delete_server(server_id: UUID, session: SessionDep) -> None:
     ).scalars():
         tool.deleted_at = now
     await session.commit()
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("tools")
     from app.mcp.manager import get_manager
 
     manager = get_manager()

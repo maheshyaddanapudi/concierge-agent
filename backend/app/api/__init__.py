@@ -2,9 +2,21 @@
 
 from fastapi import APIRouter
 
-from app.api import chat, fake_llm, mcp_servers, runs, seed, settings, skills, sub_agents, tools
+from app.api import (
+    cache,
+    chat,
+    fake_llm,
+    mcp_servers,
+    runs,
+    seed,
+    settings,
+    skills,
+    sub_agents,
+    tools,
+)
 
 api_router = APIRouter()
+api_router.include_router(cache.router)
 api_router.include_router(mcp_servers.router)
 api_router.include_router(tools.router)
 api_router.include_router(skills.router)

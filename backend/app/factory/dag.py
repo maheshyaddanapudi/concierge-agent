@@ -52,6 +52,29 @@ def validate_workflow(
             prompt = n.get("prompt")
             if not isinstance(prompt, str) or not prompt.strip():
                 errors.append(f"node {nid!r}: hitl nodes require a non-empty 'prompt'")
+            questions = n.get("questions")
+            if questions is not None:
+                # form gates (spec §3.5): ids unique, choice needs >=2 options
+                if not isinstance(questions, list) or not questions:
+                    errors.append(f"node {nid!r}: 'questions' must be a non-empty list")
+                else:
+                    qids: list[str] = []
+                    for q in questions:
+                        if not isinstance(q, dict) or not str(q.get("id") or "").strip():
+                            errors.append(f"node {nid!r}: every question needs a non-empty 'id'")
+                            continue
+                        qids.append(str(q["id"]))
+                        if q.get("kind") not in {"approve", "choice", "text"}:
+                            errors.append(
+                                f"node {nid!r} question {q['id']!r}: kind must be "
+                                "approve|choice|text"
+                            )
+                        if q.get("kind") == "choice" and len(q.get("options") or []) < 2:
+                            errors.append(
+                                f"node {nid!r} question {q['id']!r}: choice needs >=2 options"
+                            )
+                    if len(set(qids)) != len(qids):
+                        errors.append(f"node {nid!r}: question ids must be unique")
         if nid in {START, END}:
             errors.append(f"node id {nid!r} is reserved")
 

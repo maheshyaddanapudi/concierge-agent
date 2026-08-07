@@ -5,7 +5,7 @@ tool: one LLM call that converts raw text into a structured JSON summary.
 It proves the subgraph-as-tool path alongside MCP tools in the same skill.
 """
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -46,7 +46,17 @@ def build_summarize_graph() -> Any:
         ref, params = await _resolve_default_model()
         model = get_model(ref, params).with_structured_output(StructuredSummary)
         prompt = load_prompt("summarize_and_structure").format(text=state["text"])
-        result = await model.ainvoke(prompt, config=config)
+        try:
+            result = await model.ainvoke(prompt, config=config)
+        except Exception as exc:
+            # strict schema + one repair retry (same pattern as planner
+            # validation, spec §7.1): feed the validation errors back once
+            repair = (
+                f"{prompt}\n\nYour previous attempt failed schema validation:\n{exc}\n"
+                "Return a JSON object matching the schema EXACTLY — key_points and "
+                "entities MUST be JSON arrays of strings."
+            )
+            result = await model.ainvoke(repair, config=config)
         assert isinstance(result, StructuredSummary)
         return {"result": result.model_dump()}
 
@@ -68,3 +78,40 @@ async def summarize_and_structure(
     graph = build_summarize_graph()
     out: dict[str, Any] = await graph.ainvoke({"text": text}, config=config)
     return dict(out["result"])
+
+
+class _ChartSeries(BaseModel):
+    name: str = ""
+    values: list[float]
+
+
+class _ChartSpec(BaseModel):
+    """render_chart args (spec §5b): data the caller actually holds."""
+
+    kind: Literal["bar", "line", "pie"]
+    title: str = ""
+    labels: list[str]
+    series: list[_ChartSeries]
+
+
+@native_tool(
+    "render_chart",
+    "Validate and normalize a chart specification (bar, line, or pie) from data "
+    "you already hold — labels plus one or more numeric series. Use ONLY with "
+    "real data from the conversation or tool results, never invented numbers. "
+    "The normalized spec is rendered as a chart in the final answer panel.",
+)
+async def render_chart(
+    kind: str, labels: list[str], series: list[dict[str, Any]], title: str = ""
+) -> str:
+    """Pure validation/normalization — no model call, no side effects."""
+    spec = _ChartSpec.model_validate(
+        {"kind": kind, "title": title, "labels": labels, "series": series}
+    )
+    for entry in spec.series:
+        if len(entry.values) != len(spec.labels):
+            raise ValueError(
+                f"series {entry.name or '?'!r} has {len(entry.values)} values "
+                f"for {len(spec.labels)} labels"
+            )
+    return spec.model_dump_json()

@@ -27,6 +27,7 @@ class SkillDoc:
     persona: str = ""
     tools: list[str] = field(default_factory=list)
     direct_exposure: bool = False
+    max_tool_iterations: int | None = None
     instructions: str = ""
 
 
@@ -46,12 +47,16 @@ def parse_skill_document(text: str) -> SkillDoc:
     tools = meta.get("tools") or []
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise SkillDocError("'tools' must be a list of tool_key strings")
+    max_iter = meta.get("max_tool_iterations")
+    if max_iter is not None and (not isinstance(max_iter, int) or max_iter < 1):
+        raise SkillDocError("'max_tool_iterations' must be a positive integer")
     return SkillDoc(
         name=name.strip(),
         description=str(meta.get("description") or ""),
         persona=str(meta.get("persona") or ""),
         tools=list(tools),
         direct_exposure=bool(meta.get("direct_exposure", False)),
+        max_tool_iterations=max_iter,
         instructions=text[match.end() :].strip(),
     )
 

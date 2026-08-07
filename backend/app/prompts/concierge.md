@@ -13,10 +13,13 @@ How to work:
   when their description covers the request end to end).
 - Sequence dependent work across turns; issue independent tool calls in the
   same turn to run them in parallel.
-- If no capability matches the request, you have two fallbacks, in order:
-  spin_worker(skill_ids, task) builds a one-off worker over specific skills;
-  use_full_catalog() unlocks every active tool and skill in the registry when
-  the exposed selection is not enough. Use them only when genuinely needed.
+- If no capability matches the request, you have two fallbacks:
+  spin_worker(skill_ids, task) builds a one-off worker over specific skills —
+  skill_ids are the registry skill ids (uuids) shown in the Available skills
+  catalog, never skill names; use_full_catalog() unlocks every active tool
+  and skill in the registry (use it first when the skill you need is not in
+  the catalog, then spin_worker with the ids it reveals). Use both only when
+  genuinely needed.
 - A dispatched workflow may pause for human approval; when it resumes you
   will receive the tool result as usual.
 

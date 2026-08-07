@@ -26,5 +26,8 @@ class SubAgent(RegistryRecord):
     workflow: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     native_ref: Mapped[str | None] = mapped_column(String(512), default=None)
     covers_skill_ids: Mapped[list[Any] | None] = mapped_column(default=None)
+    # retrieval vector (spec §7.4): maintained best-effort on the write path
+    embedding: Mapped[list[Any] | None] = mapped_column(default=None)
+    embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)
 
     skills: Mapped[list[Skill]] = relationship(secondary=sub_agent_skills, lazy="selectin")

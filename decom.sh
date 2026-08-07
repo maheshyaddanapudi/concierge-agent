@@ -14,7 +14,7 @@ fi
 if [ "${1:-}" != "-y" ] && [ "${1:-}" != "--yes" ]; then
   printf 'This DELETES all data (registries, runs, workspace files). Continue? [y/N] '
   read -r answer
-  [ "${answer,,}" = "y" ] || { echo "aborted."; exit 0; }
+  case "$answer" in [yY]|[yY][eE][sS]) ;; *) echo "aborted."; exit 0 ;; esac
 fi
 
 docker compose down -v --remove-orphans

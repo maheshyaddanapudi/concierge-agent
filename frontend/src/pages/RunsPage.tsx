@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { useInvalidate, useRun, useRuns, useSubAgents } from '../api/hooks'
 import type { Run, RunStep } from '../api/types'
 import { RegistryTable } from '../components/RegistryTable'
-import { AnswerUiView } from '../components/AnswerUiView'
+import { AnswerPanel, type AnswerUiPayload } from '../components/AnswerPanel'
 import {
   Button,
   Chip,
@@ -173,7 +173,7 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
           <p className="whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 p-3 text-sm text-slate-200">
             {run.final_answer}
           </p>
-          {run.answer_ui?.a2ui && <AnswerUiView messages={run.answer_ui.a2ui} />}
+          <AnswerPanel payload={run.answer_ui as AnswerUiPayload | null} defaultOpen />
         </Field>
       )}
       {agentsInvolved.length > 0 && (

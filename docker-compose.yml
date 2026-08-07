@@ -28,6 +28,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       WORKSPACE_DIR: /workspace
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REDIS_URL: ${REDIS_URL:-}
     volumes:
       - workspace:/workspace
     ports:
@@ -35,6 +36,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # optional registry-cache backend (spec §7.3) — start with:
+  #   docker compose --profile redis up
+  # and set REDIS_URL=redis://redis:6379/0; the default stack never runs it
+  redis:
+    image: redis:7-alpine
+    profiles: [redis]
+    ports:
+      - '127.0.0.1:6379:6379'
 
   frontend:
     build: ./frontend

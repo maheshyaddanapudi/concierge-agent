@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
+  CacheStatus,
   Conversation,
   ConversationDetail,
   HitlPending,
@@ -98,10 +99,31 @@ export function useInvalidate() {
   }
 }
 
+export function useCacheStatus() {
+  return useQuery({
+    queryKey: ['cache-status'],
+    queryFn: () => api.get<CacheStatus>('/cache/status'),
+    refetchInterval: 10000,
+  })
+}
+
+export function useRefreshCache() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (registry: string) =>
+      api.post<Record<string, unknown>>(`/cache/refresh/${registry}`, {}),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['cache-status'] }),
+  })
+}
+
 export function usePatchSettings() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (updates: Record<string, unknown>) => api.patch<Settings>('/settings', updates),
-    onSuccess: (data) => qc.setQueryData(['settings'], data),
+    onSuccess: (data) => {
+      qc.setQueryData(['settings'], data)
+      // registry_cache_mode lives in settings — reflect flips immediately
+      void qc.invalidateQueries({ queryKey: ['cache-status'] })
+    },
   })
 }

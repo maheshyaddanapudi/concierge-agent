@@ -221,6 +221,9 @@ class McpManager:
                 if name not in seen and row.status != "inactive":
                     row.status = "inactive"  # removed tools marked inactive
             await db.commit()
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
         logger.info(
             "mcp_tools_ingested",
             server_id=str(server_id),

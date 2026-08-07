@@ -31,11 +31,8 @@ from langchain.agents.middleware import (
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from sqlalchemy import select
 
 from app import obs
-from app.db import get_session_factory
-from app.models import Skill, SubAgent, Tool
 from app.orchestrator.context import get_run_context
 
 logger = structlog.get_logger("orchestrator.middleware")
@@ -151,32 +148,26 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         return self._mode
 
     async def _resolve(self) -> list[BaseTool]:
-        from app.factory.worker import materialize_tool, resolve_tools_by_ids
+        from app.factory.worker import materialize_tool, sanitize_tool_name
+        from app.registry_cache import get_cache
+        from app.retrieval import apply_retrieval
 
         mode = self._effective_mode()
+        cache = get_cache()
         if mode == "scoped":
-            tools = await resolve_tools_by_ids([UUID(t) for t in self._scoped_tool_ids])
-            rows = await self._rows_by_ids([UUID(t) for t in self._scoped_tool_ids])
+            records = await cache.tools_by_ids([UUID(t) for t in self._scoped_tool_ids])
         else:
-            async with get_session_factory()() as session:
-                stmt = select(Tool).where(Tool.deleted_at.is_(None), Tool.status == "active")
-                if mode == "exposed":
-                    stmt = stmt.where(Tool.direct_exposure.is_(True))
-                rows = list((await session.execute(stmt)).scalars())
-            tools = []
-            for row in rows:
-                tool = materialize_tool(
-                    {
-                        "kind": row.kind,
-                        "tool_name": row.tool_name,
-                        "tool_key": row.tool_key,
-                        "mcp_server_id": str(row.mcp_server_id) if row.mcp_server_id else None,
-                        "description": row.description,
-                        "input_schema": row.input_schema,
-                    }
-                )
-                if tool is not None:
-                    tools.append(tool)
+            records = await cache.tools(exposed_only=mode == "exposed")
+            if mode == "exposed":
+                # progressive disclosure (spec §7.4) applies to the orchestrator
+                # catalog only — scoped loops are pinned contracts, full-catalog
+                # is the deliberate escape hatch past ranking
+                records, _dropped = await apply_retrieval(records, kind="tools")
+        tools: list[BaseTool] = []
+        for record in records:
+            tool = materialize_tool(record)
+            if tool is not None:
+                tools.append(tool)
         # sanitized names can collide even though tool_keys are unique —
         # bind first-wins, because duplicate bound names are a provider error
         deduped: dict[str, BaseTool] = {}
@@ -187,32 +178,15 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             deduped[t.name] = t
         tools = list(deduped.values())
         self._current = deduped
-        self._meta = {}
-        for row in rows:
-            from app.factory.worker import sanitize_tool_name
-
-            self._meta[sanitize_tool_name(row.tool_key)] = {
-                "kind": row.kind,
-                "source": row.source,
-                "id": str(row.id),
+        self._meta = {
+            sanitize_tool_name(record["tool_key"]): {
+                "kind": record["kind"],
+                "source": record["source"],
+                "id": record["id"],
             }
+            for record in records
+        }
         return tools
-
-    async def _rows_by_ids(self, ids: list[UUID]) -> list[Tool]:
-        if not ids:
-            return []
-        async with get_session_factory()() as session:
-            return list(
-                (
-                    await session.execute(
-                        select(Tool).where(
-                            Tool.id.in_(ids),
-                            Tool.deleted_at.is_(None),
-                            Tool.status == "active",
-                        )
-                    )
-                ).scalars()
-            )
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         tools = await self._resolve()
@@ -236,6 +210,33 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         token = TOOL_USAGE_HOLDER.set(holder)
         try:
             result = await handler(request.override(tool=tool))
+        except Exception as exc:
+            from langgraph.errors import GraphInterrupt
+
+            if isinstance(exc, GraphInterrupt):
+                raise
+            # infrastructure failure inside the tool (dead MCP server, native
+            # call crash) — spec §5: a dead server surfaces as a TOOL error.
+            # Strict loops keep node error-edge semantics; agentic/fallback
+            # loops get an error ToolMessage so the loop can self-correct
+            # instead of the whole run dying on a raw exception.
+            await _finish_tool_call(
+                step_id,
+                status="failed",
+                output=None,
+                error=str(exc),
+                usage=holder,
+                kind=meta.get("kind"),
+                source=meta.get("source"),
+            )
+            if self._strict_tool_errors:
+                raise ToolExecutionFailed(f"tool {name!r} failed: {exc}") from exc
+            return ToolMessage(
+                content=f"tool {name!r} failed: {exc}",
+                name=name,
+                tool_call_id=request.tool_call["id"],
+                status="error",
+            )
         finally:
             TOOL_USAGE_HOLDER.reset(token)
         is_error = isinstance(result, ToolMessage) and result.status == "error"
@@ -265,20 +266,23 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
         super().__init__()
         self._mode = mode
         self._current: dict[str, dict[str, Any]] = {}
+        self._catalog_total = 0
 
     def _effective_full(self) -> bool:
         ctx = get_run_context()
         return self._mode == "full_catalog" or bool(ctx and ctx.flags.full_catalog)
 
-    async def _snapshots(self) -> list[dict[str, Any]]:
-        from app.factory.worker import snapshot_skill
+    async def _snapshots(self) -> tuple[list[dict[str, Any]], int]:
+        """Returns (snapshots, total-before-retrieval) for the catalog footer."""
+        from app.registry_cache import get_cache
+        from app.retrieval import apply_retrieval
 
-        async with get_session_factory()() as session:
-            stmt = select(Skill).where(Skill.deleted_at.is_(None), Skill.status == "active")
-            if not self._effective_full():
-                stmt = stmt.where(Skill.direct_exposure.is_(True))
-            skills = list((await session.execute(stmt)).scalars())
-            return [await snapshot_skill(session, s) for s in skills]
+        full = self._effective_full()
+        records = await get_cache().skills(exposed_only=not full)
+        total = len(records)
+        if not full:
+            records, _dropped = await apply_retrieval(records, kind="skills")
+        return records, total
 
     def _tool_for(self, snap: dict[str, Any], name: str | None = None) -> BaseTool:
         from app.factory.worker import sanitize_tool_name
@@ -312,7 +316,7 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
     async def _refresh(self) -> list[BaseTool]:
         from app.factory.worker import sanitize_tool_name
 
-        snaps = await self._snapshots()
+        snaps, self._catalog_total = await self._snapshots()
         self._current = {}
         tools: list[BaseTool] = []
         for snap in snaps:
@@ -327,11 +331,21 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
         return tools
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        from app.retrieval import catalog_footer
+
         tools = await self._refresh()
         lines: list[str] = []
         for tool in tools:
             snap = self._current[tool.name]
-            lines.append(f"- {tool.name}: {snap.get('description') or snap['name']}")
+            # the registry id is part of the catalog line: spin_worker's
+            # contract is ids-only, so the model must be able to quote them
+            lines.append(
+                f"- {tool.name} (skill id: {snap.get('id')}): "
+                f"{snap.get('description') or snap['name']}"
+            )
+        if len(tools) < self._catalog_total:
+            # spec §7.4: a ranked slice must announce itself
+            lines.append(catalog_footer("skills", len(tools), self._catalog_total))
         system = request.system_message
         section = "\n\nAvailable skills (each runs an isolated specialist loop):\n" + (
             "\n".join(lines) if lines else "(none)"
@@ -366,26 +380,12 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
         self._current: dict[str, dict[str, Any]] = {}
 
     async def _cards(self) -> list[dict[str, Any]]:
-        async with get_session_factory()() as session:
-            agents = list(
-                (
-                    await session.execute(
-                        select(SubAgent).where(
-                            SubAgent.deleted_at.is_(None), SubAgent.status == "active"
-                        )
-                    )
-                ).scalars()
-            )
-            return [
-                {
-                    "id": str(a.id),
-                    "name": a.name,
-                    "kind": a.kind,
-                    "description": a.description,
-                    "skills": [s.name for s in a.skills],
-                }
-                for a in agents
-            ]
+        from app.registry_cache import get_cache
+        from app.retrieval import apply_retrieval
+
+        cards = await get_cache().sub_agent_cards()
+        cards, _dropped = await apply_retrieval(cards, kind="sub_agents")
+        return cards
 
     def _tool_for(self, card: dict[str, Any], name: str | None = None) -> BaseTool:
         from app.factory.worker import sanitize_tool_name

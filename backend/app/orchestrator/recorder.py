@@ -72,6 +72,14 @@ class RunRecorder:
             await session.commit()
             step_id = step.id
         self._starts[step_id] = time.monotonic()
+        if entity_id:
+            # retrieval pin (spec §7.4): entities used in this run stay
+            # visible in ranked catalogs for the rest of the run
+            from app.orchestrator.context import get_run_context
+
+            ctx = get_run_context()
+            if ctx is not None:
+                ctx.pinned_ids.add(str(entity_id))
         labels = obs.label_set(
             run_id=str(self.run_id),
             step_id=str(step_id),
@@ -97,6 +105,7 @@ class RunRecorder:
             "activity",
             {
                 "step_id": str(step_id),
+                "parent_step_id": str(parent_step_id) if parent_step_id else None,
                 "step_type": step_type,
                 "tier": tier,
                 "kind": kind,
@@ -108,7 +117,13 @@ class RunRecorder:
         if emit_dispatch:
             self.emit(
                 "dispatch_start",
-                {"step_id": str(step_id), "tier": tier, "kind": kind, "entity_id": entity_id},
+                {
+                    "step_id": str(step_id),
+                    "tier": tier,
+                    "kind": kind,
+                    "entity_id": entity_id,
+                    "entity_name": entity_name,
+                },
             )
         return step_id
 
@@ -179,6 +194,7 @@ class RunRecorder:
                     "tier": labels.get("tier"),
                     "kind": labels.get("kind"),
                     "entity_id": labels.get("entity_id"),
+                    "entity_name": labels.get("entity_name"),
                     "status": status,
                 },
             )

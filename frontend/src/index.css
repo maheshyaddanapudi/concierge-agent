@@ -79,6 +79,8 @@
 
 :root {
   color-scheme: dark;
+  /* halo behind the human-gate card — retinted per theme below */
+  --gate-glow: rgba(245, 158, 11, 0.4);
 }
 
 body {
@@ -153,10 +155,9 @@ pre {
 :root[data-theme='anthropic'],
 :root[data-theme='openai'],
 :root[data-theme='google'] {
-  /* amber is the human-gate color: its text roles must darken on paper */
-  --color-amber-200: #92400e;
-  --color-amber-300: #b45309;
-  --color-amber-400: #a16207;
+  /* the brand themes are light: flip color-scheme so every light-dark()
+     consumer — the a2ui answer cards, native form controls — follows */
+  color-scheme: light;
 }
 :root[data-theme='anthropic'] body,
 :root[data-theme='openai'] body,
@@ -189,6 +190,12 @@ pre {
   --color-indigo-500: #cc785c;
   --color-indigo-600: #a85b38;
   --color-indigo-900: #ecc7b5;
+  /* attention/gate ramp: keep warm amber (Claude paper suits it), darkened for contrast */
+  --color-amber-100: #451a03;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #a16207;
+  --gate-glow: rgba(245, 158, 11, 0.35);
 }
 
 /* openai — ChatGPT: white surfaces, near-black text, monochrome accents */
@@ -216,6 +223,13 @@ pre {
   --color-indigo-500: #0d0d0d;
   --color-indigo-600: #000000;
   --color-indigo-900: #d4d4d8;
+  /* attention/gate ramp: ChatGPT is monochrome — the gate goes near-black on white */
+  --color-amber-100: #0d0d0d;
+  --color-amber-200: #27272a;
+  --color-amber-300: #3f3f46;
+  --color-amber-400: #18181b;
+  --color-amber-500: #52525b;
+  --gate-glow: rgba(0, 0, 0, 0.15);
 }
 
 /* google — Gemini: white + light blue-gray surfaces, Google blue */
@@ -243,4 +257,11 @@ pre {
   --color-indigo-500: #0b57d0;
   --color-indigo-600: #0842a0;
   --color-indigo-900: #c2d7f8;
+  /* attention/gate ramp: Gemini leads with Google blue, so the gate does too */
+  --color-amber-100: #041e49;
+  --color-amber-200: #0842a0;
+  --color-amber-300: #0b57d0;
+  --color-amber-400: #1b66ca;
+  --color-amber-500: #1a73e8;
+  --gate-glow: rgba(26, 115, 232, 0.35);
 }

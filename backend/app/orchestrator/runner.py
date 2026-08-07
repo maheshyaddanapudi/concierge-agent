@@ -79,6 +79,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         recorder=recorder,
         settings=settings,
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
+        query_text=task_text,
     )
     set_run_context(ctx)
     if resume is None:
@@ -251,7 +252,11 @@ async def _emit_pending_hitl(graph: Any, config: dict[str, Any], ctx: RunContext
         value = intr.value if isinstance(intr.value, dict) else {}
         ctx.recorder.emit(
             "hitl_request",
-            {"prompt": value.get("prompt"), "node_id": value.get("node_id")},
+            {
+                "prompt": value.get("prompt"),
+                "node_id": value.get("node_id"),
+                "step_id": value.get("dispatch_step_id"),
+            },
         )
 
 
@@ -312,16 +317,22 @@ async def _run_agentic(
 # ── control operations ───────────────────────────────────────────
 
 
-async def resume_run(run_id: UUID, decision: str, note: str = "") -> None:
+async def resume_run(
+    run_id: UUID, decision: str, note: str = "", answers: dict[str, Any] | None = None
+) -> None:
     """POST /runs/{id}/hitl (spec §7): resumes from checkpoint; approve
-    continues, deny routes the node to END with the note in state."""
+    continues, deny routes the node to END with the note in state; form-gate
+    answers ride into worker state (spec §3.5)."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
             raise ValueError("run not found")
         if run.status != "paused_hitl":
             raise ValueError(f"run is {run.status}, not paused_hitl")
-    start_run_task(run_id, resume={"decision": decision, "note": note})
+    resume: dict[str, Any] = {"decision": decision, "note": note}
+    if answers:
+        resume["answers"] = answers
+    start_run_task(run_id, resume=resume)
 
 
 async def cancel_run(run_id: UUID) -> None:

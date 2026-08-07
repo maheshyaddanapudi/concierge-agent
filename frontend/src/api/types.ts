@@ -48,6 +48,7 @@ export interface Skill extends RegistryRecord {
   direct_exposure: boolean
   model: string | null
   model_params: ModelParams | null
+  max_tool_iterations: number | null
   tools: Tool[]
 }
 
@@ -108,7 +109,7 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui: unknown[] } | null
+  answer_ui: { a2ui?: unknown[]; charts?: unknown[] } | null
   error: string | null
   started_at: string | null
   finished_at: string | null
@@ -126,10 +127,10 @@ export interface Conversation {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui: unknown[] } | null
+  answer_ui?: { a2ui?: unknown[]; charts?: unknown[] } | null
 }
 
 export interface ConversationDetail {
@@ -172,6 +173,23 @@ export type Settings = Record<string, unknown> & {
   langsmith_endpoint: string
   langsmith_project: string
   otlp_endpoint: string
+  registry_cache_mode: 'bypass' | 'memory' | 'redis'
+  retrieval_enabled: boolean
+  retrieval_threshold: number
+  retrieval_top_k: number
+  embedding_model: string | null
+}
+
+export interface CacheRegistryStatus {
+  records: number | null
+  generation: number
+  loaded_at: string | null
+  cached: boolean
+}
+
+export interface CacheStatus {
+  mode: 'bypass' | 'memory' | 'redis'
+  registries: Record<string, CacheRegistryStatus>
 }
 
 export interface HitlPending {

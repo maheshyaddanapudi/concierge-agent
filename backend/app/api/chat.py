@@ -30,6 +30,8 @@ class ChatRequest(ApiModel):
 class HitlRequest(ApiModel):
     decision: Literal["approve", "deny"]
     note: str = ""
+    # form gates (spec §3.5): {question_id: value}
+    answers: dict[str, Any] | None = None
 
 
 def _run_out(run: Run) -> dict[str, Any]:
@@ -93,6 +95,16 @@ async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[s
                     "content": run.final_answer,
                     "run_id": str(run.id),
                     "answer_ui": run.answer_ui,
+                }
+            )
+        elif run.status in {"failed", "cancelled"} and run.error:
+            # reloaded history mirrors the live view: a run that produced no
+            # answer still shows WHY, keeping user→response interleaving
+            messages.append(
+                {
+                    "role": "error",
+                    "content": run.error,
+                    "run_id": str(run.id),
                 }
             )
     return {
@@ -162,7 +174,7 @@ def _is_terminal(event: dict[str, Any]) -> bool:
 @router.post("/runs/{run_id}/hitl")
 async def resolve_hitl(run_id: UUID, body: HitlRequest) -> dict[str, Any]:
     try:
-        await resume_run(run_id, body.decision, body.note)
+        await resume_run(run_id, body.decision, body.note, body.answers)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "resuming", "decision": body.decision}

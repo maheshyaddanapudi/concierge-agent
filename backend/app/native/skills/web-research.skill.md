@@ -6,6 +6,7 @@ tools:
   - fetch.fetch
   - summarize-and-structure
 direct_exposure: false
+max_tool_iterations: 20
 ---
 # Purpose
 

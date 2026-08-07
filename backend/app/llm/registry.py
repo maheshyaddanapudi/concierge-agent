@@ -72,6 +72,27 @@ def validate_model_selection(ref: str, params: ModelParams | None = None) -> lis
     return errors
 
 
+async def get_embeddings(ref: str, texts: list[str]) -> list[list[float]]:
+    """Single embeddings entry point (spec §2.1): 'provider:model' → vectors."""
+    provider_id, model = parse_model_ref(ref)
+    return await get_provider(provider_id).get_embeddings(model, texts)
+
+
+def validate_embedding_selection(ref: str) -> list[str]:
+    """Save-time validation for `embedding_model` (spec §3.7)."""
+    try:
+        provider_id, _model = parse_model_ref(ref)
+        provider = get_provider(provider_id)
+    except UnknownProviderError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    if not provider.is_configured():
+        errors.append(f"provider {provider_id!r} is not configured (API key env var missing)")
+    if not provider.supports_embeddings():
+        errors.append(f"provider {provider_id!r} has no embeddings API")
+    return errors
+
+
 def register_builtin_providers() -> None:
     """Import adapter modules so their decorators run (idempotent)."""
     import app.llm.adapters  # noqa: F401

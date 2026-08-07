@@ -26,8 +26,13 @@ BASIC_CATALOG_ID = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.j
 SURFACE_ID = "answer"
 
 ComponentType = Literal[
-    "card", "text", "stat", "table", "list", "badge", "divider", "link", "sources"
+    "card", "text", "stat", "table", "list", "badge", "divider", "link", "sources", "chart"
 ]
+
+
+class UiSeries(BaseModel):
+    name: str | None = None
+    values: list[float] = Field(default_factory=list)
 
 
 class UiComponent(BaseModel):
@@ -47,6 +52,10 @@ class UiComponent(BaseModel):
     url: str | None = None
     urls: list[str] | None = None
     children: list["UiComponent"] | None = None
+    # chart (spec §7.1): data extracted from the answer, never invented
+    chart_kind: Literal["bar", "line", "pie"] | None = None
+    labels: list[str] | None = None
+    series: list[UiSeries] | None = None
 
 
 class AnswerUi(BaseModel):
@@ -117,6 +126,27 @@ class _A2uiBuilder:
         return None  # unknown types are ignored, never errored
 
 
+def extract_charts(ui: AnswerUi) -> list[dict[str, Any]]:
+    """Chart components render via the app's own themed SVG component
+    (spec §7.1) — normalized specs, split out of the A2UI stream."""
+    charts: list[dict[str, Any]] = []
+    for c in ui.components:
+        if c.type != "chart" or not c.chart_kind or not c.series:
+            continue
+        labels = [str(x) for x in (c.labels or [])]
+        series = [
+            {"name": s.name or "", "values": [float(v) for v in s.values]}
+            for s in c.series
+            if s.values
+        ]
+        if not series:
+            continue
+        charts.append(
+            {"kind": c.chart_kind, "title": c.title or "", "labels": labels, "series": series}
+        )
+    return charts
+
+
 def to_a2ui_messages(ui: AnswerUi) -> list[dict[str, Any]]:
     """Deterministic translation to A2UI v0.9 protocol messages."""
     builder = _A2uiBuilder()
@@ -140,8 +170,21 @@ async def generate_answer_ui(
     """Returns ({"a2ui": messages}, usage). Never raises — failure → (None, usage)."""
     usage = {"input_tokens": 0, "output_tokens": 0}
     try:
+        from app.registry_cache import get_cache
+
+        charts_enabled = bool(await get_cache().setting("answer_ui_charts_enabled"))
         model = get_model(model_ref)
         prompt = load_prompt("answer_ui").replace("{task}", task).replace("{answer}", answer)
+        chart_rules = (
+            "- chart {title?, chart_kind: \"bar\"|\"line\"|\"pie\", labels: [..], "
+            "series: [{name?, values: [numbers]}]} — ONLY when the answer contains "
+            "genuinely comparative or trending numbers; the data MUST be extracted "
+            "from the answer text, never computed or invented; prefer a table unless "
+            "a chart clearly helps."
+            if charts_enabled
+            else ""
+        )
+        prompt = prompt.replace("{chart_rules}", chart_rules)
         structured = model.with_structured_output(AnswerUi, include_raw=True)
         result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
             prompt, config={"callbacks": callbacks}
@@ -153,7 +196,15 @@ async def generate_answer_ui(
         parsed = result.get("parsed")
         if parsed is None or not parsed.components:
             return None, usage
-        return {"a2ui": to_a2ui_messages(parsed)}, usage
+        if not charts_enabled:
+            parsed.components = [c for c in parsed.components if c.type != "chart"]
+            if not parsed.components:
+                return None, usage
+        payload: dict[str, Any] = {"a2ui": to_a2ui_messages(parsed)}
+        charts = extract_charts(parsed) if charts_enabled else []
+        if charts:
+            payload["charts"] = charts
+        return payload, usage
     except Exception as exc:  # noqa: BLE001 - failure-safe by spec
         logger.warning("answer_ui_generation_failed", error=str(exc))
         return None, usage

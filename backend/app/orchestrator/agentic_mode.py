@@ -17,7 +17,7 @@ from app.factory.worker import _usage_from_messages, resolve_node_model
 from app.llm import get_model, text_from_content
 from app.models import Run
 from app.orchestrator.context import require_run_context
-from app.orchestrator.ladder import execute_resolution, resolve_capability
+from app.orchestrator.ladder import ResolutionError, execute_resolution, resolve_capability
 from app.orchestrator.middleware import AgenticLoopContext, build_middleware_stack
 from app.prompts import load_prompt
 from app.settings_store import get_setting
@@ -27,10 +27,18 @@ logger = structlog.get_logger("orchestrator.agentic")
 
 def _spin_worker_tool() -> StructuredTool:
     async def spin_worker(skill_ids: list[str], task: str) -> str:
-        """Build a one-off ephemeral worker over the given registry skill ids
-        (rung-4 fallback) and run it on the task."""
+        """Build a one-off ephemeral worker over registry skills (rung-4
+        fallback) and run it on the task. skill_ids MUST be registry skill
+        ids (uuids) exactly as shown in the Available skills catalog — never
+        skill names; if a skill is not in the catalog, call use_full_catalog
+        first to see the full registry."""
         ctx = require_run_context()
-        resolution = await resolve_capability({"type": "spin_worker", "skill_ids": skill_ids})
+        try:
+            resolution = await resolve_capability({"type": "spin_worker", "skill_ids": skill_ids})
+        except ResolutionError as exc:
+            # bad ids from the model must not kill the run — surface the
+            # problem as the tool result so the loop can self-correct
+            return f"could not spin a worker: {exc}"
         await ctx.recorder.record_route(
             capability={"type": "spin_worker", "skill_ids": skill_ids},
             rung=resolution.rung,
@@ -38,7 +46,10 @@ def _spin_worker_tool() -> StructuredTool:
             kind="dynamic",
             source="dynamic",
         )
-        result = await execute_resolution(resolution, task, "agentic:spin_worker")
+        # unique node id per spin: parallel workers must not share the
+        # checkpoint thread ("agentic:spin_worker" would collide)
+        node_id = f"agentic:{resolution.payload.get('callsign', 'spin_worker')}"
+        result = await execute_resolution(resolution, task, node_id)
         if result.get("status") != "ok":
             return f"worker failed: {result.get('error')}"
         return str(result.get("output", ""))

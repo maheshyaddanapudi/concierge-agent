@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status: all six milestones complete.** Backend + admin UI live, all test suites green, and the 11-step acceptance script (spec.md §14) executed top to bottom against a fresh `docker compose up`. `spec.md` is the single source of truth; implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
+> **Status: all six milestones complete.** Backend + admin UI live, all test suites green, and the 11-step acceptance script (spec.md §14) executed top to bottom against a fresh `docker compose up`. Full manual-UI acceptance evidence — a single-pass, 125-screenshot campaign on genuine Claude Sonnet 5, covering both orchestrator modes × thinking on/off, all four themes, HITL approve/deny/queue, failure/retry, and every admin surface — lives in [docs/acceptance/](./docs/acceptance/README.md). `spec.md` is the single source of truth; implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
 
 ## Architecture at a glance
 
@@ -62,7 +62,7 @@ Lifecycle scripts (all idempotent):
 
 | Script | What it does |
 |---|---|
-| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
+| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), asks whether to provision the optional Redis cache backend (`--redis`/`--no-redis` non-interactive; usage stays a Settings decision), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
 | `./build.sh` | Builds both docker images. |
 | `./start.sh` | Errors out if Docker isn't running; otherwise creates or restarts the stack — missing images are pulled/built, first run creates the DB schema and loads seeds automatically, later runs resume with the same data (named volumes). Waits for backend health and prints the URLs. |
 | `./stop.sh` | Stops the containers; all data preserved — `./start.sh` resumes where you left off. |
@@ -94,6 +94,9 @@ docker-compose.yml
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ✅ complete |
 | M5 | Admin UI: all seven pages incl. Settings command center | ✅ complete |
 | M6 | Test suites green + compose polish + acceptance script passes | ✅ complete |
+| M7 | Registry cache layer (spec §7.3: bypass/memory/redis, event invalidation, refresh UI) + progressive-disclosure retrieval (spec §7.4: hybrid top-K, embeddings port — dark by default) | ✅ complete |
+
+**Registry cache (spec §7.3)** — every registry/settings read in the run path goes through one `RegistryCache` facade (`backend/app/registry_cache.py`); the `registry_cache_mode` setting flips its backend live between `bypass` (direct DB reads — the shipped default and rollback lever), `memory` (in-process, event-invalidated on every write path, manual refresh buttons on the Tools/Skills/Sub Agents pages and in Settings), and `redis` (optional: `docker compose --profile redis up` + `REDIS_URL`). **Retrieval (spec §7.4)** — off by default; when enabled, orchestrator catalogs above the threshold are ranked to the task's top-K (BM25 + optional embeddings via the provider port, RRF-fused) with pinned ids and an explicit `use_full_catalog` footer; skill loops and workers remain id-pinned contracts, never ranked.
 
 ## Development
 

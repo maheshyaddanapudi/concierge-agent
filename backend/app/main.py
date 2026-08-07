@@ -37,11 +37,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.mcp.manager import McpManager, set_manager
 
     await get_checkpointer()  # create checkpoint tables up front
+    from app.registry_cache import get_cache
+    from app.retrieval import backfill_embeddings
+
+    await get_cache().startup()  # registry cache (spec §7.3): mode + warm load
     manager = McpManager()
     set_manager(manager)
     # connect persisted servers without blocking app readiness
     startup_task = asyncio.create_task(manager.start())
+    # retrieval (spec §7.4): embed stale records without blocking readiness
+    backfill_task = asyncio.create_task(backfill_embeddings())
     yield
+    backfill_task.cancel()
+    await get_cache().stop_listener()
     startup_task.cancel()
     await manager.stop()
     set_manager(None)

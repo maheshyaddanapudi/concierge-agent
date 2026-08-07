@@ -48,7 +48,18 @@ if "orch_echo" not in native_tools():
                 )
             )
             await session.commit()
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
         return "inserted"
+
+
+@pytest.fixture(autouse=True, params=["bypass", "memory"])
+async def _registry_cache_mode(request: pytest.FixtureRequest) -> None:
+    """Spec §11: the orchestrator/middleware/ladder suite runs in both cache
+    modes — identical observable behavior is the §7.3 no-degradation gate."""
+    async with get_session_factory()() as session:
+        await update_settings(session, {"registry_cache_mode": request.param})
 
 
 @pytest.fixture(autouse=True)
@@ -367,6 +378,9 @@ class TestResolutionLadder:
             assert row is not None
             row.direct_exposure = False
             await session.commit()
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("skills")
         plan_call(
             entries=[
                 {
@@ -1144,3 +1158,295 @@ class TestLiveEvents:
         thinks = [e for e in history if e["type"] == "thinking"]
         assert any("pondering" in str(e["payload"].get("text")) for e in thinks)
         assert run["final_answer"] == "final merged answer"
+
+
+class TestSpinWorkerStrictIds:
+    """spin_worker gets its skill_ids from the agentic MODEL. The contract is
+    strict — registry uuids only, never names — and violations must surface
+    as corrective tool feedback (ResolutionError → message), never as a raw
+    ValueError that kills the run. The model can comply because the injected
+    skills catalog carries each skill's registry id."""
+
+    async def test_dynamic_resolution_rejects_names_with_guidance(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        skill = await create_skill(name=f"byname-{uuid4().hex[:6]}")
+        with pytest.raises(ResolutionError) as exc:
+            await resolve_capability({"type": "spin_worker", "skill_ids": [skill.name]})
+        assert "uuid" in str(exc.value)
+        assert "use_full_catalog" in str(exc.value)
+
+    async def test_dynamic_resolution_rejects_garbage_as_resolution_error(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        with pytest.raises(ResolutionError):
+            await resolve_capability({"type": "spin_worker", "skill_ids": ["no-such-skill"]})
+
+    async def test_dynamic_resolution_accepts_valid_uuid(self) -> None:
+        from app.orchestrator.ladder import resolve_capability
+
+        skill = await create_skill(name=f"byid-{uuid4().hex[:6]}")
+        res = await resolve_capability({"type": "spin_worker", "skill_ids": [str(skill.id)]})
+        assert res.rung == "dynamic_worker"
+        assert res.payload["skills"][0]["id"] == str(skill.id)
+
+    async def test_dynamic_resolution_rejects_unknown_uuid(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        with pytest.raises(ResolutionError):
+            await resolve_capability({"type": "spin_worker", "skill_ids": [str(uuid4())]})
+
+    async def test_spin_worker_tool_degrades_to_error_message(self) -> None:
+        from app.orchestrator.agentic_mode import _spin_worker_tool
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.recorder import RunRecorder
+
+        run_id = uuid4()
+        set_run_context(
+            RunContext(
+                run_id=run_id,
+                mode="agentic",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
+            )
+        )
+        tool = _spin_worker_tool()
+        out = await tool.coroutine(skill_ids=["not-a-skill"], task="anything")
+        assert "could not spin a worker" in out
+        assert "uuid" in out
+
+    async def test_skills_catalog_prompt_lines_carry_registry_ids(self) -> None:
+        from app.orchestrator.middleware import SkillsRegistryMiddleware
+
+        skill = await create_skill(name=f"catalog-{uuid4().hex[:6]}", direct_exposure=True)
+        mw = SkillsRegistryMiddleware(mode="exposed")
+
+        class _Req:
+            tools: list[Any] = []
+            system_message = None
+
+            def override(self, **kw: Any) -> "_Req":
+                req = _Req()
+                for key, value in kw.items():
+                    setattr(req, key, value)
+                return req
+
+        seen: dict[str, Any] = {}
+
+        async def handler(req: Any) -> str:
+            seen["system"] = req.system_message.text if req.system_message is not None else ""
+            return "ok"
+
+        await mw.awrap_model_call(_Req(), handler)
+        assert f"(skill id: {skill.id})" in seen["system"]
+
+
+class TestToolFailureContainment:
+    """spec §5: a dead MCP server (or any exception inside a tool) surfaces
+    as a TOOL error. Agentic/fallback loops receive an error ToolMessage and
+    keep going; strict skill loops keep node error-edge semantics."""
+
+    @staticmethod
+    def _mw_with_raising_tool(strict: bool) -> Any:
+        from langchain_core.tools import StructuredTool
+
+        from app.orchestrator.middleware import ToolsRegistryMiddleware
+
+        async def boom() -> str:
+            raise RuntimeError("MCP server dead-beef is not connected")
+
+        tool = StructuredTool.from_function(coroutine=boom, name="boom_tool", description="boom")
+        mw = ToolsRegistryMiddleware(mode="exposed", strict_tool_errors=strict)
+        mw._current = {"boom_tool": tool}
+        mw._meta = {"boom_tool": {"kind": "mcp", "source": "dynamic", "id": str(uuid4())}}
+        return mw, tool
+
+    @staticmethod
+    def _request() -> Any:
+        class _Req:
+            tool_call = {"name": "boom_tool", "id": "call_1", "args": {}}
+
+            def override(self, **kw: Any) -> "_Req":
+                req = _Req()
+                for key, value in kw.items():
+                    setattr(req, key, value)
+                return req
+
+        return _Req()
+
+    async def test_agentic_mode_contains_tool_exception(self) -> None:
+        from langchain_core.messages import ToolMessage
+
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "containment test agentic")
+        run_id = run.id
+        set_run_context(
+            RunContext(
+                run_id=run_id, mode="agentic", recorder=RunRecorder(run_id),
+                settings={}, callbacks=[],
+            )
+        )
+        mw, tool = self._mw_with_raising_tool(strict=False)
+
+        async def handler(req: Any) -> Any:
+            return await req.tool.ainvoke(req.tool_call["args"])
+
+        result = await mw.awrap_tool_call(self._request(), handler)
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "is not connected" in str(result.content)
+
+    async def test_strict_mode_keeps_error_edge_semantics(self) -> None:
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.middleware import ToolExecutionFailed
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "containment test strict")
+        run_id = run.id
+        set_run_context(
+            RunContext(
+                run_id=run_id, mode="graph", recorder=RunRecorder(run_id),
+                settings={}, callbacks=[],
+            )
+        )
+        mw, tool = self._mw_with_raising_tool(strict=True)
+
+        async def handler(req: Any) -> Any:
+            return await req.tool.ainvoke(req.tool_call["args"])
+
+        with pytest.raises(ToolExecutionFailed):
+            await mw.awrap_tool_call(self._request(), handler)
+
+
+class TestChatPresentationContracts:
+    """dispatch events carry the entity name (spec §7.1) and reloaded
+    conversations keep user→response interleaving for failed runs."""
+
+    async def test_dispatch_events_carry_entity_name(self, client: AsyncClient) -> None:
+        from uuid import UUID as _U
+
+        from app.orchestrator.context import EVENT_BUS
+
+        skill = await create_skill(name=f"named-disp-{uuid4().hex[:4]}", direct_exposure=True)
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "task": "do it",
+                    "depends_on": [],
+                }
+            ]
+        )
+        fake_llm.push_ai("skill output")
+        fake_llm.push_ai("Aggregated.")
+        run_id = await send_chat(client, "named dispatch test")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        history, queue = EVENT_BUS.subscribe(_U(run_id))
+        EVENT_BUS.unsubscribe(_U(run_id), queue)
+        starts = [e for e in history if e["type"] == "dispatch_start"]
+        ends = [e for e in history if e["type"] == "dispatch_end"]
+        assert starts and ends
+        assert any(e["payload"].get("entity_name") == skill.name for e in starts)
+        assert any(e["payload"].get("entity_name") == skill.name for e in ends)
+
+    async def test_failed_run_error_appears_in_conversation(self, client: AsyncClient) -> None:
+        fake_llm.push_error(RuntimeError("planner exploded for the test"))
+        fake_llm.push_error(RuntimeError("planner exploded for the test"))
+        run_id = await send_chat(client, "history error test")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        conv = (await client.get(f"{API}/conversations/{run['conversation_id']}")).json()
+        roles = [m["role"] for m in conv["messages"]]
+        assert roles == ["user", "error"]
+        assert "planner exploded" in conv["messages"][1]["content"]
+        assert conv["messages"][1]["run_id"] == run_id
+
+
+class TestLineageAndCallsigns:
+    """Chat grouping lineage (spec §7.1/§8.5): hitl_request carries the owning
+    dispatch step, activity carries parent_step_id; ephemeral workers get
+    per-run phonetic callsigns with their skill composition."""
+
+    async def test_hitl_request_carries_dispatch_step_and_activity_parents(
+        self, client: AsyncClient
+    ) -> None:
+        from uuid import UUID as _U
+
+        from app.factory.worker import sanitize_tool_name
+        from app.orchestrator.context import EVENT_BUS
+        from app.settings_store import update_settings
+
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_mode": "agentic"})
+        s1 = await create_skill(name=f"lin-{uuid4().hex[:4]}")
+        agent = await create_sub_agent(
+            {
+                "nodes": [
+                    {"id": "work", "type": "skill", "skill_id": str(s1.id)},
+                    {"id": "gate", "type": "hitl", "prompt": "Continue?"},
+                ],
+                "edges": [
+                    {"from": "START", "to": "work"},
+                    {"from": "work", "to": "gate"},
+                    {"from": "gate", "to": "END"},
+                ],
+            },
+            name=f"lineage-{uuid4().hex[:4]}",
+        )
+        fake_llm.push_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": f"dispatch_{sanitize_tool_name(agent.name)}",
+                    "args": {"task": "work"},
+                    "id": "d1",
+                }
+            ],
+        )
+        fake_llm.push_ai("work out")
+        run_id = await send_chat(client, "lineage test")
+        run = await wait_run(client, run_id, {"paused_hitl", "failed"})
+        assert run["status"] == "paused_hitl", run["error"]
+        history, queue = EVENT_BUS.subscribe(_U(run_id))
+        EVENT_BUS.unsubscribe(_U(run_id), queue)
+        dispatch = next(e for e in history if e["type"] == "dispatch_start")
+        gate = next(e for e in history if e["type"] == "hitl_request")
+        assert gate["payload"]["step_id"] == dispatch["payload"]["step_id"]
+        acts = [e for e in history if e["type"] == "activity" and e["payload"].get("step_type")]
+        assert any(
+            a["payload"].get("parent_step_id") == dispatch["payload"]["step_id"] for a in acts
+        ), "worker-internal steps must carry the dispatch step as parent"
+        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "approve", "note": ""})
+        fake_llm.push_ai("done")
+        await wait_run(client, run_id, {"completed", "failed"})
+
+    async def test_worker_callsigns_sequence_and_composition(self) -> None:
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.ladder import resolve_capability
+        from app.orchestrator.recorder import RunRecorder
+        from app.orchestrator.runner import create_run
+
+        run = await create_run(None, "callsign test")
+        set_run_context(
+            RunContext(
+                run_id=run.id, mode="agentic", recorder=RunRecorder(run.id),
+                settings={}, callbacks=[],
+            )
+        )
+        s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}")
+        s2 = await create_skill(name=f"cs-two-{uuid4().hex[:4]}")
+        r1 = await resolve_capability(
+            {"type": "spin_worker", "skill_ids": [str(s1.id), str(s2.id)]}
+        )
+        r2 = await resolve_capability({"type": "spin_worker", "skill_ids": [str(s2.id)]})
+        assert r1.entity_name == f"worker-alpha ({s1.name}+{s2.name})"
+        assert r2.entity_name == f"worker-bravo ({s2.name})"
+        assert r1.payload["callsign"] == "worker-alpha"
+        assert r2.payload["callsign"] == "worker-bravo"
