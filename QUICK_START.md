@@ -5,7 +5,7 @@ Everything below is driven by five idempotent scripts at the repo root — you s
 ## Prerequisites
 
 - **Docker + Docker Compose** (the whole stack runs in containers)
-- An **Anthropic API key** (other provider keys are optional — their presence in `.env` enables those providers in Settings)
+- An API key for **at least one** provider — Anthropic, Google, or OpenAI, any combination works (or none: see keyless mode below)
 - For local development only (not needed to just run the app): Python 3.12 + [uv](https://docs.astral.sh/uv/), Node 20+
 
 ## 1. Set up
@@ -18,19 +18,24 @@ git clone <repo-url> && cd concierge-agent
 What it does (safe to re-run any time):
 
 - creates `.env` from `.env.example` if missing
-- prompts for your `ANTHROPIC_API_KEY` (hidden input; offers to overwrite an existing value)
+- asks **which model provider(s) you want**: Anthropic, Google, or OpenAI alone; any pair; all three; or none (keyless demo mode)
+- prompts for each selected provider's API key (hidden input; offers to overwrite an existing value), then **verifies the key with a free list-models API call** before saving — a rejected or unreachable key gets a clear warning and a "save it anyway?" choice
 - asks whether to provision the **optional Redis cache backend** upfront (whether the app *uses* it stays a runtime Settings decision — the default cache mode never touches Redis)
 - installs local dev dependencies (backend `uv sync`, frontend `npm install`)
+
+Only providers with a key appear in the UI's model selects (with their effort options), and **first boot picks the default model from whatever you configured** — Anthropic's Sonnet if its key exists, else Gemini Flash, else GPT-5.6 Luna, else the fake provider. You can re-mix models per role (orchestrator / planner / aggregator / sub agents) in Settings at any time.
 
 Non-interactive flags:
 
 ```bash
-./quick-setup.sh --key sk-ant-...        # set the API key without a prompt
-./quick-setup.sh --redis                 # provision Redis without asking
-./quick-setup.sh --no-redis              # skip Redis without asking
+./quick-setup.sh --providers anthropic,google       # or: openai / all / none
+./quick-setup.sh --anthropic-key sk-ant-...         # implies its provider
+./quick-setup.sh --google-key AIza... --openai-key sk-...
+./quick-setup.sh --key sk-ant-...                   # legacy alias for --anthropic-key
+./quick-setup.sh --redis | --no-redis               # Redis without asking
 ```
 
-**No API key?** You can still run everything: set `FAKE_LLM_ENABLED=1` in `.env` and pick `fake:scripted` as the default model in Settings once the stack is up — runs, SSE streaming, HITL, and both orchestrator modes all work against the scriptable fake provider.
+**No API key at all?** Choose option 8 (or `--providers none`): it sets `FAKE_LLM_ENABLED=1`, and first boot selects the scriptable `fake:scripted` model automatically — runs, SSE streaming, HITL, and both orchestrator modes all work without any provider key.
 
 ## 2. Build
 

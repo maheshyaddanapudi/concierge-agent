@@ -28,6 +28,18 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 
 ### Added
 
+- Provider-choice setup: `quick-setup.sh` now asks which provider(s) to
+  configure (Anthropic / Google / OpenAI, any pair, all three, or keyless
+  fake mode), prompts for each selected key, and **verifies every key with
+  a free list-models API call** before saving (rejected/unreachable keys
+  get a save-anyway escape). Non-interactive: `--providers`,
+  `--anthropic-key` / `--google-key` / `--openai-key` (legacy `--key`
+  kept as an alias). All provider keys are now optional in spec §13.
+- First-boot default-model resolution: if the code default's provider has
+  no key when the seed pass first runs, `default_model` is stored as the
+  first configured provider's flagship — `claude-sonnet-4-6` →
+  `gemini-3.6-flash` → `gpt-5.6-luna` → `fake:scripted`. Explicit
+  settings are never touched.
 - Documentation suite ([PR #4]): architecture diagrams (C4, ERD, class,
   sequence, state machines, resolution ladder — 20 Mermaid diagrams), ten
   ADRs, API references (REST, SSE contract, workflow DSL, skill format),

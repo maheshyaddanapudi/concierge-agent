@@ -17,56 +17,157 @@ else
   say ".env already present"
 fi
 
-# ── 2. ANTHROPIC_API_KEY ─────────────────────────────────────────
-current_key="$(grep -E '^ANTHROPIC_API_KEY=' .env | head -1 | cut -d= -f2- || true)"
+# ── flags ────────────────────────────────────────────────────────
+# --providers anthropic,google,openai|all|none   (comma list, no spaces)
+# --anthropic-key K   --google-key K   --openai-key K   (imply their provider)
+# --key K             (back-compat alias for --anthropic-key)
+# --redis / --no-redis
+PROVIDERS=""
+KEY_anthropic=""; KEY_google=""; KEY_openai=""
+REDIS_CHOICE=""
 
-write_key() { # $1 = key value; replaces any existing line (override)
-  grep -vE '^ANTHROPIC_API_KEY=' .env > .env.tmp || true
-  printf 'ANTHROPIC_API_KEY=%s\n' "$1" >> .env.tmp
-  mv .env.tmp .env
-  say "ANTHROPIC_API_KEY written to .env (never commit this file)"
+add_provider() { # $1 = provider id; append if not already listed
+  case ",$PROVIDERS," in *",$1,"*) ;; *) PROVIDERS="${PROVIDERS:+$PROVIDERS,}$1" ;; esac
 }
 
-if [ "${1:-}" = "--key" ] && [ -n "${2:-}" ]; then
-  write_key "$2"
-elif [ -t 0 ]; then
-  if [ -n "$current_key" ]; then
-    key_tail="$(printf '%s' "$current_key" | tail -c 4)"
-    printf 'An ANTHROPIC_API_KEY is already set (…%s). Replace it? [y/N] ' "$key_tail"
-    read -r replace
-    if is_yes "$replace"; then
-      printf 'Paste the new ANTHROPIC_API_KEY (input hidden): '
-      read -rs new_key; echo
-      [ -n "$new_key" ] && write_key "$new_key" || warn "empty input — keeping the existing key"
-    else
-      say "keeping the existing key"
-    fi
-  else
-    printf 'Paste your ANTHROPIC_API_KEY (input hidden, Enter to skip): '
-    read -rs new_key; echo
-    if [ -n "$new_key" ]; then
-      write_key "$new_key"
-    else
-      warn "no key provided — you can re-run ./quick-setup.sh later, or use the"
-      warn "keyless demo mode (FAKE_LLM_ENABLED=1 + the fake:scripted model)."
-    fi
-  fi
-else
-  if [ -n "$current_key" ]; then
-    say "ANTHROPIC_API_KEY already set — keeping it (non-interactive run)"
-  else
-    warn "no TTY and no key set — pass one with: ./quick-setup.sh --key sk-ant-..."
-  fi
-fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --providers)     PROVIDERS="${2:-}"; shift 2 ;;
+    --anthropic-key) KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
+    --google-key)    KEY_google="${2:-}";    add_provider google;    shift 2 ;;
+    --openai-key)    KEY_openai="${2:-}";    add_provider openai;    shift 2 ;;
+    --key)           KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
+    --redis)         REDIS_CHOICE="yes"; shift ;;
+    --no-redis)      REDIS_CHOICE="no";  shift ;;
+    *) warn "unknown option: $1"; shift ;;
+  esac
+done
+[ "$PROVIDERS" = "all" ] && PROVIDERS="anthropic,google,openai"
 
-# ── 2b. optional Redis (registry-cache backend, spec §7.3) ───────
-# Provisioning is upfront; USAGE stays a runtime decision — the cache mode
-# defaults to 'bypass' and is flipped in Settings → Registry cache later.
 set_env_line() { # $1 = KEY, $2 = value ('' removes the line)
   grep -vE "^$1=" .env > .env.tmp || true
   [ -n "$2" ] && printf '%s=%s\n' "$1" "$2" >> .env.tmp
   mv .env.tmp .env
 }
+
+# ── 2. model providers ───────────────────────────────────────────
+# Any combination works; only providers with a key show up in the UI's
+# model selects. First boot picks the default model from whatever is
+# configured (anthropic → gemini flash → gpt-5.6 luna → fake).
+
+if [ -z "$PROVIDERS" ] && [ -t 0 ]; then
+  say "Which model provider(s) do you want to configure?"
+  printf '  1) Anthropic            2) Google              3) OpenAI\n'
+  printf '  4) Anthropic + Google   5) Anthropic + OpenAI  6) Google + OpenAI\n'
+  printf '  7) All three            8) None - keyless demo mode (fake provider)\n'
+  printf 'Choice [1]: '
+  read -r choice
+  case "${choice:-1}" in
+    1) PROVIDERS="anthropic" ;;
+    2) PROVIDERS="google" ;;
+    3) PROVIDERS="openai" ;;
+    4) PROVIDERS="anthropic,google" ;;
+    5) PROVIDERS="anthropic,openai" ;;
+    6) PROVIDERS="google,openai" ;;
+    7) PROVIDERS="anthropic,google,openai" ;;
+    8) PROVIDERS="none" ;;
+    *) warn "unrecognized choice '$choice' — defaulting to Anthropic"; PROVIDERS="anthropic" ;;
+  esac
+elif [ -z "$PROVIDERS" ]; then
+  say "non-interactive run with no --providers — leaving provider keys unchanged"
+  PROVIDERS="skip"
+fi
+
+env_key_name() { # provider id → .env variable name
+  case "$1" in
+    anthropic) printf 'ANTHROPIC_API_KEY' ;;
+    google)    printf 'GOOGLE_API_KEY' ;;
+    openai)    printf 'OPENAI_API_KEY' ;;
+  esac
+}
+
+verify_key() { # $1 = provider, $2 = key → 0 if the key works (cheap list-models call)
+  command -v curl >/dev/null 2>&1 || { warn "curl not found — skipping key verification"; return 0; }
+  code=""
+  case "$1" in
+    anthropic)
+      code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+        -H "x-api-key: $2" -H "anthropic-version: 2023-06-01" \
+        https://api.anthropic.com/v1/models 2>/dev/null || printf '000')" ;;
+    google)
+      code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+        "https://generativelanguage.googleapis.com/v1beta/models?key=$2" 2>/dev/null || printf '000')" ;;
+    openai)
+      code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+        -H "Authorization: Bearer $2" \
+        https://api.openai.com/v1/models 2>/dev/null || printf '000')" ;;
+  esac
+  if [ "$code" = "200" ]; then
+    say "$1 key verified (list-models call succeeded)"
+    return 0
+  fi
+  case "$code" in
+    000) warn "$1 key could not be verified — network unreachable or timeout" ;;
+    400|401|403) warn "$1 key REJECTED by the API (HTTP $code) — it looks invalid" ;;
+    *) warn "$1 key verification returned HTTP $code" ;;
+  esac
+  return 1
+}
+
+save_key() { # $1 = provider, $2 = key
+  set_env_line "$(env_key_name "$1")" "$2"
+  say "$(env_key_name "$1") written to .env (never commit this file)"
+}
+
+configure_provider() { # $1 = provider id, $2 = key from flags ('' = prompt)
+  var="$(env_key_name "$1")"
+  current="$(grep -E "^$var=" .env | head -1 | cut -d= -f2- || true)"
+  new_key="$2"
+
+  if [ -z "$new_key" ] && [ -t 0 ]; then
+    if [ -n "$current" ]; then
+      key_tail="$(printf '%s' "$current" | tail -c 4)"
+      printf 'A %s is already set (…%s). Replace it? [y/N] ' "$var" "$key_tail"
+      read -r replace
+      is_yes "$replace" || { say "keeping the existing $1 key"; return 0; }
+    fi
+    printf 'Paste your %s (input hidden, Enter to skip): ' "$var"
+    read -rs new_key; echo
+    [ -n "$new_key" ] || { warn "no $1 key provided — re-run ./quick-setup.sh to add it later"; return 0; }
+  elif [ -z "$new_key" ]; then
+    if [ -n "$current" ]; then say "$var already set — keeping it (non-interactive run)"
+    else warn "no TTY and no $1 key — pass one with --$1-key"; fi
+    return 0
+  fi
+
+  if verify_key "$1" "$new_key"; then
+    save_key "$1" "$new_key"
+  elif [ -t 0 ]; then
+    printf 'Save the unverified %s key anyway? [y/N] ' "$1"
+    read -r anyway
+    if is_yes "$anyway"; then save_key "$1" "$new_key"; else warn "$1 key NOT saved"; fi
+  else
+    warn "saving the $1 key anyway (non-interactive run — it was passed explicitly)"
+    save_key "$1" "$new_key"
+  fi
+}
+
+contains_provider() { case ",$PROVIDERS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+if [ "$PROVIDERS" = "none" ]; then
+  set_env_line FAKE_LLM_ENABLED "1"
+  say "keyless demo mode: FAKE_LLM_ENABLED=1 — first boot will select the"
+  say "fake:scripted model; add real keys later by re-running ./quick-setup.sh"
+elif [ "$PROVIDERS" != "skip" ]; then
+  contains_provider anthropic && configure_provider anthropic "$KEY_anthropic"
+  contains_provider google    && configure_provider google    "$KEY_google"
+  contains_provider openai    && configure_provider openai    "$KEY_openai"
+  set_env_line FAKE_LLM_ENABLED ""
+fi
+
+# ── 2b. optional Redis (registry-cache backend, spec §7.3) ───────
+# Provisioning is upfront; USAGE stays a runtime decision — the cache mode
+# defaults to 'bypass' and is flipped in Settings → Registry cache later.
 
 setup_redis() {
   set_env_line REDIS_URL "redis://redis:6379/0"
@@ -81,9 +182,9 @@ skip_redis() {
   say "Redis not provisioned — memory/bypass cache modes remain available"
 }
 
-if [ "${1:-}" = "--redis" ] || [ "${2:-}" = "--redis" ] || [ "${3:-}" = "--redis" ]; then
+if [ "$REDIS_CHOICE" = "yes" ]; then
   setup_redis
-elif [ "${1:-}" = "--no-redis" ] || [ "${2:-}" = "--no-redis" ] || [ "${3:-}" = "--no-redis" ]; then
+elif [ "$REDIS_CHOICE" = "no" ]; then
   skip_redis
 elif [ -t 0 ]; then
   printf 'Set up Redis as an optional registry-cache backend? [y/N] '
