@@ -104,6 +104,9 @@ class GoogleGenAIProvider(ModelProviderBase):
 
     def list_models(self) -> list[ModelInfo]:
         return [
+            ModelInfo("gemini-3.6-flash", "Gemini 3.6 Flash"),
+            ModelInfo("gemini-3.5-flash", "Gemini 3.5 Flash"),
+            ModelInfo("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
             ModelInfo("gemini-2.5-pro", "Gemini 2.5 Pro"),
             ModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash"),
         ]
