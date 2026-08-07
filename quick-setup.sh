@@ -56,6 +56,40 @@ else
   fi
 fi
 
+# ── 2b. optional Redis (registry-cache backend, spec §7.3) ───────
+# Provisioning is upfront; USAGE stays a runtime decision — the cache mode
+# defaults to 'bypass' and is flipped in Settings → Registry cache later.
+set_env_line() { # $1 = KEY, $2 = value ('' removes the line)
+  grep -vE "^$1=" .env > .env.tmp || true
+  [ -n "$2" ] && printf '%s=%s\n' "$1" "$2" >> .env.tmp
+  mv .env.tmp .env
+}
+
+setup_redis() {
+  set_env_line REDIS_URL "redis://redis:6379/0"
+  set_env_line COMPOSE_PROFILES "redis"
+  say "Redis provisioned: ./start.sh will now include the redis service"
+  say "(cache mode stays 'bypass' until you flip it in Settings → Registry cache)"
+}
+
+skip_redis() {
+  set_env_line REDIS_URL ""
+  set_env_line COMPOSE_PROFILES ""
+  say "Redis not provisioned — memory/bypass cache modes remain available"
+}
+
+if [ "${1:-}" = "--redis" ] || [ "${2:-}" = "--redis" ] || [ "${3:-}" = "--redis" ]; then
+  setup_redis
+elif [ "${1:-}" = "--no-redis" ] || [ "${2:-}" = "--no-redis" ] || [ "${3:-}" = "--no-redis" ]; then
+  skip_redis
+elif [ -t 0 ]; then
+  printf 'Set up Redis as an optional registry-cache backend? [y/N] '
+  read -r want_redis
+  if [ "${want_redis,,}" = "y" ]; then setup_redis; else skip_redis; fi
+else
+  say "non-interactive run — Redis unchanged (use --redis / --no-redis)"
+fi
+
 # ── 3. backend dependencies (local dev; docker builds are separate) ──
 if command -v uv >/dev/null 2>&1; then
   say "installing backend dependencies (uv sync)…"

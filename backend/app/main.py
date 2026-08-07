@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     backfill_task = asyncio.create_task(backfill_embeddings())
     yield
     backfill_task.cancel()
+    await get_cache().stop_listener()
     startup_task.cancel()
     await manager.stop()
     set_manager(None)

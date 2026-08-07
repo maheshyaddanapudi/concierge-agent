@@ -22,7 +22,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy import select
@@ -35,6 +35,7 @@ Registry = Literal["tools", "skills", "sub_agents", "settings"]
 REGISTRIES: tuple[Registry, ...] = ("tools", "skills", "sub_agents", "settings")
 
 _REDIS_PREFIX = "concierge:cache:"
+_NOTIFY_CHANNEL = "registry_cache_inv"
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -175,6 +176,10 @@ class RegistryCache:
         self._dirty: set[str] = set(REGISTRIES)
         self._locks: dict[str, asyncio.Lock] = {r: asyncio.Lock() for r in REGISTRIES}
         self._redis: Any = None
+        # cross-replica sync (spec §7.3): origin id filters own notifications
+        self._origin = uuid4().hex
+        self._listener_conn: Any = None
+        self._listener_tasks: set[Any] = set()
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -187,6 +192,7 @@ class RegistryCache:
                     await self._ensure(registry)
                 except Exception as exc:  # noqa: BLE001 — warm load is best-effort
                     logger.warning("cache_warm_load_failed", registry=registry, error=str(exc))
+        await self.start_listener()
         logger.info("registry_cache_started", mode=self._mode)
 
     async def set_mode(self, mode: str) -> None:
@@ -202,7 +208,10 @@ class RegistryCache:
 
     # ── invalidation / refresh / status ──────────────────────────
 
-    async def invalidate(self, registry: Registry) -> None:
+    async def _mark_dirty(self, registry: Registry) -> None:
+        """Local invalidation only — no cross-replica notify (the LISTEN
+        callback uses this, which is what makes notification loops
+        impossible by construction)."""
         # relationship propagation: skills embed tool rows, sub_agent records
         # embed skill names — dirtying the parent dirties the dependents, so
         # no write hook needs to know the dependency graph
@@ -231,6 +240,66 @@ class RegistryCache:
             mode = str(await _load_setting_direct("registry_cache_mode"))
             if mode != self._mode:
                 await self.set_mode(mode)
+
+    async def invalidate(self, registry: Registry) -> None:
+        await self._mark_dirty(registry)
+        await self._notify_peers(registry)
+
+    # ── cross-replica sync (spec §7.3: LISTEN/NOTIFY, dormant single-node) ──
+
+    async def _notify_peers(self, registry: Registry) -> None:
+        """Broadcast the invalidation so other replicas mark their local
+        caches dirty. Best-effort: single-replica correctness never depends
+        on it (this process already marked itself dirty)."""
+        from app.db import get_session_factory
+
+        try:
+            from sqlalchemy import text
+
+            async with get_session_factory()() as session:
+                await session.execute(
+                    text("SELECT pg_notify(:ch, :payload)"),
+                    {"ch": _NOTIFY_CHANNEL, "payload": f"{self._origin}:{registry}"},
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cache_notify_failed", registry=registry, error=str(exc))
+
+    async def start_listener(self) -> None:
+        """LISTEN for peer invalidations on a dedicated connection. Safe to
+        call when already listening; failure logs and leaves single-node
+        behavior untouched."""
+        if self._listener_conn is not None:
+            return
+        try:
+            import asyncpg  # type: ignore[import-untyped]
+
+            from app.config import get_config
+
+            dsn = get_config().database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+            conn = await asyncpg.connect(dsn)
+
+            def _on_notify(_conn: Any, _pid: int, _channel: str, payload: str) -> None:
+                origin, _, registry = payload.partition(":")
+                if origin == self._origin or registry not in REGISTRIES:
+                    return
+                task = asyncio.create_task(self._mark_dirty(registry))
+                self._listener_tasks.add(task)
+                task.add_done_callback(self._listener_tasks.discard)
+
+            await conn.add_listener(_NOTIFY_CHANNEL, _on_notify)
+            self._listener_conn = conn
+            logger.info("cache_listener_started", channel=_NOTIFY_CHANNEL, origin=self._origin)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cache_listener_unavailable", error=str(exc))
+
+    async def stop_listener(self) -> None:
+        if self._listener_conn is not None:
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                await self._listener_conn.close()
+            self._listener_conn = None
 
     async def refresh(self, registry: Registry) -> dict[str, Any]:
         """Operator-forced eager reload (§8.7 buttons). In bypass, just counts."""

@@ -152,3 +152,46 @@ class TestRedisBackend:
         assert resp.status_code == 200
         got = await cache.tool_by_id(tool.id)
         assert got is not None and got["description"] == "via redis"
+
+
+class TestCrossReplicaSync:
+    """Spec §7.3 LISTEN/NOTIFY: dormant on a single node, functional when a
+    peer broadcasts. Simulated here with a foreign-origin pg_notify."""
+
+    async def test_foreign_notify_marks_dirty(self) -> None:
+        import asyncio
+
+        from sqlalchemy import text
+
+        cache = get_cache()
+        await cache.start_listener()
+        try:
+            gen_before = (await cache.status())["registries"]["tools"]["generation"]
+            async with get_session_factory()() as session:
+                await session.execute(
+                    text("SELECT pg_notify('registry_cache_inv', 'peer-origin:tools')")
+                )
+                await session.commit()
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                gen_now = (await cache.status())["registries"]["tools"]["generation"]
+                if gen_now > gen_before:
+                    break
+            assert gen_now > gen_before, "peer notification must dirty the local cache"
+            # propagation still applies on the listener path
+            assert (await cache.status())["registries"]["skills"]["generation"] >= 1
+        finally:
+            await cache.stop_listener()
+
+    async def test_own_notifications_are_filtered(self) -> None:
+        import asyncio
+
+        cache = get_cache()
+        await cache.start_listener()
+        try:
+            await cache.invalidate("tools")
+            gen_after = (await cache.status())["registries"]["tools"]["generation"]
+            await asyncio.sleep(0.5)  # a self-echo would bump again
+            assert (await cache.status())["registries"]["tools"]["generation"] == gen_after
+        finally:
+            await cache.stop_listener()

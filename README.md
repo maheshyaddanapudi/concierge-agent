@@ -62,7 +62,7 @@ Lifecycle scripts (all idempotent):
 
 | Script | What it does |
 |---|---|
-| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
+| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), asks whether to provision the optional Redis cache backend (`--redis`/`--no-redis` non-interactive; usage stays a Settings decision), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
 | `./build.sh` | Builds both docker images. |
 | `./start.sh` | Errors out if Docker isn't running; otherwise creates or restarts the stack — missing images are pulled/built, first run creates the DB schema and loads seeds automatically, later runs resume with the same data (named volumes). Waits for backend health and prints the URLs. |
 | `./stop.sh` | Stops the containers; all data preserved — `./start.sh` resumes where you left off. |
