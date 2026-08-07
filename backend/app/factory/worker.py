@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session_factory
 from app.llm import ModelParams, get_model, text_from_content
-from app.models import Skill, SubAgent, Tool
+from app.models import Skill, SubAgent
 from app.prompts import load_prompt
 
 logger = structlog.get_logger("factory.worker")
@@ -237,38 +237,16 @@ def materialize_tool(row: dict[str, Any]) -> BaseTool | None:
 
 
 async def resolve_tools_by_ids(tool_ids: list[UUID]) -> list[BaseTool]:
-    """Fresh registry read per call (spec §7.0 sync invariant): only active,
-    non-deleted tools materialize."""
+    """Event-invalidated registry read per call (spec §7.0/§7.3): only
+    active, non-deleted tools materialize."""
     if not tool_ids:
         return []
-    async with get_session_factory()() as session:
-        rows = {
-            t.id: t
-            for t in (
-                await session.execute(
-                    select(Tool).where(
-                        Tool.id.in_(tool_ids),
-                        Tool.deleted_at.is_(None),
-                        Tool.status == "active",
-                    )
-                )
-            ).scalars()
-        }
+    from app.registry_cache import get_cache
+
+    records = await get_cache().tools_by_ids(list(tool_ids))
     out: list[BaseTool] = []
-    for tid in tool_ids:
-        row = rows.get(tid)
-        if row is None:
-            continue
-        tool = materialize_tool(
-            {
-                "kind": row.kind,
-                "tool_name": row.tool_name,
-                "tool_key": row.tool_key,
-                "mcp_server_id": str(row.mcp_server_id) if row.mcp_server_id else None,
-                "description": row.description,
-                "input_schema": row.input_schema,
-            }
-        )
+    for record in records:
+        tool = materialize_tool(record)
         if tool is not None:
             out.append(tool)
     return out

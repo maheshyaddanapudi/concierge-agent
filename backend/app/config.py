@@ -19,6 +19,7 @@ class AppConfig(BaseSettings):
     openai_api_key: str | None = None
     fake_llm_enabled: bool = False
     langsmith_api_key: str | None = None
+    redis_url: str | None = None  # optional registry-cache backend (spec §7.3)
     otel_exporter_otlp_endpoint: str | None = None
     workspace_dir: str = "/workspace"
     backend_port: int = 8000

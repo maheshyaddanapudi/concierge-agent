@@ -51,6 +51,11 @@ class ProviderNotConfiguredError(RuntimeError):
     """Raised when get_chat_model is called on an unconfigured provider."""
 
 
+class EmbeddingsNotSupportedError(RuntimeError):
+    """Raised when get_embeddings is called on a provider without an
+    embeddings API (spec §2.1 — consumers degrade to lexical-only)."""
+
+
 class UnsupportedParamsError(ValueError):
     """Raised when params include options the selected model does not support."""
 
@@ -66,3 +71,7 @@ class ModelProvider(Protocol):
     def list_models(self) -> list[ModelInfo]: ...
 
     def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel: ...
+
+    def supports_embeddings(self) -> bool: ...
+
+    async def get_embeddings(self, model: str, texts: list[str]) -> list[list[float]]: ...

@@ -1,4 +1,7 @@
-"""Shared helpers for factory/orchestrator tests: build registry rows directly."""
+"""Shared helpers for factory/orchestrator tests: build registry rows directly.
+
+Direct-row writes invalidate the registry cache afterward, matching the
+contract every real write path honors (spec §7.3)."""
 
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,7 +25,10 @@ async def create_tool(**kw: Any) -> Tool:
         session.add(tool)
         await session.commit()
         await session.refresh(tool)
-        return tool
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("tools")
+    return tool
 
 
 async def create_skill(
@@ -44,7 +50,10 @@ async def create_skill(
         session.add(skill)
         await session.commit()
         await session.refresh(skill)
-        return skill
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("skills")
+    return skill
 
 
 async def create_sub_agent(
@@ -76,7 +85,10 @@ async def create_sub_agent(
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
-        return agent
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("sub_agents")
+    return agent
 
 
 async def load_snapshot(agent_id: UUID) -> dict[str, Any]:

@@ -18,6 +18,8 @@ from app.api.deps import (
 from app.llm import ModelParams, validate_model_selection
 from app.models import Skill, SubAgent, Tool, sub_agent_skills
 from app.overlap import OverlapCheckOut, check_skill_overlap
+from app.registry_cache import get_cache
+from app.retrieval import schedule_embedding
 from app.schemas.skill import SkillCreate, SkillOut, SkillOverlapCheck, SkillPatch
 from app.schemas.sub_agent import SubAgentOut
 from app.skilldoc import validate_mentions
@@ -87,6 +89,8 @@ async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
     session.add(skill)
     await session.commit()
     await session.refresh(skill)
+    await get_cache().invalidate("skills")
+    schedule_embedding("skills", str(skill.id))
     return skill
 
 
@@ -133,6 +137,8 @@ async def patch_skill(skill_id: UUID, body: SkillPatch, session: SessionDep) -> 
             setattr(skill, f, v)
     await session.commit()
     await session.refresh(skill)
+    await get_cache().invalidate("skills")
+    schedule_embedding("skills", str(skill.id))
     return skill
 
 
@@ -177,3 +183,4 @@ async def delete_skill(skill_id: UUID, session: SessionDep) -> None:
         )
     skill.deleted_at = datetime.now(UTC)
     await session.commit()
+    await get_cache().invalidate("skills")

@@ -6,7 +6,6 @@ from uuid import UUID
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Skill, SubAgent, Tool
@@ -36,53 +35,39 @@ class PlannerOutput(BaseModel):
 
 
 async def registry_summaries(session: AsyncSession) -> dict[str, Any]:
-    """Compact registry summaries only (progressive disclosure)."""
-    agents = list(
-        (
-            await session.execute(
-                select(SubAgent).where(SubAgent.deleted_at.is_(None), SubAgent.status == "active")
-            )
-        ).scalars()
-    )
-    cards = [
-        {
-            "id": str(a.id),
-            "name": a.name,
-            "description": a.description,
-            "skills": [s.name for s in a.skills],
-        }
-        for a in agents
-    ]
-    tools = list(
-        (
-            await session.execute(
-                select(Tool).where(
-                    Tool.deleted_at.is_(None),
-                    Tool.status == "active",
-                    Tool.direct_exposure.is_(True),
-                )
-            )
-        ).scalars()
-    )
-    skills = list(
-        (
-            await session.execute(
-                select(Skill).where(
-                    Skill.deleted_at.is_(None),
-                    Skill.status == "active",
-                    Skill.direct_exposure.is_(True),
-                )
-            )
-        ).scalars()
-    )
+    """Compact registry summaries only (progressive disclosure). Reads via
+    the registry cache (§7.3); over-threshold catalogs rank down to top-K
+    (§7.4) with an explicit truncation note for the planner."""
+    from app.registry_cache import get_cache
+    from app.retrieval import apply_retrieval, catalog_footer
+
+    cache = get_cache()
+    cards = await cache.sub_agent_cards()
+    cards, cards_dropped = await apply_retrieval(cards, kind="sub_agents")
+    tools = await cache.tools(exposed_only=True)
+    tools, tools_dropped = await apply_retrieval(tools, kind="tools")
+    skills = await cache.skills(exposed_only=True)
+    skills, skills_dropped = await apply_retrieval(skills, kind="skills")
     direct = [
-        {"id": str(t.id), "type": "direct_tool", "name": t.tool_key, "description": t.description}
+        {
+            "id": t["id"],
+            "type": "direct_tool",
+            "name": t["tool_key"],
+            "description": t["description"],
+        }
         for t in tools
     ] + [
-        {"id": str(s.id), "type": "direct_skill", "name": s.name, "description": s.description}
+        {"id": s["id"], "type": "direct_skill", "name": s["name"], "description": s["description"]}
         for s in skills
     ]
-    return {"sub_agent_cards": cards, "direct_capabilities": direct}
+    notes: list[str] = []
+    if cards_dropped:
+        notes.append(catalog_footer("sub agents", len(cards), len(cards) + cards_dropped))
+    if tools_dropped:
+        notes.append(catalog_footer("tools", len(tools), len(tools) + tools_dropped))
+    if skills_dropped:
+        notes.append(catalog_footer("skills", len(skills), len(skills) + skills_dropped))
+    return {"sub_agent_cards": cards, "direct_capabilities": direct, "notes": notes}
 
 
 async def validate_plan(session: AsyncSession, plan: PlannerOutput, max_steps: int) -> list[str]:
@@ -152,11 +137,16 @@ def build_planner_prompt(
             f"- id={i['id']} type={i['type']} name={i['name']}: {i['description']}" for i in items
         )
 
+    direct_section = fmt_direct(summaries["direct_capabilities"])
+    notes = summaries.get("notes") or []
+    if notes:
+        # spec §7.4: a ranked slice must announce itself to the planner too
+        direct_section += "\n" + "\n".join(notes)
     return load_prompt("planner").format(
         task=task,
         history=history or "(new conversation)",
         sub_agent_cards=fmt_cards(summaries["sub_agent_cards"]),
-        direct_capabilities=fmt_direct(summaries["direct_capabilities"]),
+        direct_capabilities=direct_section,
         max_plan_steps=max_plan_steps,
     )
 

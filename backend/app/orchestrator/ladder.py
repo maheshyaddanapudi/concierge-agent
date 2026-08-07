@@ -21,11 +21,8 @@ from app.factory.worker import (
     get_compiled_worker,
     get_native_worker,
     resolve_tools_by_ids,
-    snapshot_skill,
-    snapshot_sub_agent,
 )
 from app.llm import get_model, text_from_content
-from app.models import Skill, SubAgent, Tool, sub_agent_skills
 from app.orchestrator.context import require_run_context
 from app.prompts import load_prompt
 
@@ -57,141 +54,112 @@ class Resolution:
 
 
 async def resolve_capability(capability: dict[str, Any]) -> Resolution:
-    """Deterministic ladder (spec §7.1). `capability` is a plan-entry
-    capability dict: {type, id?, skill_ids?}."""
+    """Deterministic ladder (spec §7.1) over the registry cache (§7.3).
+    `capability` is a plan-entry capability dict: {type, id?, skill_ids?}."""
+    from app.registry_cache import get_cache
+
+    cache = get_cache()
     ctx_type = capability.get("type")
-    async with get_session_factory()() as session:
-        if ctx_type == "direct_tool":
-            tool = await session.get(Tool, UUID(str(capability["id"])))
-            if tool is None or tool.deleted_at is not None or tool.status != "active":
-                raise ResolutionError(f"tool {capability.get('id')} is not active")
-            if not tool.direct_exposure:
-                raise ResolutionError(f"tool {tool.tool_key!r} is not exposed to the orchestrator")
+    if ctx_type == "direct_tool":
+        tool = await cache.tool_by_id(str(capability["id"]))
+        if tool is None or tool["status"] != "active":
+            raise ResolutionError(f"tool {capability.get('id')} is not active")
+        if not tool["direct_exposure"]:
+            raise ResolutionError(f"tool {tool['tool_key']!r} is not exposed to the orchestrator")
+        return Resolution(
+            rung="direct_tool",
+            tier="tool",
+            kind=tool["kind"],
+            source=tool["source"],
+            entity_id=tool["id"],
+            entity_name=tool["tool_key"],
+            payload={"tool_id": tool["id"]},
+        )
+
+    if ctx_type == "direct_skill":
+        skill = await cache.skill_by_id(str(capability["id"]))
+        if skill is None or skill["status"] != "active":
+            raise ResolutionError(f"skill {capability.get('id')} is not active")
+        if skill["direct_exposure"]:
             return Resolution(
-                rung="direct_tool",
-                tier="tool",
-                kind=tool.kind,
-                source=tool.source,
-                entity_id=str(tool.id),
-                entity_name=tool.tool_key,
-                payload={"tool_id": str(tool.id)},
+                rung="direct_skill",
+                tier="skill",
+                kind=skill["kind"],
+                source=skill["source"],
+                entity_id=skill["id"],
+                entity_name=skill["name"],
+                payload={"skill": skill},
             )
-
-        if ctx_type == "direct_skill":
-            skill = await session.get(Skill, UUID(str(capability["id"])))
-            if skill is None or skill.deleted_at is not None or skill.status != "active":
-                raise ResolutionError(f"skill {capability.get('id')} is not active")
-            if skill.direct_exposure:
-                snap = await snapshot_skill(session, skill)
-                return Resolution(
-                    rung="direct_skill",
-                    tier="skill",
-                    kind=skill.kind,
-                    source=skill.source,
-                    entity_id=str(skill.id),
-                    entity_name=skill.name,
-                    payload={"skill": snap},
-                )
-            # rung 2: native sub agent whose covers_skill_ids includes the skill
-            natives = (
-                (
-                    await session.execute(
-                        select(SubAgent).where(
-                            SubAgent.deleted_at.is_(None),
-                            SubAgent.status == "active",
-                            SubAgent.kind == "native",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for agent in natives:
-                if str(skill.id) in [str(x) for x in (agent.covers_skill_ids or [])]:
-                    return Resolution(
-                        rung="native_sub_agent",
-                        tier="sub_agent",
-                        kind="native",
-                        source=agent.source,
-                        entity_id=str(agent.id),
-                        entity_name=agent.name,
-                        payload={"native_name": agent.name},
-                    )
-            # rung 3: custom sub agent whose workflow includes the skill
-            custom_row = (
-                (
-                    await session.execute(
-                        select(SubAgent)
-                        .join(sub_agent_skills, sub_agent_skills.c.sub_agent_id == SubAgent.id)
-                        .where(
-                            sub_agent_skills.c.skill_id == skill.id,
-                            SubAgent.deleted_at.is_(None),
-                            SubAgent.status == "active",
-                            SubAgent.kind == "custom",
-                        )
-                        .order_by(SubAgent.created_at)
-                    )
-                )
-                .scalars()
-                .first()
-            )
-            if custom_row is not None:
-                snap = await snapshot_sub_agent(session, custom_row)
-                return Resolution(
-                    rung="custom_sub_agent",
-                    tier="sub_agent",
-                    kind="custom",
-                    source=custom_row.source,
-                    entity_id=str(custom_row.id),
-                    entity_name=custom_row.name,
-                    payload={"snapshot": snap},
-                )
-            # rung 4: ephemeral dynamic worker
-            return await _dynamic_resolution(session, [str(skill.id)])
-
-        if ctx_type == "sub_agent":
-            found = await session.get(SubAgent, UUID(str(capability["id"])))
-            if found is None or found.deleted_at is not None or found.status != "active":
-                raise ResolutionError(f"sub agent {capability.get('id')} is not active")
-            agent_row = found
-            if agent_row.kind == "native":
+        agents = await cache.sub_agents()
+        # rung 2: native sub agent whose covers_skill_ids includes the skill
+        for agent in agents:
+            if agent["kind"] == "native" and skill["id"] in agent["covers_skill_ids"]:
                 return Resolution(
                     rung="native_sub_agent",
                     tier="sub_agent",
                     kind="native",
-                    source=agent_row.source,
-                    entity_id=str(agent_row.id),
-                    entity_name=agent_row.name,
-                    payload={"native_name": agent_row.name},
+                    source=agent["source"],
+                    entity_id=agent["id"],
+                    entity_name=agent["name"],
+                    payload={"native_name": agent["name"]},
                 )
-            snap = await snapshot_sub_agent(session, agent_row)
-            return Resolution(
-                rung="custom_sub_agent",
-                tier="sub_agent",
-                kind="custom",
-                source=agent_row.source,
-                entity_id=str(agent_row.id),
-                entity_name=agent_row.name,
-                payload={"snapshot": snap},
-            )
+        # rung 3: first (created_at order) custom sub agent using the skill
+        for agent in agents:
+            if agent["kind"] == "custom" and skill["id"] in agent["skill_ids"]:
+                snap = await cache.sub_agent_snapshot(agent["id"])
+                return Resolution(
+                    rung="custom_sub_agent",
+                    tier="sub_agent",
+                    kind="custom",
+                    source=agent["source"],
+                    entity_id=agent["id"],
+                    entity_name=agent["name"],
+                    payload={"snapshot": snap},
+                )
+        # rung 4: ephemeral dynamic worker
+        return await _dynamic_resolution([skill["id"]])
 
-        if ctx_type == "spin_worker":
-            return await _dynamic_resolution(
-                session, [str(s) for s in capability.get("skill_ids") or []]
+    if ctx_type == "sub_agent":
+        agent_rec = await cache.sub_agent_by_id(str(capability["id"]))
+        if agent_rec is None or agent_rec["status"] != "active":
+            raise ResolutionError(f"sub agent {capability.get('id')} is not active")
+        if agent_rec["kind"] == "native":
+            return Resolution(
+                rung="native_sub_agent",
+                tier="sub_agent",
+                kind="native",
+                source=agent_rec["source"],
+                entity_id=agent_rec["id"],
+                entity_name=agent_rec["name"],
+                payload={"native_name": agent_rec["name"]},
             )
+        snap = await cache.sub_agent_snapshot(agent_rec["id"])
+        return Resolution(
+            rung="custom_sub_agent",
+            tier="sub_agent",
+            kind="custom",
+            source=agent_rec["source"],
+            entity_id=agent_rec["id"],
+            entity_name=agent_rec["name"],
+            payload={"snapshot": snap},
+        )
+
+    if ctx_type == "spin_worker":
+        return await _dynamic_resolution([str(s) for s in capability.get("skill_ids") or []])
 
     raise ResolutionError(f"unknown capability type {ctx_type!r}")
 
 
-async def _dynamic_resolution(session: Any, skill_ids: list[str]) -> Resolution:
-    from app.settings_store import get_setting
+async def _dynamic_resolution(skill_ids: list[str]) -> Resolution:
+    from app.registry_cache import get_cache
 
-    if not await get_setting(session, "dynamic_worker_fallback_enabled"):
+    cache = get_cache()
+    if not await cache.setting("dynamic_worker_fallback_enabled"):
         raise ResolutionError("dynamic worker fallback is disabled")
     snaps: list[dict[str, Any]] = []
     for sid in skill_ids:
         try:
-            skill_id = UUID(sid)
+            UUID(sid)
         except ValueError:
             # strict contract: skill_ids are registry uuids, never names —
             # reject with guidance instead of crashing the run
@@ -200,10 +168,10 @@ async def _dynamic_resolution(session: Any, skill_ids: list[str]) -> Resolution:
                 "as shown in the Available skills catalog; if the skill is not "
                 "listed, unlock the full registry first with use_full_catalog."
             ) from None
-        skill = await session.get(Skill, skill_id)
-        if skill is None or skill.deleted_at is not None or skill.status != "active":
+        skill = await cache.skill_by_id(sid)
+        if skill is None or skill["status"] != "active":
             raise ResolutionError(f"skill {sid} is not active")
-        snaps.append(await snapshot_skill(session, skill))
+        snaps.append(skill)
     if not snaps:
         raise ResolutionError("spin_worker needs at least one skill")
     # callsign + composition: worker-alpha (web-research+file-ops) — the
@@ -245,7 +213,6 @@ async def run_inline_skill(
         resolve_node_model,
     )
     from app.orchestrator.middleware import SkillLoopContext, build_middleware_stack
-    from app.settings_store import get_setting
 
     ctx = require_run_context()
     step_id: UUID | None = None
@@ -262,10 +229,11 @@ async def run_inline_skill(
             emit_dispatch=True,
         )
     try:
+        from app.registry_cache import get_cache
+
         model_ref, params = await resolve_node_model(skill_snapshot, {})
         model = get_model(model_ref, params)
-        async with get_session_factory()() as session:
-            max_iter = int(await get_setting(session, "max_tool_iterations"))
+        max_iter = int(await get_cache().setting("max_tool_iterations"))
         stack = build_middleware_stack(
             SkillLoopContext(
                 skill_id=skill_snapshot.get("id"),

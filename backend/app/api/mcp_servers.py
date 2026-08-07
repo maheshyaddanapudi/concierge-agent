@@ -119,6 +119,9 @@ async def delete_server(server_id: UUID, session: SessionDep) -> None:
     ).scalars():
         tool.deleted_at = now
     await session.commit()
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("tools")
     from app.mcp.manager import get_manager
 
     manager = get_manager()

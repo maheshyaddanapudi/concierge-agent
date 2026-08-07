@@ -12,7 +12,12 @@ from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config import get_config
-from app.llm.port import ModelInfo, ModelParams, ProviderNotConfiguredError
+from app.llm.port import (
+    EmbeddingsNotSupportedError,
+    ModelInfo,
+    ModelParams,
+    ProviderNotConfiguredError,
+)
 from app.llm.registry import model_provider
 
 # effort → Anthropic extended-thinking budget tokens
@@ -39,6 +44,13 @@ class ModelProviderBase:
 
     def list_models(self) -> list[ModelInfo]:  # pragma: no cover - overridden
         return []
+
+    # embeddings (spec §2.1/§7.4): opt-in per adapter; default is unsupported
+    def supports_embeddings(self) -> bool:
+        return False
+
+    async def get_embeddings(self, model: str, texts: list[str]) -> list[list[float]]:
+        raise EmbeddingsNotSupportedError(f"provider {self.provider_id!r} has no embeddings API")
 
 
 @model_provider
@@ -112,6 +124,16 @@ class GoogleGenAIProvider(ModelProviderBase):
                 kwargs["max_output_tokens"] = params.max_output_tokens
         return ChatGoogleGenerativeAI(model=model, **kwargs)
 
+    def supports_embeddings(self) -> bool:
+        return True
+
+    async def get_embeddings(self, model: str, texts: list[str]) -> list[list[float]]:
+        if not self.is_configured():
+            raise ProviderNotConfiguredError("google_genai: GOOGLE_API_KEY not set")
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+        return await GoogleGenerativeAIEmbeddings(model=model).aembed_documents(texts)
+
 
 @model_provider
 class OpenAIProvider(ModelProviderBase):
@@ -144,3 +166,13 @@ class OpenAIProvider(ModelProviderBase):
             if params.max_output_tokens is not None:
                 kwargs["max_tokens"] = params.max_output_tokens
         return ChatOpenAI(model=model, **kwargs)
+
+    def supports_embeddings(self) -> bool:
+        return True
+
+    async def get_embeddings(self, model: str, texts: list[str]) -> list[list[float]]:
+        if not self.is_configured():
+            raise ProviderNotConfiguredError("openai: OPENAI_API_KEY not set")
+        from langchain_openai import OpenAIEmbeddings
+
+        return await OpenAIEmbeddings(model=model).aembed_documents(texts)

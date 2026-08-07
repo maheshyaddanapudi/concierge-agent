@@ -55,6 +55,16 @@ def _clean_fake_script() -> Iterator[None]:
     fake_llm.clear_script()
 
 
+@pytest.fixture(autouse=True)
+def _reset_registry_cache() -> Iterator[None]:
+    """Fresh cache singleton per test — mode + memory state never leak."""
+    from app.registry_cache import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     async with get_session_factory()() as s:

@@ -191,3 +191,20 @@ class FakeProvider:
             temperature=params.temperature if params else None,
             max_output_tokens=params.max_output_tokens if params else None,
         )
+
+    def supports_embeddings(self) -> bool:
+        return True
+
+    async def get_embeddings(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Deterministic bag-of-tokens vectors: shared tokens produce real
+        cosine similarity, so ranking tests exercise genuine vector math."""
+        if not self.is_configured():
+            raise ProviderNotConfiguredError("fake: FAKE_LLM_ENABLED not set")
+        dims = 64
+        out: list[list[float]] = []
+        for text in texts:
+            vec = [0.0] * dims
+            for token in text.lower().split():
+                vec[hash(token) % dims] += 1.0
+            out.append(vec)
+        return out

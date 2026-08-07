@@ -79,6 +79,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         recorder=recorder,
         settings=settings,
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
+        query_text=task_text,
     )
     set_run_context(ctx)
     if resume is None:

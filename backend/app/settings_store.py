@@ -34,6 +34,13 @@ DEFAULTS: dict[str, Any] = {
     "langsmith_endpoint": "",
     "langsmith_project": "concierge-agent",
     "otlp_endpoint": "",
+    # registry cache (spec §7.3)
+    "registry_cache_mode": "bypass",
+    # progressive-disclosure retrieval (spec §7.4) — dark by default
+    "retrieval_enabled": False,
+    "retrieval_threshold": 30,
+    "retrieval_top_k": 10,
+    "embedding_model": None,  # nullable 'provider:model'; null → lexical-only
 }
 
 _MODEL_KEYS = {"default_model", "planner_model", "aggregator_model"}
@@ -44,13 +51,17 @@ _INT_KEYS = {
     "max_tool_iterations",
     "direct_exposure_cap_warning",
     "mcp_health_interval_s",
+    "retrieval_threshold",
+    "retrieval_top_k",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
     "dynamic_worker_fallback_enabled",
     "langsmith_enabled",
     "answer_ui_enabled",
+    "retrieval_enabled",
 }
+_CACHE_MODES = {"bypass", "memory", "redis"}
 _STR_KEYS = {"langsmith_endpoint", "langsmith_project", "otlp_endpoint"}
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 
@@ -111,6 +122,24 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             continue
         if key == "orchestrator_mode" and value not in {"graph", "agentic"}:
             errors.append("orchestrator_mode must be 'graph' or 'agentic'")
+        elif key == "registry_cache_mode":
+            if value not in _CACHE_MODES:
+                errors.append(f"registry_cache_mode must be one of {sorted(_CACHE_MODES)}")
+            elif value == "redis":
+                from app.config import get_config
+
+                if not get_config().redis_url:
+                    errors.append("registry_cache_mode 'redis' requires REDIS_URL to be set")
+        elif key == "embedding_model":
+            if value is not None:
+                if not isinstance(value, str):
+                    errors.append("embedding_model must be a 'provider:model' string or null")
+                else:
+                    from app.llm import validate_embedding_selection
+
+                    errors.extend(
+                        f"embedding_model: {e}" for e in validate_embedding_selection(value)
+                    )
         elif key == "log_level" and value not in _LOG_LEVELS:
             errors.append(f"log_level must be one of {sorted(_LOG_LEVELS)}")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
@@ -148,6 +177,8 @@ async def update_settings(session: AsyncSession, updates: dict[str, Any]) -> dic
     errors = validate_updates(current, updates)
     if errors:
         raise SettingsValidationError(errors)
+    if updates.get("registry_cache_mode") == "redis":
+        await _ping_redis()
     for key, value in updates.items():
         row = await session.get(AppSetting, key)
         if row is None:
@@ -155,4 +186,26 @@ async def update_settings(session: AsyncSession, updates: dict[str, Any]) -> dic
         else:
             row.value = {"value": value}
     await session.commit()
+    # spec §7.3: settings are a cached registry; every write invalidates
+    from app.registry_cache import get_cache
+
+    await get_cache().invalidate("settings")
     return await get_settings(session)
+
+
+async def _ping_redis() -> None:
+    """Selecting the redis cache mode pings Redis and rejects on failure."""
+    from app.config import get_config
+
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import-not-found]
+
+        client = aioredis.from_url(str(get_config().redis_url))
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
+    except SettingsValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any failure means unusable backend
+        raise SettingsValidationError([f"redis unreachable: {exc}"]) from exc

@@ -48,7 +48,18 @@ if "orch_echo" not in native_tools():
                 )
             )
             await session.commit()
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
         return "inserted"
+
+
+@pytest.fixture(autouse=True, params=["bypass", "memory"])
+async def _registry_cache_mode(request: pytest.FixtureRequest) -> None:
+    """Spec §11: the orchestrator/middleware/ladder suite runs in both cache
+    modes — identical observable behavior is the §7.3 no-degradation gate."""
+    async with get_session_factory()() as session:
+        await update_settings(session, {"registry_cache_mode": request.param})
 
 
 @pytest.fixture(autouse=True)
@@ -367,6 +378,9 @@ class TestResolutionLadder:
             assert row is not None
             row.direct_exposure = False
             await session.commit()
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("skills")
         plan_call(
             entries=[
                 {

@@ -15,6 +15,8 @@ from app.api.deps import (
     fetch_or_404,
 )
 from app.models import Skill, Tool, skill_tools
+from app.registry_cache import get_cache
+from app.retrieval import schedule_embedding
 from app.schemas.skill import SkillOut
 from app.schemas.tool import ToolOut, ToolPatch
 
@@ -51,6 +53,8 @@ async def patch_tool(tool_id: UUID, body: ToolPatch, session: SessionDep) -> Too
         setattr(tool, f, v)
     await session.commit()
     await session.refresh(tool)
+    await get_cache().invalidate("tools")
+    schedule_embedding("tools", str(tool.id))
     return tool
 
 
@@ -86,3 +90,4 @@ async def delete_tool(tool_id: UUID, session: SessionDep) -> None:
         )
     tool.deleted_at = datetime.now(UTC)
     await session.commit()
+    await get_cache().invalidate("tools")

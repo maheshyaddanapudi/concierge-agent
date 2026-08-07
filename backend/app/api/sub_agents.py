@@ -19,6 +19,8 @@ from app.factory.dag import validate_workflow, workflow_skill_ids
 from app.llm import ModelParams, validate_model_selection
 from app.models import Skill, SubAgent
 from app.overlap import OverlapCheckOut, check_sub_agent_overlap
+from app.registry_cache import get_cache
+from app.retrieval import schedule_embedding
 from app.schemas.sub_agent import (
     SubAgentCreate,
     SubAgentOut,
@@ -88,6 +90,8 @@ async def create_sub_agent(body: SubAgentCreate, session: SessionDep) -> SubAgen
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
+    await get_cache().invalidate("sub_agents")
+    schedule_embedding("sub_agents", str(agent.id))
     return agent
 
 
@@ -132,6 +136,8 @@ async def patch_sub_agent(agent_id: UUID, body: SubAgentPatch, session: SessionD
         setattr(agent, f, v)
     await session.commit()
     await session.refresh(agent)
+    await get_cache().invalidate("sub_agents")
+    schedule_embedding("sub_agents", str(agent.id))
     return agent
 
 
@@ -155,3 +161,4 @@ async def delete_sub_agent(agent_id: UUID, session: SessionDep) -> None:
     reject_static_delete(agent)
     agent.deleted_at = datetime.now(UTC)
     await session.commit()
+    await get_cache().invalidate("sub_agents")
