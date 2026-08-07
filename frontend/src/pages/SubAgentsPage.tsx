@@ -1,6 +1,7 @@
 /** Sub Agents (spec §8.4): starter-template workflow builder (node list +
  * edge list) with a live read-only react-flow preview, inline validation,
  * native agents as definition cards, "Test invoke" into Chat. */
+import { CacheControls } from '../components/CacheControls'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Background, Handle, Position, ReactFlow, type Edge, type Node } from '@xyflow/react'
@@ -586,9 +587,12 @@ export function SubAgentsPage() {
         title="Sub Agents"
         subtitle="Persona + hard workflow DAG over skills — compiled by the worker factory, validated at save."
         actions={
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            + New sub agent
-          </Button>
+          <>
+            <CacheControls registry="sub_agents" />
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              + New sub agent
+            </Button>
+          </>
         }
       />
       <RegistryTable

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
+  CacheStatus,
   Conversation,
   ConversationDetail,
   HitlPending,
@@ -96,6 +97,23 @@ export function useInvalidate() {
   return (...keys: string[]) => {
     for (const key of keys) void qc.invalidateQueries({ queryKey: [key] })
   }
+}
+
+export function useCacheStatus() {
+  return useQuery({
+    queryKey: ['cache-status'],
+    queryFn: () => api.get<CacheStatus>('/cache/status'),
+    refetchInterval: 10000,
+  })
+}
+
+export function useRefreshCache() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (registry: string) =>
+      api.post<Record<string, unknown>>(`/cache/refresh/${registry}`, {}),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['cache-status'] }),
+  })
 }
 
 export function usePatchSettings() {

@@ -4,10 +4,12 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import {
+  useCacheStatus,
   useHitlPending,
   useInvalidate,
   usePatchSettings,
   useProviders,
+  useRefreshCache,
   useServers,
   useSettings,
 } from '../api/hooks'
@@ -128,6 +130,43 @@ function ModelSelect({
         />
       </Field>
     </div>
+  )
+}
+
+function CacheStatusPanel() {
+  const { data: status } = useCacheStatus()
+  const refresh = useRefreshCache()
+  if (!status) return null
+  return (
+    <Field
+      label="Cache status"
+      hint="per-registry records · generation · loaded-at — refresh is an operator override, freshness is event-driven"
+    >
+      <div className="space-y-1.5">
+        {Object.entries(status.registries).map(([name, entry]) => (
+          <div key={name} className="flex items-center gap-3 font-mono text-[11px]">
+            <span className="w-24 tracking-wider text-slate-400 uppercase">{name}</span>
+            <span className="text-slate-500">
+              {status.mode === 'bypass'
+                ? `gen ${entry.generation} · bypass (direct db reads)`
+                : entry.records != null
+                  ? `${entry.records} records · gen ${entry.generation}` +
+                    (entry.loaded_at ? ` · loaded ${timeAgo(entry.loaded_at)}` : '')
+                  : 'not loaded'}
+            </span>
+          </div>
+        ))}
+        <div className="pt-1.5">
+          <Button
+            variant="secondary"
+            disabled={refresh.isPending}
+            onClick={() => refresh.mutate('all')}
+          >
+            {refresh.isPending ? 'Refreshing…' : '⟳ Refresh all caches'}
+          </Button>
+        </div>
+      </div>
+    </Field>
   )
 }
 
@@ -284,6 +323,52 @@ export function SettingsPage() {
             k="direct_exposure_cap_warning"
             hint="Tools/Skills pages warn above this"
           />
+        </div>
+      </Section>
+
+      <Section title="Registry cache">
+        <Field
+          label="Mode"
+          hint="bypass = direct db reads (rollback lever) · memory = in-process, event-invalidated · redis = shared backend (REDIS_URL env, pinged at save)"
+        >
+          <div className="flex gap-2">
+            {(['bypass', 'memory', 'redis'] as const).map((m) => (
+              <Button
+                key={m}
+                variant={settings.registry_cache_mode === m ? 'primary' : 'secondary'}
+                onClick={() => patch.mutate({ registry_cache_mode: m })}
+              >
+                {m}
+              </Button>
+            ))}
+          </div>
+        </Field>
+        <CacheStatusPanel />
+      </Section>
+
+      <Section title="Retrieval (progressive disclosure)">
+        <div className="grid grid-cols-2 gap-4">
+          <BoolSetting
+            label="Top-K retrieval"
+            k="retrieval_enabled"
+            hint="rank orchestrator catalogs to the task's top-K above the threshold; skill loops stay id-pinned"
+          />
+          <IntSetting
+            label="Threshold"
+            k="retrieval_threshold"
+            hint="registries at or below this size always inject in full"
+          />
+          <IntSetting label="Top K" k="retrieval_top_k" />
+          <Field
+            label="Embedding model"
+            hint="provider:model (validated at save) — empty = lexical-only ranking"
+          >
+            <TextInput
+              defaultValue={String(settings.embedding_model ?? '')}
+              placeholder="e.g. openai:text-embedding-3-small"
+              onBlur={(e) => patch.mutate({ embedding_model: e.target.value || null })}
+            />
+          </Field>
         </div>
       </Section>
 

@@ -1,5 +1,6 @@
 /** Tools (spec §8.2): skill badges (chips → skill detail), `direct` badge,
  * schema drawer, expose-to-orchestrator toggle. */
+import { CacheControls } from '../components/CacheControls'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -140,6 +141,7 @@ export function ToolsPage() {
       <PageHeader
         title="Tools"
         subtitle="Ingested from MCP servers or registered natively — bindable to skills, never created here."
+        actions={<CacheControls registry="tools" />}
       />
       <ExposureWarningBanner />
       <RegistryTable

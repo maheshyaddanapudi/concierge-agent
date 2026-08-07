@@ -172,6 +172,23 @@ export type Settings = Record<string, unknown> & {
   langsmith_endpoint: string
   langsmith_project: string
   otlp_endpoint: string
+  registry_cache_mode: 'bypass' | 'memory' | 'redis'
+  retrieval_enabled: boolean
+  retrieval_threshold: number
+  retrieval_top_k: number
+  embedding_model: string | null
+}
+
+export interface CacheRegistryStatus {
+  records: number | null
+  generation: number
+  loaded_at: string | null
+  cached: boolean
+}
+
+export interface CacheStatus {
+  mode: 'bypass' | 'memory' | 'redis'
+  registries: Record<string, CacheRegistryStatus>
 }
 
 export interface HitlPending {

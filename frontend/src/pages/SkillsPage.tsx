@@ -1,6 +1,7 @@
 /** Skills (spec §8.3): template-based skill document editor — frontmatter as
  * form fields, tool tags, model+effort override, markdown body with template,
  * side-by-side preview, {tool:...} mention validation at save. */
+import { CacheControls } from '../components/CacheControls'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -435,9 +436,12 @@ export function SkillsPage() {
         title="Skills"
         subtitle="Markdown documents: minor persona + multi-step instructions + strict tool bindings."
         actions={
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            + New skill
-          </Button>
+          <>
+            <CacheControls registry="skills" />
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              + New skill
+            </Button>
+          </>
         }
       />
       <ExposureWarningBanner />
