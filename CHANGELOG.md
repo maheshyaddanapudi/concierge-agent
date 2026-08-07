@@ -16,6 +16,25 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
   stale card could re-submit a decision against an already-resolved gate
   ([PR #3], evidence in `docs/acceptance/22-hitl-stale-card-fix/`).
 - Lifecycle scripts made bash 3.2 compatible for stock macOS.
+- `log_level` and `otlp_endpoint` settings now have live consumers as
+  spec §5b/§10 intend: a PATCH re-applies the log filter and repoints the
+  span exporter immediately, stored values override the env bootstrap at
+  startup, and never-touched settings leave the env values in charge.
+- Run deletion and history purge now also remove the run's LangGraph
+  checkpoint rows (orchestrator thread `run_id`, worker threads
+  `run_id:*`) — previously they accumulated until `./decom.sh`.
+- `docker-compose.yml` header comment updated to acknowledge the
+  profile-gated `redis` service added in M7.
+
+### Added
+
+- Documentation suite ([PR #4]): architecture diagrams (C4, ERD, class,
+  sequence, state machines, resolution ladder — 20 Mermaid diagrams), ten
+  ADRs, API references (REST, SSE contract, workflow DSL, skill format),
+  operations guides (runbook, configuration, scaling, troubleshooting,
+  data lifecycle), development guides (contributing, local dev, testing,
+  code tour, prompt catalog), security posture, observability guide, user
+  guide, glossary, and this changelog.
 
 ### Added
 
@@ -167,3 +186,4 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #1]: https://github.com/maheshyaddanapudi/concierge-agent/pull/1
 [PR #2]: https://github.com/maheshyaddanapudi/concierge-agent/pull/2
 [PR #3]: https://github.com/maheshyaddanapudi/concierge-agent/pull/3
+[PR #4]: https://github.com/maheshyaddanapudi/concierge-agent/pull/4

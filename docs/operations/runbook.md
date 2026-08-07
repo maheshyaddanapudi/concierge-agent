@@ -35,7 +35,7 @@ The `backend` compose service has no container-level healthcheck; `/health` is t
 
 ## Common operational tasks
 
-All Settings changes are `PATCH /api/v1/settings` under the hood (Settings page in the UI). They apply to the **next run** — no restart (see `configuration.md` for the two documented exceptions, `log_level` and `otlp_endpoint`).
+All Settings changes are `PATCH /api/v1/settings` under the hood (Settings page in the UI). They apply to the **next run** — no restart; `log_level` and `otlp_endpoint` apply even sooner, the moment the PATCH returns (see `configuration.md`).
 
 ### Flip orchestrator mode
 

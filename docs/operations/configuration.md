@@ -90,11 +90,11 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 
 | Key | Type / values | Default | Effect / consumer |
 |---|---|---|---|
-| `log_level` | `DEBUG`\|`INFO`\|`WARNING`\|`ERROR` | `"INFO"` | **Stored and validated, but no backend code path currently re-applies it** — logging is configured once at startup from the `LOG_LEVEL` env var (`main.py` → `configure_logging`). See "Live vs restart" below |
+| `log_level` | `DEBUG`\|`INFO`\|`WARNING`\|`ERROR` | `"INFO"` | Applies live: a PATCH re-runs `configure_logging` immediately (`settings_store.update_settings`), and a stored value overrides the `LOG_LEVEL` env bootstrap at startup |
 | `langsmith_enabled` | bool | `false` | Per-run LangSmith tracer built from settings and injected via callbacks (`obs.build_langsmith_callbacks`); needs `LANGSMITH_API_KEY` in env |
 | `langsmith_endpoint` | string | `""` | LangSmith API URL; blank → `https://api.smith.langchain.com`. Self-hosted instances work by pointing this |
 | `langsmith_project` | string | `"concierge-agent"` | LangSmith project name |
-| `otlp_endpoint` | string | `""` | **Stored and validated, but no backend consumer** — the OTLP exporter reads the `OTEL_EXPORTER_OTLP_ENDPOINT` env var at first tracer creation (`obs.get_tracer`). See below |
+| `otlp_endpoint` | string | `""` | Applies live: a PATCH repoints the span exporter (`obs.apply_otlp_endpoint`); empty disables export. Overrides the `OTEL_EXPORTER_OTLP_ENDPOINT` env bootstrap; a stored value is re-applied at startup |
 
 ### HITL
 
@@ -106,8 +106,5 @@ There are no `app_settings` keys for HITL. The HITL queue in Settings is a live 
 
 Verified against the code, not assumed:
 
-- **Live (22 of 24 keys)**: every key except the two below is read from the DB (through the cache, which the settings write path invalidates) at the point of use — run creation, planner call, dispatch, tool-loop construction, MCP health cycle, cache access, retrieval, answer-UI generation, LangSmith callback construction. A PATCH takes effect on the next run (or next health-loop cycle for `mcp_health_interval_s`, next model call for cache/retrieval keys) with no restart. `registry_cache_mode` even re-applies itself mid-process via the cache's own settings invalidation hook.
-- **`log_level` (setting)**: validated and persisted, but `configure_logging` is only called at process start with the `LOG_LEVEL` env value. Changing the setting does not currently change the running process's log level; set the env var and restart the backend instead.
-- **`otlp_endpoint` (setting)**: validated and persisted, but the span exporter is wired from the `OTEL_EXPORTER_OTLP_ENDPOINT` env var the first time a tracer is requested. Changing the setting does not currently repoint the exporter; use the env var and restart.
-
-Spec §8.7 intends every control on the Settings page to be restart-free; for these two keys the env var is the operative knob today — treat this as a known spec/implementation gap when triaging.
+- **Live (all 24 keys)**: every key is read from the DB (through the cache, which the settings write path invalidates) at the point of use — run creation, planner call, dispatch, tool-loop construction, MCP health cycle, cache access, retrieval, answer-UI generation, LangSmith callback construction. A PATCH takes effect on the next run (or next health-loop cycle for `mcp_health_interval_s`, next model call for cache/retrieval keys) with no restart. `registry_cache_mode` re-applies itself mid-process via the cache's own settings invalidation hook.
+- **`log_level` and `otlp_endpoint`** apply even faster than "next run": the settings write path calls their consumers directly (`configure_logging` / `apply_otlp_endpoint` in `settings_store.update_settings`), so they take effect the moment the PATCH returns. The env vars (`LOG_LEVEL`, `OTEL_EXPORTER_OTLP_ENDPOINT`) are bootstrap defaults only; an explicitly stored setting is re-applied over them at startup, and a never-touched setting leaves the env value in charge.

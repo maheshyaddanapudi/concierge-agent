@@ -39,8 +39,8 @@ Purging (the real, existing surfaces — nothing else):
 
 | Action | Surface | Deletes |
 |---|---|---|
-| Delete one run | Runs page delete, or `DELETE /api/v1/runs/{run_id}` | That run + its steps + its in-memory SSE history. 409 while `running` — cancel first |
-| Purge all history | Settings → Data → run-history purge (confirm), or `DELETE /api/v1/runs` | All `runs` and `run_steps` rows + all in-memory SSE history |
+| Delete one run | Runs page delete, or `DELETE /api/v1/runs/{run_id}` | That run + its steps + its in-memory SSE history + its LangGraph checkpoint rows (orchestrator thread `run_id` and worker threads `run_id:*`). 409 while `running` — cancel first |
+| Purge all history | Settings → Data → run-history purge (confirm), or `DELETE /api/v1/runs` | All `runs` and `run_steps` rows + all in-memory SSE history + all LangGraph checkpoint rows |
 
 Conversations are not deleted by the purge (the rows in `conversations` remain; there is no conversation-delete endpoint). SSE event history is memory-only and additionally disappears on backend restart regardless of purging.
 
@@ -51,7 +51,7 @@ Conversations are not deleted by the purge (the rows in `conversations` remain; 
 - **HITL resume**: `POST /runs/{id}/hitl` restarts the run task with a LangGraph `Command(resume=...)` against the same `thread_id` — the checkpoint **is** the pause state. This is why HITL survives a backend restart: a `paused_hitl` run can be resumed after reboot because nothing about the pause lives in process memory.
 - **Retry**: `POST /runs/{id}/retry` does *not* resume a checkpoint — it creates a brand-new run (new id, new thread) and re-plans from the original message.
 - **Cancellation**: the checkpoint is deliberately retained for inspection after cancel.
-- **Cleanup**: there is no endpoint that deletes checkpoints — run deletion/purge removes `runs`/`run_steps` but leaves checkpoint rows behind. They are only reclaimed by `./decom.sh` (volume removal) or manual SQL. Budget for that growth on long-lived installations.
+- **Cleanup**: checkpoint rows ride the run lifecycle. `DELETE /api/v1/runs/{id}` removes the run's checkpoint rows (thread `run_id` plus worker threads `run_id:*`), and the full purge empties all three saver tables (`app/api/runs.py::_purge_checkpoints`). A cancelled-but-undeleted run keeps its checkpoint for inspection until the run itself is deleted.
 
 ## Backup
 
