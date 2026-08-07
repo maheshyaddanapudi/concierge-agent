@@ -120,6 +120,10 @@ export function usePatchSettings() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (updates: Record<string, unknown>) => api.patch<Settings>('/settings', updates),
-    onSuccess: (data) => qc.setQueryData(['settings'], data),
+    onSuccess: (data) => {
+      qc.setQueryData(['settings'], data)
+      // registry_cache_mode lives in settings — reflect flips immediately
+      void qc.invalidateQueries({ queryKey: ['cache-status'] })
+    },
   })
 }
