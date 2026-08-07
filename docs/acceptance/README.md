@@ -254,6 +254,26 @@ site-analyst approve gate):
 - `hitlfix-B0/B1/B2` — regression: direct approve on the card itself still
   collapses it and the run completes.
 
+## Stage 23 — live observability settings + checkpoint cleanup (ops fixes)
+
+UI verification of the three fixes from the documentation pass, on the
+redeployed stack with real Sonnet 5 runs:
+
+- `opsfix-A1` — Settings → Log level flipped to **DEBUG**; the very next
+  chat run surfaced 10 httpcore debug-trace lines in the backend logs —
+  the filter moved live, no restart. Flipped back to INFO the same way.
+- `opsfix-B1` — Settings → OTLP endpoint pointed at a mock collector on
+  the compose network; after the next run, the collector logged a real
+  `POST /v1/traces` — spans re-routed live through the swappable
+  exporter. Clearing the field disabled export again.
+- `opsfix-C1/C2` — a run deleted from the Runs page took its 4 checkpoint
+  rows with it (orchestrator + worker threads) while another run's rows
+  stayed untouched — per-run cleanup with cross-run isolation.
+- `opsfix-C3` — Settings → Purge run history cleared **5,311 checkpoint
+  rows** accumulated across every prior campaign (the leak was real) —
+  all three saver tables at zero.
+- `opsfix-D1` — a post-purge chat run completed clean: nothing broke.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
