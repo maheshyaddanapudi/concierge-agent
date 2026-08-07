@@ -25,7 +25,7 @@ What it does (safe to re-run any time):
 
 Only providers with a key appear in the UI's model selects (with their effort options), and **first boot picks the default model from whatever you configured** — Anthropic's Sonnet if its key exists, else Gemini Flash, else GPT-5.6 Luna, else the fake provider. You can re-mix models per role (orchestrator / planner / aggregator / sub agents) in Settings at any time.
 
-Non-interactive flags:
+Non-interactive flags (`./quick-setup.sh --help` prints the full reference, including what each interactive step does):
 
 ```bash
 ./quick-setup.sh --providers anthropic,google       # or: openai / all / none

@@ -9,19 +9,63 @@ say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 is_yes() { case "$1" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
 
-# ── 1. .env ──────────────────────────────────────────────────────
-if [ ! -f .env ]; then
-  cp .env.example .env
-  say "created .env from .env.example"
-else
-  say ".env already present"
-fi
-
 # ── flags ────────────────────────────────────────────────────────
+usage() {
+  cat <<'EOF'
+quick-setup.sh — one-time developer setup: .env, provider API keys
+(verified before saving), optional Redis, and local dev dependencies.
+Safe to re-run any time; run with no flags for the interactive walkthrough.
+
+USAGE
+  ./quick-setup.sh [options]
+
+INTERACTIVE (no flags)
+  1. Creates .env from .env.example if missing.
+  2. Asks which model provider(s) to configure:
+       1) Anthropic            2) Google              3) OpenAI
+       4) Anthropic + Google   5) Anthropic + OpenAI  6) Google + OpenAI
+       7) All three            8) None - keyless demo mode (fake provider)
+  3. Prompts for each selected provider's API key (hidden input; offers
+     to replace an existing key), then VERIFIES it with a free
+     list-models API call. A rejected or unreachable key warns and asks
+     "Save it anyway? [y/N]".
+  4. Asks whether to provision the optional Redis cache backend
+     (usage stays a runtime decision in Settings -> Registry cache).
+  5. Installs backend (uv sync) and frontend (npm install) dev deps.
+
+NON-INTERACTIVE OPTIONS
+  --providers LIST      Comma list (no spaces): anthropic,google,openai
+                        or the shorthands  all | none
+                        'none' enables keyless demo mode (FAKE_LLM_ENABLED=1)
+  --anthropic-key KEY   Set the Anthropic key (implies its provider)
+  --google-key KEY      Set the Google key (implies its provider)
+  --openai-key KEY      Set the OpenAI key (implies its provider)
+  --key KEY             Legacy alias for --anthropic-key
+  --redis               Provision the Redis cache backend without asking
+  --no-redis            Skip Redis without asking
+  -h, --help            Show this help and exit
+
+  Keys passed via flags are still verified; on failure they are saved
+  anyway (you passed them explicitly) with a clear warning.
+
+EXAMPLES
+  ./quick-setup.sh
+  ./quick-setup.sh --providers all --no-redis
+  ./quick-setup.sh --anthropic-key sk-ant-... --google-key AIza... --redis
+  ./quick-setup.sh --providers none        # keyless demo mode
+  CI: ./quick-setup.sh --providers openai --openai-key "$OPENAI_API_KEY" --no-redis
+
+WHAT HAPPENS NEXT
+  Only providers with a key appear in the UI's model selects; first boot
+  picks default_model from whatever is configured (anthropic sonnet ->
+  gemini flash -> gpt-5.6 luna -> fake). Then: ./build.sh && ./start.sh
+EOF
+}
+
 # --providers anthropic,google,openai|all|none   (comma list, no spaces)
 # --anthropic-key K   --google-key K   --openai-key K   (imply their provider)
 # --key K             (back-compat alias for --anthropic-key)
-# --redis / --no-redis
+# --redis / --no-redis     -h/--help
 PROVIDERS=""
 KEY_anthropic=""; KEY_google=""; KEY_openai=""
 REDIS_CHOICE=""
@@ -32,6 +76,7 @@ add_provider() { # $1 = provider id; append if not already listed
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help)       usage; exit 0 ;;
     --providers)     PROVIDERS="${2:-}"; shift 2 ;;
     --anthropic-key) KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
     --google-key)    KEY_google="${2:-}";    add_provider google;    shift 2 ;;
@@ -39,10 +84,18 @@ while [ $# -gt 0 ]; do
     --key)           KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
     --redis)         REDIS_CHOICE="yes"; shift ;;
     --no-redis)      REDIS_CHOICE="no";  shift ;;
-    *) warn "unknown option: $1"; shift ;;
+    *) warn "unknown option: $1 (see ./quick-setup.sh --help)"; shift ;;
   esac
 done
 [ "$PROVIDERS" = "all" ] && PROVIDERS="anthropic,google,openai"
+
+# ── 1. .env ──────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  cp .env.example .env
+  say "created .env from .env.example"
+else
+  say ".env already present"
+fi
 
 set_env_line() { # $1 = KEY, $2 = value ('' removes the line)
   grep -vE "^$1=" .env > .env.tmp || true
