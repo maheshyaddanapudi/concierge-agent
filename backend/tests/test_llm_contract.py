@@ -168,12 +168,16 @@ class TestModelParamsMapping:
         assert getattr(model, "thinking", None) is None
 
     def test_openai_effort_maps_to_reasoning_effort(self) -> None:
+        # reasoning effort rides the Responses API (chat/completions rejects
+        # function tools + reasoning_effort on current reasoning models)
         model = get_model("openai:gpt-5", ModelParams(effort="medium", max_output_tokens=512))
-        assert model.reasoning_effort == "medium"
+        assert model.use_responses_api is True
+        assert model.reasoning == {"effort": "medium"}
 
     def test_openai_effort_none_maps_to_minimal(self) -> None:
         model = get_model("openai:gpt-5", ModelParams(effort="none"))
-        assert model.reasoning_effort == "minimal"
+        assert model.use_responses_api is True
+        assert model.reasoning == {"effort": "minimal"}
 
     def test_gemini_effort_maps_to_thinking_budget(self) -> None:
         model = get_model("google_genai:gemini-2.5-flash", ModelParams(effort="low"))

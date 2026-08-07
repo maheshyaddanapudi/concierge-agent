@@ -168,7 +168,12 @@ class OpenAIProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {}
         if params:
             if params.effort is not None:
-                kwargs["reasoning_effort"] = _OPENAI_REASONING_EFFORT[params.effort]
+                # current OpenAI reasoning models reject function tools +
+                # reasoning_effort on /v1/chat/completions — reasoning runs
+                # ride the Responses API instead (same BaseChatModel out)
+                kwargs["use_responses_api"] = True
+                kwargs["output_version"] = "responses/v1"
+                kwargs["reasoning"] = {"effort": _OPENAI_REASONING_EFFORT[params.effort]}
             if params.temperature is not None:
                 kwargs["temperature"] = params.temperature
             if params.max_output_tokens is not None:
