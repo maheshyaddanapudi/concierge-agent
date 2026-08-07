@@ -145,6 +145,30 @@ over both cache modes plus a dedicated cache-contract suite (270 passed);
 the redis backend is env-gated and was verified against a real Redis
 container locally.
 
+## Stage 19 — provider agnosticism (spec §2.1), user-directed
+
+The same registries, both orchestrator modes, cache in `memory`, driven
+end to end on a different provider with zero consumer-code changes — only
+the Settings model selects. **Five multi-turn conversations × both modes on
+`openai:gpt-5.6-terra`** (default@medium, planner@high, aggregator@low —
+reasoning on via the Responses API), each prompt implicitly requiring
+multiple sub-agents/skills/tools ("read this file and research that",
+"save a briefing", "list and recommend"). All **20 turns completed**;
+evidence per conversation: mid-run rails (sub-agent groups + nested tool
+calls), per-turn answers with structured panels, and a Runs trace showing
+route rungs, the dispatched sub-agent, and its tool-call children.
+
+- This campaign flushed out a real provider-behavior bug, which is the
+  point of the exercise: current OpenAI reasoning models reject function
+  tools + `reasoning_effort` on `/v1/chat/completions`. The adapter now
+  routes reasoning runs through the Responses API (same `BaseChatModel`
+  out, adapter contract tests updated) — consumers untouched.
+- `90–92-gemini-bonus-*`: the same pipeline on `google_genai:gemini-3.5-flash`
+  (planner@high / default@medium / aggregator@low). One full turn completed
+  — planner, dispatch rails, gate, answer — before the key's free-tier
+  quota (20 requests/day/model) ended the campaign; kept as a
+  three-provider data point. API keys stayed env-only throughout.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
