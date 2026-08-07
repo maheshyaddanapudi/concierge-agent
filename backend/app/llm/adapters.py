@@ -149,6 +149,7 @@ class OpenAIProvider(ModelProviderBase):
         return [
             # reasoning family: effort supported, temperature not accepted
             ModelInfo("gpt-5.6-terra", "GPT-5.6 Terra", supports_temperature=False),
+            ModelInfo("gpt-5.6-sol", "GPT-5.6 Sol", supports_temperature=False),
             ModelInfo("gpt-5.6-luna", "GPT-5.6 Luna", supports_temperature=False),
             ModelInfo("gpt-5.5", "GPT-5.5", supports_temperature=False),
             ModelInfo("gpt-5.4", "GPT-5.4", supports_temperature=False),
