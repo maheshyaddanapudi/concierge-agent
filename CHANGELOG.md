@@ -28,6 +28,12 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 
 ### Added
 
+- Update-safe re-runs of `quick-setup.sh`: every prompt defaults to
+  "keep what I have" — the provider menu pre-selects the currently keyed
+  combination, existing keys are kept on Enter (answer `y` + paste to
+  rotate just one), existing Redis provisioning is kept on Enter, and a
+  leftover `FAKE_LLM_ENABLED=1` is only removed after asking. Plus
+  `--help`/`-h` documenting the interactive walkthrough and every flag.
 - Provider-choice setup: `quick-setup.sh` now asks which provider(s) to
   configure (Anthropic / Google / OpenAI, any pair, all three, or keyless
   fake mode), prompts for each selected key, and **verifies every key with

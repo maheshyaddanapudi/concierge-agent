@@ -15,7 +15,7 @@ git clone <repo-url> && cd concierge-agent
 ./quick-setup.sh
 ```
 
-What it does (safe to re-run any time):
+What it does (safe to re-run any time — **re-running is how you update**: every prompt defaults to "keep what I have", so you can Enter through everything and change only what you answer differently, e.g. rotate one API key a month later by answering `y` at that key's "Replace it?" prompt and Enter everywhere else):
 
 - creates `.env` from `.env.example` if missing
 - asks **which model provider(s) you want**: Anthropic, Google, or OpenAI alone; any pair; all three; or none (keyless demo mode)

@@ -33,6 +33,19 @@ INTERACTIVE (no flags)
      (usage stays a runtime decision in Settings -> Registry cache).
   5. Installs backend (uv sync) and frontend (npm install) dev deps.
 
+RE-RUNNING = UPDATING
+  The script is safe to re-run at any time, and every prompt defaults to
+  "keep what I have" — hit Enter all the way through and nothing changes:
+    - the provider menu pre-selects the combination you already have keys
+      for ("[N = your current setup]")
+    - an existing key shows its last 4 characters and Enter keeps it;
+      answer y and paste to replace just that one key (verified as usual)
+    - existing Redis provisioning is kept on Enter ("Keep it? [Y/n]")
+    - a leftover FAKE_LLM_ENABLED=1 is only removed after asking
+  Example: to rotate only your Anthropic key a month later, re-run, hit
+  Enter at the menu, answer y at the Anthropic "Replace it?" prompt,
+  paste the new key, and Enter through everything else.
+
 NON-INTERACTIVE OPTIONS
   --providers LIST      Comma list (no spaces): anthropic,google,openai
                         or the shorthands  all | none
@@ -108,14 +121,35 @@ set_env_line() { # $1 = KEY, $2 = value ('' removes the line)
 # model selects. First boot picks the default model from whatever is
 # configured (anthropic → gemini flash → gpt-5.6 luna → fake).
 
+# Re-runs are updates: the menu defaults to the combination you already
+# have keys for, so Enter keeps your current setup and only the prompts
+# you answer differently change anything.
+detect_current_choice() {
+  has_a=""; has_g=""; has_o=""
+  grep -qE '^ANTHROPIC_API_KEY=.+' .env && has_a=1
+  grep -qE '^GOOGLE_API_KEY=.+' .env && has_g=1
+  grep -qE '^OPENAI_API_KEY=.+' .env && has_o=1
+  case "${has_a:-0}${has_g:-0}${has_o:-0}" in
+    100) printf 1 ;; 010) printf 2 ;; 001) printf 3 ;;
+    110) printf 4 ;; 101) printf 5 ;; 011) printf 6 ;;
+    111) printf 7 ;;
+    *) if grep -qE '^FAKE_LLM_ENABLED=1' .env; then printf 8; else printf 1; fi ;;
+  esac
+}
+
 if [ -z "$PROVIDERS" ] && [ -t 0 ]; then
+  default_choice="$(detect_current_choice)"
   say "Which model provider(s) do you want to configure?"
   printf '  1) Anthropic            2) Google              3) OpenAI\n'
   printf '  4) Anthropic + Google   5) Anthropic + OpenAI  6) Google + OpenAI\n'
   printf '  7) All three            8) None - keyless demo mode (fake provider)\n'
-  printf 'Choice [1]: '
+  if [ "$default_choice" != "1" ] || grep -qE '^ANTHROPIC_API_KEY=.+' .env; then
+    printf 'Choice [%s = your current setup]: ' "$default_choice"
+  else
+    printf 'Choice [%s]: ' "$default_choice"
+  fi
   read -r choice
-  case "${choice:-1}" in
+  case "${choice:-$default_choice}" in
     1) PROVIDERS="anthropic" ;;
     2) PROVIDERS="google" ;;
     3) PROVIDERS="openai" ;;
@@ -124,7 +158,7 @@ if [ -z "$PROVIDERS" ] && [ -t 0 ]; then
     6) PROVIDERS="google,openai" ;;
     7) PROVIDERS="anthropic,google,openai" ;;
     8) PROVIDERS="none" ;;
-    *) warn "unrecognized choice '$choice' — defaulting to Anthropic"; PROVIDERS="anthropic" ;;
+    *) warn "unrecognized choice '$choice' — keeping current setup"; PROVIDERS="skip" ;;
   esac
 elif [ -z "$PROVIDERS" ]; then
   say "non-interactive run with no --providers — leaving provider keys unchanged"
@@ -215,7 +249,19 @@ elif [ "$PROVIDERS" != "skip" ]; then
   contains_provider anthropic && configure_provider anthropic "$KEY_anthropic"
   contains_provider google    && configure_provider google    "$KEY_google"
   contains_provider openai    && configure_provider openai    "$KEY_openai"
-  set_env_line FAKE_LLM_ENABLED ""
+  # keyless demo flag left over from an earlier setup? ask, don't assume
+  if grep -qE '^FAKE_LLM_ENABLED=1' .env; then
+    if [ -t 0 ]; then
+      printf 'FAKE_LLM_ENABLED=1 is set (keyless demo mode). Disable it now that real providers are configured? [Y/n] '
+      read -r drop_fake
+      case "$drop_fake" in
+        [nN]*) say "keeping FAKE_LLM_ENABLED=1 (fake provider stays available)" ;;
+        *) set_env_line FAKE_LLM_ENABLED ""; say "keyless demo mode disabled" ;;
+      esac
+    else
+      say "FAKE_LLM_ENABLED=1 left as-is (non-interactive run)"
+    fi
+  fi
 fi
 
 # ── 2b. optional Redis (registry-cache backend, spec §7.3) ───────
@@ -240,9 +286,19 @@ if [ "$REDIS_CHOICE" = "yes" ]; then
 elif [ "$REDIS_CHOICE" = "no" ]; then
   skip_redis
 elif [ -t 0 ]; then
-  printf 'Set up Redis as an optional registry-cache backend? [y/N] '
-  read -r want_redis
-  if is_yes "$want_redis"; then setup_redis; else skip_redis; fi
+  if grep -qE '^REDIS_URL=.+' .env; then
+    # already provisioned — Enter keeps it (re-runs are updates)
+    printf 'Redis is currently provisioned. Keep it? [Y/n] '
+    read -r keep_redis
+    case "$keep_redis" in
+      [nN]*) skip_redis ;;
+      *) say "keeping the existing Redis provisioning" ;;
+    esac
+  else
+    printf 'Set up Redis as an optional registry-cache backend? [y/N] '
+    read -r want_redis
+    if is_yes "$want_redis"; then setup_redis; else skip_redis; fi
+  fi
 else
   say "non-interactive run — Redis unchanged (use --redis / --no-redis)"
 fi
