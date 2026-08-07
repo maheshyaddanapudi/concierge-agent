@@ -49,11 +49,13 @@ Python 3.12 · FastAPI · LangGraph · LangChain (`create_agent`, middleware, MC
 
 ## Getting started
 
-Prerequisites: Docker + Docker Compose; an Anthropic API key (other provider keys optional — their presence enables those providers in Settings).
+**[QUICK_START.md](./QUICK_START.md)** walks the whole lifecycle — setup, build, start, stop, decommission, optional Redis, common issues. The short version:
+
+Prerequisites: Docker + Docker Compose; an API key for at least one provider — Anthropic, Google, or OpenAI, any combination (only keyed providers appear in the UI's model selects; keyless demo mode also works — see QUICK_START).
 
 ```bash
 git clone <repo-url> && cd concierge-agent
-./quick-setup.sh   # .env + API key (prompts; or --key sk-ant-...) + local deps
+./quick-setup.sh   # .env + provider choice + verified API keys + local deps
 ./build.sh         # build backend + frontend images
 ./start.sh         # start db/backend/frontend; schema + seeds auto-create on first run
 ```
@@ -62,7 +64,7 @@ Lifecycle scripts (all idempotent):
 
 | Script | What it does |
 |---|---|
-| `./quick-setup.sh` | Creates `.env` from the example, prompts for `ANTHROPIC_API_KEY` (hidden input; overrides an existing value on confirm; `--key <value>` for non-interactive), asks whether to provision the optional Redis cache backend (`--redis`/`--no-redis` non-interactive; usage stays a Settings decision), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. |
+| `./quick-setup.sh` | Creates `.env` from the example, asks which provider(s) to configure (Anthropic / Google / OpenAI, any pair, all three, or keyless fake mode), prompts for each selected key (hidden input) and **verifies it with a free list-models call** before saving (with a save-anyway escape), asks whether to provision the optional Redis cache backend (usage stays a Settings decision), installs backend (`uv sync`) and frontend (`npm install`) dev dependencies. Non-interactive: `--providers a,b`, `--anthropic-key`/`--google-key`/`--openai-key`, `--redis`/`--no-redis`. First boot resolves `default_model` from whichever providers are keyed. |
 | `./build.sh` | Builds both docker images. |
 | `./start.sh` | Errors out if Docker isn't running; otherwise creates or restarts the stack — missing images are pulled/built, first run creates the DB schema and loads seeds automatically, later runs resume with the same data (named volumes). Waits for backend health and prints the URLs. |
 | `./stop.sh` | Stops the containers; all data preserved — `./start.sh` resumes where you left off. |
@@ -78,6 +80,7 @@ Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACK
 
 ```
 spec.md          # the specification — single source of truth
+QUICK_START.md   # setup → build → start → stop → decom, script by script
 CLAUDE.md        # spec-driven development rules for Claude Code
 CHANGELOG.md     # project history, milestone by milestone
 backend/         # FastAPI + LangGraph app (api, models, mcp, llm, native, factory, orchestrator, seed)

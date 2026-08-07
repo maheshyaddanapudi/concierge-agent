@@ -211,12 +211,59 @@ async def upsert_native_sub_agents(session: AsyncSession) -> None:
     await session.commit()
 
 
+# First-boot default-model resolution (spec §13): the code default's provider
+# may have no key configured. Preference order — flagships per provider.
+_FLAGSHIPS: tuple[tuple[str, str], ...] = (
+    ("anthropic", "anthropic:claude-sonnet-4-6"),
+    ("google_genai", "google_genai:gemini-3.6-flash"),
+    ("openai", "openai:gpt-5.6-luna"),
+    ("fake", "fake:scripted"),
+)
+
+
+async def resolve_first_boot_default_model(session: AsyncSession) -> str | None:
+    """If no explicit default_model has ever been stored and the code
+    default's provider is unconfigured, store the first configured
+    provider's flagship. An explicit setting is never touched, and with
+    nothing configured at all the code default stands (the UI marks it
+    unconfigured until a key arrives)."""
+    import structlog
+
+    from app.llm import list_providers
+    from app.models import AppSetting
+    from app.settings_store import DEFAULTS
+
+    if await session.get(AppSetting, "default_model") is not None:
+        return None
+    default_provider = str(DEFAULTS["default_model"]).split(":", 1)[0]
+    providers = {p.provider_id: p for p in list_providers()}
+    default_adapter = providers.get(default_provider)
+    if default_adapter is not None and default_adapter.is_configured():
+        return None
+    for provider_id, ref in _FLAGSHIPS:
+        adapter = providers.get(provider_id)
+        if adapter is not None and adapter.is_configured():
+            session.add(AppSetting(key="default_model", value={"value": ref}))
+            await session.commit()
+            from app.registry_cache import get_cache
+
+            await get_cache().invalidate("settings")
+            structlog.get_logger("seed").info(
+                "first_boot_default_model",
+                resolved=ref,
+                reason=f"{default_provider} unconfigured",
+            )
+            return ref
+    return None
+
+
 async def seed_all(session: AsyncSession) -> dict[str, int]:
     await seed_mcp_servers(session)
     await upsert_native_tools(session)
     await seed_native_skills(session)
     await seed_sub_agents(session)
     await upsert_native_sub_agents(session)
+    await resolve_first_boot_default_model(session)
     counts: dict[str, int] = {}
     for label, model in {
         "mcp_servers": McpServer,

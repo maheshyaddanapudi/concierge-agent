@@ -507,7 +507,9 @@ class TestSettings:
     async def test_defaults_present(self, seeded_client: AsyncClient) -> None:
         settings = (await seeded_client.get(f"{API}/settings")).json()
         assert settings["orchestrator_mode"] == "graph"
-        assert settings["default_model"] == "anthropic:claude-sonnet-4-6"
+        # first-boot resolution (spec §13): anthropic is unconfigured in the
+        # test env, so the seed pass resolves the fake flagship
+        assert settings["default_model"] == "fake:scripted"
         assert settings["orchestrator_full_fallback_enabled"] is True
         assert isinstance(settings["max_tool_iterations"], int)
 

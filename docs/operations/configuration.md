@@ -7,11 +7,11 @@ Two layers, deliberately separate:
 
 ## Environment variables
 
-Sources: `.env.example`, `docker-compose.yml`, `backend/app/config.py`. Compose passes `${VAR:-}` for optional vars; the config module treats blank strings as unset. `quick-setup.sh` manages `ANTHROPIC_API_KEY`, `REDIS_URL`, and `COMPOSE_PROFILES` in `.env`.
+Sources: `.env.example`, `docker-compose.yml`, `backend/app/config.py`. Compose passes `${VAR:-}` for optional vars; the config module treats blank strings as unset. `quick-setup.sh` manages the three provider keys (chosen via its provider menu, each verified with a free list-models call before saving), `FAKE_LLM_ENABLED`, `REDIS_URL`, and `COMPOSE_PROFILES` in `.env`.
 
 | Variable | Default | Effect | Required? |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | *(unset)* | Enables the `anthropic` provider adapter. Gates every `anthropic:*` model. | Yes for real use (the default model is `anthropic:claude-sonnet-4-6`); not needed in keyless demo mode |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables the `anthropic` provider adapter. Gates every `anthropic:*` model. | No — any one provider key (or fake mode) suffices. If unset at first boot, the seed pass resolves `default_model` to the first configured provider's flagship (`gemini-3.6-flash` → `gpt-5.6-luna` → `fake:scripted`); an explicitly saved setting is never touched |
 | `GOOGLE_API_KEY` | *(unset)* | Enables the `google_genai` adapter (chat + embeddings). Presence surfaces the provider in Settings model selects. | No |
 | `OPENAI_API_KEY` | *(unset)* | Enables the `openai` adapter (chat + embeddings). | No |
 | `FAKE_LLM_ENABLED` | `false` | Enables the scriptable `fake` provider and mounts the `/_fake/script` control router. Combined with the `fake:scripted` model in Settings this gives a fully keyless demo stack. | No — never set it in a normally configured deployment |
