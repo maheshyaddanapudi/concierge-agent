@@ -169,6 +169,40 @@ route rungs, the dispatched sub-agent, and its tool-call children.
   quota (20 requests/day/model) ended the campaign; kept as a
   three-provider data point. API keys stayed env-only throughout.
 
+## Stage 20 — heterogeneous providers in one system (user-directed)
+
+Three providers sharing one run, all through the §2.1 port, cache in
+`memory`, thinking/reasoning on for every role:
+
+- **Graph**: default `anthropic:claude-opus-5@high` · planner
+  `openai:gpt-5.6-terra@high` · aggregator `anthropic:claude-sonnet-5@medium`.
+  10 of 12 attempted turns completed; between passes every conversation has
+  both turns evidenced.
+- **Agentic**: `claude-opus-5@high` orchestrator dispatching to
+  **site-analyst overridden to `openai:gpt-5.6-sol@medium`** via the
+  Sub Agents UI (`10-…`); one run mixes Anthropic orchestration with
+  OpenAI sub-agent execution in a single trace. 8 of 10 turns completed.
+
+Findings this stage surfaced (the honest part of the record):
+
+1. **Terra planner UUID corruption** — twice, `gpt-5.6-terra@high` emitted
+   plans whose registry ids were corrupted (duplicated/looped UUID
+   fragments). Plan validation caught both, the single repair retry did not
+   recover, and the runs failed cleanly with raw planner output stored —
+   the §7.1 validate → repair-once → fail contract doing its job. Lesson:
+   in a heterogeneous stack, fragility concentrates in whichever model
+   holds the structured-output-heavy role.
+2. **Static-record guard** (`11-…`): the seeded `research-concierge` is
+   `source=static`, so the UI correctly refuses its model override — the
+   two-agent override request landed on the one dynamic agent by design,
+   not omission (spec §4).
+3. **Overlap-guard interplay**: saving a sub-agent override triggers the §4
+   overlap judge; the first campaign pass stalled on its confirm dialog.
+   Operator note, not a defect.
+4. The two agentic c5 failures are **Anthropic account credit exhaustion**
+   mid-campaign (Opus 5 at high effort), reported verbatim in the run
+   errors — infrastructure, not behavior.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
