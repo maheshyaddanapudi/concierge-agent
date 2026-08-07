@@ -198,7 +198,7 @@ async def _ping_redis() -> None:
     from app.config import get_config
 
     try:
-        import redis.asyncio as aioredis  # type: ignore[import-not-found]
+        import redis.asyncio as aioredis
 
         client = aioredis.from_url(str(get_config().redis_url))
         try:

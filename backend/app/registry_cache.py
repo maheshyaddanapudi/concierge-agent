@@ -269,11 +269,14 @@ class RegistryCache:
 
     async def _get_redis(self) -> Any:
         if self._redis is None:
-            import redis.asyncio as aioredis  # type: ignore[import-not-found]
+            import redis.asyncio as aioredis
 
             from app.config import get_config
 
-            self._redis = aioredis.from_url(get_config().redis_url, decode_responses=True)
+            url = get_config().redis_url
+            if not url:
+                raise RuntimeError("registry_cache_mode 'redis' requires REDIS_URL")
+            self._redis = aioredis.from_url(url, decode_responses=True)
         return self._redis
 
     async def _ensure(
