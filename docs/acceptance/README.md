@@ -176,12 +176,13 @@ Three providers sharing one run, all through the §2.1 port, cache in
 
 - **Graph**: default `anthropic:claude-opus-5@high` · planner
   `openai:gpt-5.6-terra@high` · aggregator `anthropic:claude-sonnet-5@medium`.
-  10 of 12 attempted turns completed; between passes every conversation has
-  both turns evidenced.
+  **All five conversations completed clean** (c1 on retry after two terra
+  planner flakes — see finding 1; its evidence files are the clean pass).
 - **Agentic**: `claude-opus-5@high` orchestrator dispatching to
   **site-analyst overridden to `openai:gpt-5.6-sol@medium`** via the
   Sub Agents UI (`10-…`); one run mixes Anthropic orchestration with
-  OpenAI sub-agent execution in a single trace. 8 of 10 turns completed.
+  OpenAI sub-agent execution in a single trace. **All five conversations
+  completed clean** (c5 on retry after the credit top-up — finding 4).
 
 Findings this stage surfaced (the honest part of the record):
 
