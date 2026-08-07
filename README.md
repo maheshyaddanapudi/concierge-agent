@@ -49,6 +49,8 @@ Python 3.12 · FastAPI · LangGraph · LangChain (`create_agent`, middleware, MC
 
 ## Getting started
 
+**[QUICK_START.md](./QUICK_START.md)** walks the whole lifecycle — setup, build, start, stop, decommission, optional Redis, common issues. The short version:
+
 Prerequisites: Docker + Docker Compose; an Anthropic API key (other provider keys optional — their presence enables those providers in Settings).
 
 ```bash
@@ -78,6 +80,7 @@ Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACK
 
 ```
 spec.md          # the specification — single source of truth
+QUICK_START.md   # setup → build → start → stop → decom, script by script
 CLAUDE.md        # spec-driven development rules for Claude Code
 CHANGELOG.md     # project history, milestone by milestone
 backend/         # FastAPI + LangGraph app (api, models, mcp, llm, native, factory, orchestrator, seed)
