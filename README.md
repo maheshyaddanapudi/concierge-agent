@@ -94,6 +94,9 @@ docker-compose.yml
 | M4 | Orchestrator both modes + middleware layer + chat SSE + HITL + observability | ✅ complete |
 | M5 | Admin UI: all seven pages incl. Settings command center | ✅ complete |
 | M6 | Test suites green + compose polish + acceptance script passes | ✅ complete |
+| M7 | Registry cache layer (spec §7.3: bypass/memory/redis, event invalidation, refresh UI) + progressive-disclosure retrieval (spec §7.4: hybrid top-K, embeddings port — dark by default) | ✅ complete |
+
+**Registry cache (spec §7.3)** — every registry/settings read in the run path goes through one `RegistryCache` facade (`backend/app/registry_cache.py`); the `registry_cache_mode` setting flips its backend live between `bypass` (direct DB reads — the shipped default and rollback lever), `memory` (in-process, event-invalidated on every write path, manual refresh buttons on the Tools/Skills/Sub Agents pages and in Settings), and `redis` (optional: `docker compose --profile redis up` + `REDIS_URL`). **Retrieval (spec §7.4)** — off by default; when enabled, orchestrator catalogs above the threshold are ranked to the task's top-K (BM25 + optional embeddings via the provider port, RRF-fused) with pinned ids and an explicit `use_full_catalog` footer; skill loops and workers remain id-pinned contracts, never ranked.
 
 ## Development
 
