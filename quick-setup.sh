@@ -236,7 +236,9 @@ save_key() { # $1 = provider, $2 = key
 
 configure_provider() { # $1 = provider id, $2 = key from flags ('' = prompt)
   var="$(env_key_name "$1")"
-  current="$(grep -E "^$var=" .env | head -1 | cut -d= -f2- || true)"
+  # non-empty match only: a stray empty '$var=' line (hand-edited .env)
+  # must not shadow a real key further down
+  current="$(grep -E "^$var=.+" .env | head -1 | cut -d= -f2- || true)"
   new_key="$2"
 
   if [ -z "$new_key" ] && [ -t 0 ]; then

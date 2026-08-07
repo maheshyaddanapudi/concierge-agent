@@ -23,9 +23,29 @@ What it does (safe to re-run any time — **re-running is how you update**: ever
 - asks whether to provision the **optional Redis cache backend** upfront (whether the app *uses* it stays a runtime Settings decision — the default cache mode never touches Redis)
 - installs local dev dependencies (backend `uv sync`, frontend `npm install`)
 
+A first run looks like this — provider menu, hidden key input, live verification, and the closing configuration summary (key tail redacted here; the deps warnings appear only on machines without local `uv`/`npm`, which Docker-only users can ignore):
+
+![First run: provider menu, key verified, configuration summary](./docs/assets/quick-start/qs-02-fresh-run.png)
+
+If a key is wrong or expired, verification catches it before it's saved — you decide what happens:
+
+![A bad key is rejected by live verification with a save-anyway escape](./docs/assets/quick-start/qs-03-key-rejected.png)
+
+No keys at all? Option 8 provisions the keyless demo mode:
+
+![Keyless demo mode via option 8](./docs/assets/quick-start/qs-05-keyless.png)
+
 Only providers with a key appear in the UI's model selects (with their effort options), and **first boot picks the default model from whatever you configured** — Anthropic's Sonnet if its key exists, else Gemini Flash, else GPT-5.6 Luna, else the fake provider. You can re-mix models per role (orchestrator / planner / aggregator / sub agents) in Settings at any time.
 
-Non-interactive flags (`./quick-setup.sh --help` prints the full reference, including what each interactive step does):
+Re-running later to update is the same command — every prompt defaults to "keep what I have" (note the menu pre-selecting the current setup and Enter keeping the existing key):
+
+![Update re-run: Enter keeps the current setup end to end](./docs/assets/quick-start/qs-04-update-rerun.png)
+
+`./quick-setup.sh --help` prints the full reference, including what each interactive step does:
+
+![quick-setup.sh --help](./docs/assets/quick-start/qs-01-help.png)
+
+Non-interactive flags:
 
 ```bash
 ./quick-setup.sh --providers anthropic,google       # or: openai / all / none
@@ -56,6 +76,8 @@ Builds the backend and frontend Docker images. Re-run after pulling code changes
 - **first run**: creates the database schema and loads seed data automatically (two MCP servers, native skills and tools, the `research-concierge` sub agent)
 - **later runs**: resumes with all your data intact (named volumes)
 - waits for backend health, then prints the URLs
+
+![start.sh: containers healthy, URLs printed](./docs/assets/quick-start/qs-06-start.png)
 
 Then open:
 
