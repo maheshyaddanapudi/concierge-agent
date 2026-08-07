@@ -79,10 +79,24 @@ Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACK
 ```
 spec.md          # the specification — single source of truth
 CLAUDE.md        # spec-driven development rules for Claude Code
+CHANGELOG.md     # project history, milestone by milestone
 backend/         # FastAPI + LangGraph app (api, models, mcp, llm, native, factory, orchestrator, seed)
 frontend/        # React admin: Chat, MCP Servers, Tools, Skills, Sub Agents, Runs, Settings
+docs/            # full documentation suite (see below)
 docker-compose.yml
 ```
+
+## Documentation
+
+The **[docs/ index](./docs/README.md)** covers the whole suite. Highlights:
+
+- **[Architecture](./docs/architecture/overview.md)** — C4 context/container/component diagrams, [ERD](./docs/architecture/data-model.md), [class diagrams](./docs/architecture/components.md), [sequence diagrams](./docs/architecture/runtime-flows.md) for both orchestrator modes + HITL + MCP + cache sync, [state machines](./docs/architecture/state-machines.md), and the [resolution ladder](./docs/architecture/resolution-ladder.md). All Mermaid, all rendered by GitHub.
+- **[ADRs](./docs/adr/README.md)** — ten decision records covering every load-bearing choice.
+- **[API reference](./docs/api/rest-api.md)** — REST conventions and endpoints, the [SSE event contract](./docs/api/sse-events.md), the [workflow DSL](./docs/api/workflow-dsl.md), and the [skill document format](./docs/api/skill-format.md).
+- **[Operations](./docs/operations/runbook.md)** — runbook, [configuration reference](./docs/operations/configuration.md) (every env var and settings key), [scaling path](./docs/operations/scaling.md), [troubleshooting](./docs/operations/troubleshooting.md), [data lifecycle](./docs/operations/data-lifecycle.md).
+- **[Development](./docs/development/contributing.md)** — contributing, [local dev loops](./docs/development/local-development.md), [testing strategy](./docs/development/testing.md), [code tour](./docs/development/code-tour.md), [prompt catalog](./docs/development/prompts.md).
+- **[Security](./docs/security.md)** · **[Observability](./docs/observability.md)** · **[User guide](./docs/user-guide.md)** · **[Glossary](./docs/glossary.md)**
+- **[Acceptance evidence](./docs/acceptance/README.md)** — stages 00–22, 130+ real-model UI screenshots.
 
 ## Milestone status
 
