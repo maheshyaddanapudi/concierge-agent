@@ -113,6 +113,38 @@ pass:
   A2UI panel is captioned "answer panel · structured view" so it reads as a
   companion to the text answer rather than a duplicate response.
 
+## Stage 18 — registry cache + progressive-disclosure retrieval (M7, spec §7.3/§7.4)
+
+Captured through the UI on the M7 build (`9bfaae6`), all runs on genuine
+Claude Sonnet 5:
+
+- `01/02` — Settings → Registry cache: shipped default `bypass`, then flipped
+  to `memory` live; the status panel immediately shows per-registry
+  `records · generation · loaded-at` (30 tools · 4 skills · 2 sub agents).
+- `03/04` — Tools page header carries the cache status line + **Refresh
+  cache** button; clicking it bumps the generation and re-stamps loaded-at.
+- `05` — live-sync while cached: toggling a tool's **Expose to orchestrator**
+  in the drawer bumped the tools generation (4 → 5) with no manual refresh —
+  event invalidation, not polling.
+- `06–09` — the cache × orchestrator matrix, each run driven end to end
+  through chat (approve gate → final answer + structured panel):
+  memory+graph, memory+agentic, bypass+agentic, bypass+graph — identical
+  observable behavior in all four cells, which is the §7.3 no-degradation
+  contract.
+- `10/11` — Retrieval enabled with threshold 1 / top-K 1 (embedding model
+  blank → lexical-only BM25): the run still completes correctly while the
+  backend logs prove real truncation —
+  `retrieval_truncated_catalog kind=sub_agents total=2 shown=1 dropped=1`
+  and `kind=tools total=2 shown=1 dropped=1` — i.e. the ranker kept exactly
+  the records the query needed and told the planner it was seeing a slice.
+  Settings restored to defaults (`bypass`, retrieval off, threshold 30,
+  top-K 10) afterward through the UI.
+
+Backend gate for this stage: the whole orchestrator suite runs parametrized
+over both cache modes plus a dedicated cache-contract suite (270 passed);
+the redis backend is env-gated and was verified against a real Redis
+container locally.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
