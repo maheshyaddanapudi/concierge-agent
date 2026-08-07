@@ -5,13 +5,14 @@ input_tokens, output_tokens, duration_ms, status}.
 """
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 from prometheus_client import Counter, Histogram
 
 from app.config import get_config
@@ -20,7 +21,13 @@ from app.config import get_config
 
 
 def configure_logging(level: str = "INFO") -> None:
+    """Idempotent and re-invocable: the `log_level` setting applies live
+    (spec §5b), so this runs at bootstrap AND on every settings write that
+    touches log_level."""
     logging.basicConfig(level=level, format="%(message)s")
+    # basicConfig is a no-op once handlers exist — set the level explicitly
+    # so runtime re-configuration actually takes effect
+    logging.getLogger().setLevel(getattr(logging, level.upper(), logging.INFO))
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -55,23 +62,95 @@ STEP_TOKENS = Histogram(
 )
 
 # ── OpenTelemetry ────────────────────────────────────────────────
+#
+# The span pipeline is always installed; where spans go is decided by a
+# swappable exporter so the `otlp_endpoint` setting can override the
+# OTEL_EXPORTER_OTLP_ENDPOINT env bootstrap at runtime (spec §10) —
+# no restart, no processor re-registration.
 
 _otel_configured = False
 
 
-def get_tracer() -> trace.Tracer:
+class _SwappableSpanExporter(SpanExporter):
+    """Delegates to the currently configured OTLP exporter; None drops spans."""
+
+    def __init__(self) -> None:
+        self.target: SpanExporter | None = None
+        self.endpoint: str | None = None
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        target = self.target
+        if target is None:
+            return SpanExportResult.SUCCESS
+        return target.export(spans)
+
+    def shutdown(self) -> None:
+        if self.target is not None:
+            self.target.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        if self.target is None:
+            return True
+        return self.target.force_flush(timeout_millis)
+
+
+_exporter = _SwappableSpanExporter()
+
+
+def _ensure_provider() -> None:
     global _otel_configured
     if not _otel_configured:
         provider = TracerProvider(resource=Resource.create({"service.name": "concierge-agent"}))
-        endpoint = get_config().otel_exporter_otlp_endpoint
-        if endpoint:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-                OTLPSpanExporter,
-            )
-
-            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        provider.add_span_processor(BatchSpanProcessor(_exporter))
         trace.set_tracer_provider(provider)
         _otel_configured = True
+
+
+def apply_otlp_endpoint(endpoint: str | None) -> None:
+    """Point span export at a new OTLP collector live; empty/None disables.
+    Called at bootstrap (env default), at startup (stored setting override),
+    and on every settings write that touches otlp_endpoint."""
+    _ensure_provider()
+    normalized = (endpoint or "").strip() or None
+    if normalized == _exporter.endpoint:
+        return
+    old = _exporter.target
+    if normalized is None:
+        _exporter.target = None
+    else:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        # the env-var path appends the signal suffix itself; the kwarg path
+        # takes the URL verbatim, so normalize to the traces endpoint
+        url = (
+            normalized
+            if normalized.endswith("/v1/traces")
+            else normalized.rstrip("/") + "/v1/traces"
+        )
+        _exporter.target = OTLPSpanExporter(endpoint=url)
+    _exporter.endpoint = normalized
+    if old is not None:
+        old.shutdown()
+
+
+def otlp_endpoint_in_use() -> str | None:
+    """The endpoint spans are currently exported to (None = export disabled)."""
+    return _exporter.endpoint
+
+
+def bootstrap_otel_from_env() -> None:
+    """Env bootstrap (OTEL_EXPORTER_OTLP_ENDPOINT); a stored otlp_endpoint
+    setting applied later in the app lifespan overrides this."""
+    _ensure_provider()
+    endpoint = get_config().otel_exporter_otlp_endpoint
+    if endpoint:
+        apply_otlp_endpoint(endpoint)
+
+
+def get_tracer() -> trace.Tracer:
+    _ensure_provider()
     return trace.get_tracer("concierge-agent")
 
 

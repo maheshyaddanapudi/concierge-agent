@@ -5,13 +5,37 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SessionDep
 from app.models import Run, RunStep
 from app.orchestrator.runner import cancel_run, forget_run_events, retry_run
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+# LangGraph checkpointer tables (owned by AsyncPostgresSaver.setup(), outside
+# app metadata). Checkpoint rows ride the run lifecycle: the orchestrator
+# thread is the run id, worker threads are "run_id:entry_id" — so deleting a
+# run deletes its checkpoints (spec §8.7: purge leaves no run residue).
+_CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+
+
+async def _purge_checkpoints(session: AsyncSession, run_id: UUID | None = None) -> None:
+    for table in _CHECKPOINT_TABLES:
+        exists = await session.execute(text("SELECT to_regclass(:t)"), {"t": table})
+        if exists.scalar_one_or_none() is None:
+            continue  # saver has not created its tables yet (e.g. no run ever)
+        if run_id is None:
+            await session.execute(text(f"DELETE FROM {table}"))  # noqa: S608 - fixed table names
+        else:
+            await session.execute(
+                text(
+                    f"DELETE FROM {table} "  # noqa: S608 - fixed table names
+                    "WHERE thread_id = :thread OR thread_id LIKE :prefix"
+                ),
+                {"thread": str(run_id), "prefix": f"{run_id}:%"},
+            )
 
 
 def _step_out(step: RunStep) -> dict[str, Any]:
@@ -68,6 +92,7 @@ async def purge_runs(session: SessionDep) -> None:
         forget_run_events(run_id)
     await session.execute(delete(RunStep))
     await session.execute(delete(Run))
+    await _purge_checkpoints(session)
     await session.commit()
 
 
@@ -107,4 +132,5 @@ async def delete_run(run_id: UUID, session: SessionDep) -> None:
     forget_run_events(run_id)
     await session.execute(delete(RunStep).where(RunStep.run_id == run_id))
     await session.delete(run)
+    await _purge_checkpoints(session, run_id)
     await session.commit()

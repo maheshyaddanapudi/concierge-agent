@@ -1,6 +1,8 @@
-# Exactly three services (spec §2): db, backend, frontend.
-# No broker, no queue, no Redis, no Celery — Postgres is the only stateful
-# infrastructure. One command: docker compose up.
+# Three core services (spec §2): db, backend, frontend — no broker, no
+# queue, no Celery. Postgres is the only required stateful infrastructure.
+# One command: docker compose up. A fourth service, redis, is profile-gated
+# (spec §7.3): opt in with `docker compose --profile redis up` + REDIS_URL;
+# the registry cache only uses it when the registry_cache_mode setting says so.
 services:
   db:
     image: postgres:16

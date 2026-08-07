@@ -192,6 +192,15 @@ async def update_settings(session: AsyncSession, updates: dict[str, Any]) -> dic
     from app.registry_cache import get_cache
 
     await get_cache().invalidate("settings")
+    # spec §5b/§10: log_level and otlp_endpoint apply live, no restart
+    if "log_level" in updates:
+        from app.obs import configure_logging
+
+        configure_logging(str(updates["log_level"]))
+    if "otlp_endpoint" in updates:
+        from app.obs import apply_otlp_endpoint
+
+        apply_otlp_endpoint(str(updates["otlp_endpoint"]))
     return await get_settings(session)
 
 

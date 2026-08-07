@@ -1,0 +1,189 @@
+# Changelog
+
+All notable changes to the Concierge Agent POC. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are grouped
+by milestone (spec §12) instead of semver releases, newest first. The project
+was built spec-first, milestone by milestone, on a single feature branch:
+milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
+earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
+[PR #3].
+
+## Post-M8 fixes — 2026-08-07
+
+### Fixed
+
+- Never leave a HITL approval card armed after its gate was consumed — a
+  stale card could re-submit a decision against an already-resolved gate
+  ([PR #3], evidence in `docs/acceptance/22-hitl-stale-card-fix/`).
+- Lifecycle scripts made bash 3.2 compatible for stock macOS.
+- `log_level` and `otlp_endpoint` settings now have live consumers as
+  spec §5b/§10 intend: a PATCH re-applies the log filter and repoints the
+  span exporter immediately, stored values override the env bootstrap at
+  startup, and never-touched settings leave the env values in charge.
+- Run deletion and history purge now also remove the run's LangGraph
+  checkpoint rows (orchestrator thread `run_id`, worker threads
+  `run_id:*`) — previously they accumulated until `./decom.sh`.
+- `docker-compose.yml` header comment updated to acknowledge the
+  profile-gated `redis` service added in M7.
+
+### Added
+
+- Documentation suite ([PR #4]): architecture diagrams (C4, ERD, class,
+  sequence, state machines, resolution ladder — 20 Mermaid diagrams), ten
+  ADRs, API references (REST, SSE contract, workflow DSL, skill format),
+  operations guides (runbook, configuration, scaling, troubleshooting,
+  data lifecycle), development guides (contributing, local dev, testing,
+  code tour, prompt catalog), security posture, observability guide, user
+  guide, glossary, and this changelog.
+
+### Added
+
+- Cross-replica registry-cache invalidation over Postgres LISTEN/NOTIFY
+  (channel `registry_cache_inv`, origin-tagged payloads, loop-proof;
+  dormant on a single node) and optional Redis provisioning in
+  `quick-setup.sh --redis` (ADR-0008).
+
+## M8 — Answer surfaces, form gates, and provider campaigns — 2026-08-07
+
+### Added
+
+- Markdown-rendered canonical answers with a collapsible "show structured
+  summary" toggle; the structured panel stays expanded in traces as the
+  audit surface.
+- HITL **form gates**: workflow gates can carry choice and text questions;
+  answers are recorded verbatim on the `hitl` step and delivered into
+  worker state.
+- Themed pure-SVG **charts** (`bar`/`line`/`pie`) in the structured answer,
+  data extracted from run content, plus a `render_chart` native tool.
+- Per-skill `max_tool_iterations` loop budgets (frontmatter/registry field;
+  the static `web-research` skill ships with 20).
+- Current model lists for the OpenAI (GPT-5.x family) and Google
+  (Gemini flash family) adapters.
+
+### Fixed
+
+- OpenAI reasoning-effort runs are routed through the Responses API —
+  current reasoning models reject function tools + `reasoning_effort` on
+  `/v1/chat/completions`; the fix lives entirely in the adapter with zero
+  consumer changes (ADR-0007). Found live by the stage-19 campaign.
+
+### Verified
+
+- Provider agnosticism proven end to end: five conversations × both
+  orchestrator modes on `openai:gpt-5.6-terra` (20/20 turns), a Gemini
+  bonus run, and heterogeneous three-provider single runs (Anthropic
+  orchestrator × OpenAI planner/sub-agent) — `docs/acceptance/` stages
+  19–21.
+
+## M7 — Registry cache layer and progressive-disclosure retrieval — 2026-08-07
+
+### Added
+
+- `RegistryCache` facade for every run-path registry/settings read, with
+  live-flippable backends: `bypass` (shipped default, byte-identical direct
+  reads — the rollback lever), `memory` (reload-on-dirty), and optional
+  `redis`; event-driven invalidation on every write path, no TTLs
+  (spec §7.3, ADR-0004). Cache status/refresh API and UI controls.
+- Progressive-disclosure top-K retrieval over orchestrator catalogs: BM25 +
+  embedding cosine fused with RRF, pinned ids, `use_full_catalog` escape
+  hatch; off by default and active only above a per-registry threshold
+  (spec §7.4, ADR-0005). Embeddings stored as JSONB via the provider port
+  (ADR-0006).
+
+### Fixed
+
+- Settings page reflects `registry_cache_mode` flips in cache status
+  immediately; typed redis imports.
+
+## M6 — Compose stack, acceptance, and hardening — 2026-08-05 to 2026-08-06
+
+### Added
+
+- Three-service `docker compose up` stack with prewarmed MCP caches,
+  keyless demo mode (fake-provider script control), and lifecycle scripts
+  (`quick-setup.sh`, `build.sh`, `start.sh`, `stop.sh`, `decom.sh`).
+- Chat experience: live activity ticker, collapsible thinking layout, stop
+  button, queued follow-up message, named dispatch rails with steps grouped
+  under their sub-agent rails, phonetic callsigns for ephemeral workers,
+  and four brand themes (including a themed HITL gate card).
+- LLM-as-judge overlap guard on skill/sub-agent saves; delete buttons for
+  custom skills and sub agents; Claude Sonnet 5 / Opus 5 in the Anthropic
+  adapter (Claude 5 effort maps to adaptive thinking).
+- Full manual-UI acceptance evidence: the single-pass 125-screenshot
+  campaign plus routing-matrix, determinism, and multi-capability retests
+  (`docs/acceptance/` stages 00–17).
+
+### Fixed
+
+- Parallel HITL gates resolve one decision per gate with stale-interrupt-
+  aware resume; interrupted tool calls replay on fresh middleware
+  instances; plan entries dispatch even when the planner answers part of
+  the ask directly.
+- Contained tool exceptions in agentic/fallback loops; `spin_worker` strict
+  UUID contract with corrective feedback; unique bound-tool names for
+  duplicate registry names; schema-repair retry for
+  `summarize-and-structure`.
+- Reasoning content blocks render as prose (never block reprs); structlog
+  renders exception tracebacks; MCP stdio subprocesses inherit network env;
+  blank env values treated as unset; MCP server row refreshed after commit;
+  workflow preview BFS depth capped (self-loop edge froze the tab);
+  theme-correct toggles and A2UI answer cards; queued message and live-run
+  view bound to their conversation.
+
+## M5 — Admin command center — 2026-08-05
+
+### Added
+
+- All seven UI pages (Chat, MCP Servers, Tools, Skills, Sub Agents, Runs,
+  Settings) in the mission-control design: consistent tables with
+  source/kind badges, drawers, workflow DAG builder with validation,
+  run trace view, A2UI answer renderer, and the Settings command center.
+
+## M4 — Orchestrator, middleware layer, chat SSE — 2026-08-05
+
+### Added
+
+- Both orchestrator modes, runtime-switchable per run (ADR-0010): graph
+  mode (`plan → resolve → dispatch → aggregate` with the deterministic
+  capability ladder) and agentic mode (single `create_agent` concierge with
+  todos, `spin_worker`, `use_full_catalog`).
+- Middleware layer (spec §7.0, ADR-0003): the three registry projections,
+  OOB Summarization/call-limit/TodoList middleware, all composed through
+  `build_middleware_stack(context)`.
+- Chat SSE event contract, HITL interrupt/resume over the Postgres
+  checkpointer, run/step recording, and observability (structlog JSON,
+  OTel spans, `/metrics`) with the spec §10 label set.
+
+## M3 — Worker factory — 2026-08-05
+
+### Added
+
+- Record → compiled-subgraph worker factory: DAG compile with sequential,
+  branch, parallel, and error edges, HITL gate compile, routing, and the
+  middleware-backed skill stack.
+
+## M2 — MCP connection manager — 2026-08-04
+
+### Added
+
+- MCP server connect over stdio and streamable HTTP, tool ingestion into
+  the registry, `listChanged` re-ingest, health checks, and invoke coverage.
+
+## M1 — Registries, schema, provider layer — 2026-08-04
+
+### Added
+
+- Postgres schema and Alembic baseline for the tri-layer registries
+  (mcp_servers, tools, skills, sub_agents), registry CRUD API, static seed
+  data with static-record rejection rules (immutable ids; only
+  status/exposure togglable).
+- The `ModelProvider` port, adapter registry, and `get_model()` single
+  entry point with the shared adapter contract test suite (spec §2.1,
+  ADR-0002).
+- Skill documents as markdown (frontmatter + body), native `.skill.md`
+  startup scan, and `{tool:...}` mention validation (ADR-0009).
+
+[PR #1]: https://github.com/maheshyaddanapudi/concierge-agent/pull/1
+[PR #2]: https://github.com/maheshyaddanapudi/concierge-agent/pull/2
+[PR #3]: https://github.com/maheshyaddanapudi/concierge-agent/pull/3
+[PR #4]: https://github.com/maheshyaddanapudi/concierge-agent/pull/4
