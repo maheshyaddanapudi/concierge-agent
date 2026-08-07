@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+# portable lowercase-compare — macOS ships bash 3.2 (no ${var,,})
+is_yes() { case "$1" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
 
 # ── 1. .env ──────────────────────────────────────────────────────
@@ -29,9 +31,10 @@ if [ "${1:-}" = "--key" ] && [ -n "${2:-}" ]; then
   write_key "$2"
 elif [ -t 0 ]; then
   if [ -n "$current_key" ]; then
-    printf 'An ANTHROPIC_API_KEY is already set (…%s). Replace it? [y/N] ' "${current_key: -4}"
+    key_tail="$(printf '%s' "$current_key" | tail -c 4)"
+    printf 'An ANTHROPIC_API_KEY is already set (…%s). Replace it? [y/N] ' "$key_tail"
     read -r replace
-    if [ "${replace,,}" = "y" ]; then
+    if is_yes "$replace"; then
       printf 'Paste the new ANTHROPIC_API_KEY (input hidden): '
       read -rs new_key; echo
       [ -n "$new_key" ] && write_key "$new_key" || warn "empty input — keeping the existing key"
@@ -85,7 +88,7 @@ elif [ "${1:-}" = "--no-redis" ] || [ "${2:-}" = "--no-redis" ] || [ "${3:-}" = 
 elif [ -t 0 ]; then
   printf 'Set up Redis as an optional registry-cache backend? [y/N] '
   read -r want_redis
-  if [ "${want_redis,,}" = "y" ]; then setup_redis; else skip_redis; fi
+  if is_yes "$want_redis"; then setup_redis; else skip_redis; fi
 else
   say "non-interactive run — Redis unchanged (use --redis / --no-redis)"
 fi
