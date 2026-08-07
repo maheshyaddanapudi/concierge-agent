@@ -204,6 +204,35 @@ Findings this stage surfaced (the honest part of the record):
    mid-campaign (Opus 5 at high effort), reported verbatim in the run
    errors — infrastructure, not behavior.
 
+## Stage 21 — M8 features, Claude × Gemini combo (user-directed)
+
+Markdown answers, the summary toggle, form gates, charts, and per-skill
+loop budgets — exercised end to end with **Claude as default+planner
+(`claude-sonnet-5` @ medium/high) and Gemini as aggregator
+(`gemini-3.6-flash` @ low)**, cache in `memory`, both orchestrator modes,
+3/3 runs completed:
+
+- `10/11` — the canonical answer renders as **markdown** (bold facts
+  inline, no raw asterisks); the structured summary sits collapsed behind
+  "show structured summary" and expands on click. Traces keep the panel
+  expanded as the audit surface.
+- `10-…gate-empty/filled` — the site-analyst gate upgraded to a **form
+  gate** (two choice questions + one text question) through a workflow
+  edit; one card, chips + text + single **Submit answers**.
+- `13` — the trace's `hitl` step records
+  `answers: {quality, audience, follow_up}` verbatim, and the same step
+  timeline shows `plan/skills → anthropic:claude-sonnet-5` with
+  `aggregate → google_genai:gemini-3.6-flash` — the two-provider combo in
+  one run.
+- `20/21` — a numbers prompt produces a **themed SVG bar chart** in the
+  structured summary (bars proportional to 135/120/80 — data extracted
+  from the prompt, not invented). `01` — the `render_chart` native tool
+  exposed through the Tools UI (registry mechanics are the per-tier
+  enable switch).
+- `30/31` — agentic web-research run under the new **per-skill loop
+  budget** (`web-research` ships `max_tool_iterations: 20`, `40` shows the
+  editor field) — the research-limit flake fix, completed clean.
+
 ## Observations
 
 - Spec §14 step 7 was amended (`e9cac23`) to match §7.2: a no-confident-match engages the full-catalog fallback rather than force-spinning a worker (unexposed skills are invisible to the planner by design); rung-4 dynamic workers stay reachable via `spin_worker` and covered per-rung by the API test suite.
