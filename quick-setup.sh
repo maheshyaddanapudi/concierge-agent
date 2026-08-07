@@ -41,7 +41,7 @@ RE-RUNNING = UPDATING
     - an existing key shows its last 4 characters and Enter keeps it;
       answer y and paste to replace just that one key (verified as usual)
     - existing Redis provisioning is kept on Enter ("Keep it? [Y/n]")
-    - a leftover FAKE_LLM_ENABLED=1 is only removed after asking
+    - a leftover FAKE_LLM_ENABLED=1 is kept on Enter; answer y to disable
   Example: to rotate only your Anthropic key a month later, re-run, hit
   Enter at the menu, answer y at the Anthropic "Replace it?" prompt,
   paste the new key, and Enter through everything else.
@@ -83,27 +83,55 @@ PROVIDERS=""
 KEY_anthropic=""; KEY_google=""; KEY_openai=""
 REDIS_CHOICE=""
 
+die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
 add_provider() { # $1 = provider id; append if not already listed
   case ",$PROVIDERS," in *",$1,"*) ;; *) PROVIDERS="${PROVIDERS:+$PROVIDERS,}$1" ;; esac
+}
+
+need_val() { # $1 = flag name, $2 = value (must exist and not be another flag)
+  [ -n "${2:-}" ] || die "$1 needs a value (see ./quick-setup.sh --help)"
+  case "$2" in --*) die "$1 needs a value, got '$2' (see ./quick-setup.sh --help)" ;; esac
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)       usage; exit 0 ;;
-    --providers)     PROVIDERS="${2:-}"; shift 2 ;;
-    --anthropic-key) KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
-    --google-key)    KEY_google="${2:-}";    add_provider google;    shift 2 ;;
-    --openai-key)    KEY_openai="${2:-}";    add_provider openai;    shift 2 ;;
-    --key)           KEY_anthropic="${2:-}"; add_provider anthropic; shift 2 ;;
+    --providers)     need_val "$1" "${2:-}"; PROVIDERS="$2"; shift 2 ;;
+    --anthropic-key) need_val "$1" "${2:-}"; KEY_anthropic="$2"; add_provider anthropic; shift 2 ;;
+    --google-key)    need_val "$1" "${2:-}"; KEY_google="$2";    add_provider google;    shift 2 ;;
+    --openai-key)    need_val "$1" "${2:-}"; KEY_openai="$2";    add_provider openai;    shift 2 ;;
+    --key)           need_val "$1" "${2:-}"; KEY_anthropic="$2"; add_provider anthropic; shift 2 ;;
     --redis)         REDIS_CHOICE="yes"; shift ;;
     --no-redis)      REDIS_CHOICE="no";  shift ;;
-    *) warn "unknown option: $1 (see ./quick-setup.sh --help)"; shift ;;
+    *) die "unknown option: $1 (see ./quick-setup.sh --help)" ;;
   esac
 done
 [ "$PROVIDERS" = "all" ] && PROVIDERS="anthropic,google,openai"
 
+# keyless mode and key flags are mutually exclusive, whatever the flag order
+if [ "$PROVIDERS" = "none" ] && { [ -n "$KEY_anthropic" ] || [ -n "$KEY_google" ] || [ -n "$KEY_openai" ]; }; then
+  die "--providers none (keyless mode) cannot be combined with key flags"
+fi
+
+# validate the provider list before touching anything — a typo must fail
+# loudly, never configure nothing
+if [ -n "$PROVIDERS" ] && [ "$PROVIDERS" != "none" ]; then
+  OLDIFS="$IFS"; IFS=','
+  for p in $PROVIDERS; do
+    case "$p" in
+      anthropic|google|openai) ;;
+      none) die "--providers 'none' cannot be combined with other providers or key flags" ;;
+      '') die "--providers has an empty entry (check for stray commas): '$PROVIDERS'" ;;
+      *) die "unknown provider '$p' — valid: anthropic, google, openai, all, none" ;;
+    esac
+  done
+  IFS="$OLDIFS"
+fi
+
 # ── 1. .env ──────────────────────────────────────────────────────
 if [ ! -f .env ]; then
+  [ -f .env.example ] || die ".env.example not found — run this script from a complete checkout of the repo root"
   cp .env.example .env
   say "created .env from .env.example"
 else
@@ -249,15 +277,18 @@ elif [ "$PROVIDERS" != "skip" ]; then
   contains_provider anthropic && configure_provider anthropic "$KEY_anthropic"
   contains_provider google    && configure_provider google    "$KEY_google"
   contains_provider openai    && configure_provider openai    "$KEY_openai"
-  # keyless demo flag left over from an earlier setup? ask, don't assume
+  # keyless demo flag left over from an earlier setup? ask, don't assume —
+  # and Enter keeps it, like every other prompt (re-runs are no-ops by default)
   if grep -qE '^FAKE_LLM_ENABLED=1' .env; then
     if [ -t 0 ]; then
-      printf 'FAKE_LLM_ENABLED=1 is set (keyless demo mode). Disable it now that real providers are configured? [Y/n] '
+      printf 'FAKE_LLM_ENABLED=1 is set (keyless demo mode). Disable it? [y/N] '
       read -r drop_fake
-      case "$drop_fake" in
-        [nN]*) say "keeping FAKE_LLM_ENABLED=1 (fake provider stays available)" ;;
-        *) set_env_line FAKE_LLM_ENABLED ""; say "keyless demo mode disabled" ;;
-      esac
+      if is_yes "$drop_fake"; then
+        set_env_line FAKE_LLM_ENABLED ""
+        say "keyless demo mode disabled"
+      else
+        say "keeping FAKE_LLM_ENABLED=1 (fake provider stays available)"
+      fi
     else
       say "FAKE_LLM_ENABLED=1 left as-is (non-interactive run)"
     fi
@@ -268,16 +299,23 @@ fi
 # Provisioning is upfront; USAGE stays a runtime decision — the cache mode
 # defaults to 'bypass' and is flipped in Settings → Registry cache later.
 
+set_redis_lines() { # $1 = REDIS_URL value, $2 = COMPOSE_PROFILES value
+  # both lines in one temp-file pass + one mv: an interrupt can never
+  # leave half a provisioning behind
+  grep -vE "^(REDIS_URL|COMPOSE_PROFILES)=" .env > .env.tmp || true
+  [ -n "$1" ] && printf 'REDIS_URL=%s\n' "$1" >> .env.tmp
+  [ -n "$2" ] && printf 'COMPOSE_PROFILES=%s\n' "$2" >> .env.tmp
+  mv .env.tmp .env
+}
+
 setup_redis() {
-  set_env_line REDIS_URL "redis://redis:6379/0"
-  set_env_line COMPOSE_PROFILES "redis"
+  set_redis_lines "redis://redis:6379/0" "redis"
   say "Redis provisioned: ./start.sh will now include the redis service"
   say "(cache mode stays 'bypass' until you flip it in Settings → Registry cache)"
 }
 
 skip_redis() {
-  set_env_line REDIS_URL ""
-  set_env_line COMPOSE_PROFILES ""
+  set_redis_lines "" ""
   say "Redis not provisioned — memory/bypass cache modes remain available"
 }
 
@@ -319,6 +357,40 @@ if command -v npm >/dev/null 2>&1; then
 else
   warn "npm not found — skipping local frontend deps (install Node 22+)"
   warn "docker builds via ./build.sh do not need local npm."
+fi
+
+# ── 5. configuration summary ─────────────────────────────────────
+# Never end silently: state exactly what is (and is not) configured.
+summary_provider() { # $1 = provider id, $2 = env var
+  val="$(grep -E "^$2=" .env | head -1 | cut -d= -f2- || true)"
+  if [ -n "$val" ]; then
+    say "  $1: key set (…$(printf '%s' "$val" | tail -c 4))"
+    any_provider=1
+  else
+    say "  $1: no key"
+  fi
+}
+
+say "── configuration summary ──"
+any_provider=""
+summary_provider anthropic ANTHROPIC_API_KEY
+summary_provider google GOOGLE_API_KEY
+summary_provider openai OPENAI_API_KEY
+if grep -qE '^FAKE_LLM_ENABLED=1' .env; then
+  say "  keyless demo mode: ON (fake provider available)"
+  any_provider=1
+else
+  say "  keyless demo mode: off"
+fi
+if grep -qE '^REDIS_URL=.+' .env; then
+  say "  redis cache backend: provisioned"
+else
+  say "  redis cache backend: not provisioned (bypass/memory modes available)"
+fi
+if [ -z "$any_provider" ]; then
+  warn "NO provider configured and keyless mode is off — the app will start,"
+  warn "but runs cannot execute until you re-run ./quick-setup.sh with a key"
+  warn "or choose keyless demo mode (--providers none)."
 fi
 
 say "setup complete. Next: ./build.sh (build images) then ./start.sh (run the stack)."
