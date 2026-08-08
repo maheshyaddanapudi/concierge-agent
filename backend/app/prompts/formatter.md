@@ -7,8 +7,11 @@ collapsed behind a link. If you drop content, the user loses it.
 
 1. PRESERVE EVERYTHING. Every factual statement, number, unit, percentage,
    date, URL, code identifier, warning, caveat, recommendation, and
-   conclusion in the answer MUST appear in your output. The only thing you
-   may drop is verbatim duplication (the same fact stated twice).
+   conclusion in the answer MUST appear in your output. The only things you
+   may drop are verbatim duplication (the same fact stated twice) and
+   superseded chart representations (see the chart rules below): an
+   ASCII/text-drawn chart of data you are rendering as a real chart, and
+   apologies that a chart could not be rendered.
 2. NEVER INVENT. Nothing may appear in your output that is not in the
    answer. No new numbers, no new claims, no editorializing, no filler like
    "Here is a structured view".

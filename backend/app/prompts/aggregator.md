@@ -6,7 +6,8 @@ plainly what could not be completed and why.
 
 If a step output shows a successful render_chart call ("chart accepted"),
 that chart is rendered as a real chart alongside your answer — never draw an
-ASCII/text chart of the same data; refer to the rendered chart instead.
+ASCII/text chart of the same data; refer to the rendered chart instead, and
+never with positional words ('above'/'below' — its position varies by view).
 
 User request:
 

@@ -305,6 +305,83 @@ class TestRenderChartTool:
         assert spec["series"] == [{"name": "s", "values": [1.0, 2.0]}]
         assert '"data"' not in result
 
+    async def test_new_chart_kinds_accepted(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        for kind in (
+            "hbar",
+            "stacked_bar",
+            "stacked_bar_100",
+            "area",
+            "stacked_area",
+            "donut",
+            "histogram",
+            "funnel",
+            "waterfall",
+            "lollipop",
+        ):
+            result = await entry.fn(
+                kind=kind, labels=["a", "b"], series=[{"name": "s", "values": [1, 2]}]
+            )
+            assert json.loads(result)["spec"]["kind"] == kind
+
+    async def test_shaped_kinds_validate(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        # gauge: one series, [value, max]
+        r = json.loads(await entry.fn(kind="gauge", labels=["CPU"], series=[{"values": [42, 100]}]))
+        assert r["spec"]["kind"] == "gauge"
+        with pytest.raises(ValueError, match="value, max"):
+            await entry.fn(kind="gauge", labels=["CPU"], series=[{"values": [42]}])
+        # scatter: points required
+        r = json.loads(
+            await entry.fn(kind="scatter", labels=[], series=[{"points": [[1, 2], [3, 4]]}])
+        )
+        assert r["spec"]["series"][0]["points"] == [[1.0, 2.0], [3.0, 4.0]]
+        with pytest.raises(ValueError, match="points"):
+            await entry.fn(kind="scatter", labels=["a"], series=[{"values": [1]}])
+        # bubble: needs a third number per point
+        with pytest.raises(ValueError, match="3 numbers"):
+            await entry.fn(kind="bubble", labels=[], series=[{"points": [[1, 2]]}])
+        # candlestick: named series enforced
+        ohlc = [
+            {"name": "open", "values": [1.0]},
+            {"name": "high", "values": [2.0]},
+            {"name": "low", "values": [0.5]},
+            {"name": "close", "values": [1.5]},
+        ]
+        r = json.loads(await entry.fn(kind="candlestick", labels=["d1"], series=ohlc))
+        assert r["spec"]["kind"] == "candlestick"
+        with pytest.raises(ValueError, match="open"):
+            await entry.fn(kind="candlestick", labels=["d1"], series=ohlc[:3])
+        # boxplot: five named series, pre-computed only
+        five = [
+            {"name": n, "values": [float(i)]}
+            for i, n in enumerate(["min", "q1", "median", "q3", "max"])
+        ]
+        r = json.loads(await entry.fn(kind="boxplot", labels=["g"], series=five))
+        assert r["spec"]["kind"] == "boxplot"
+        # gantt: ranges aligned with labels
+        r = json.loads(
+            await entry.fn(
+                kind="gantt", labels=["t1"], series=[], ranges=[["2026-08-01", "2026-08-05"]]
+            )
+        )
+        assert r["spec"]["ranges"] == [["2026-08-01", "2026-08-05"]]
+        with pytest.raises(ValueError, match="ranges"):
+            await entry.fn(kind="gantt", labels=["t1", "t2"], series=[], ranges=[["a", "b"]])
+        # waterfall/funnel: single series only
+        with pytest.raises(ValueError, match="one series"):
+            await entry.fn(
+                kind="funnel", labels=["a"], series=[{"values": [1]}, {"values": [2]}]
+            )
+
+    async def test_unknown_kind_rejected(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        with pytest.raises(ValueError, match="kind"):
+            await entry.fn(kind="radar", labels=["a"], series=[{"values": [1]}])
+
     async def test_alias_series_still_length_checked(self) -> None:
         entry = native_tools().get("render_chart")
         assert entry is not None

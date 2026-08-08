@@ -122,6 +122,67 @@ class TestFormatterPayload:
         assert payload["blocks"][1]["tool_chart_ref"] == 0
         assert "charts" not in payload  # refs alone add no formatter charts
 
+    async def test_table_becomes_native_block_at_its_position(self) -> None:
+        """Tables leave the catalog text-row path: they render as native
+        themed table blocks exactly where the formatter placed them."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Comparison below."),
+                UiComponent(
+                    type="table",
+                    columns=["Line", "Units"],
+                    rows=[["3", "120"], ["4", "80"]],
+                ),
+                UiComponent(type="text", markdown="Line 4 trails."),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "u5"}]
+            )
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "t", "answer", [])
+        assert payload is not None
+        kinds = [
+            next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b)
+            for b in payload["blocks"]
+        ]
+        assert kinds == ["a2ui", "table", "a2ui"]
+        assert payload["blocks"][1]["table"] == {
+            "columns": ["Line", "Units"],
+            "rows": [["3", "120"], ["4", "80"]],
+        }
+
+    async def test_donut_chart_kind_flows_through(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Shares: 45, 30, 25."),
+                UiComponent(
+                    type="chart",
+                    chart_kind="donut",
+                    labels=["A", "B", "C"],
+                    series=[{"name": "", "values": [45.0, 30.0, 25.0]}],  # type: ignore[list-item]
+                ),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "u6"}]
+            )
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "t", "45 30 25", [])
+        assert payload is not None
+        assert payload["charts"][0]["kind"] == "donut"
+        assert payload["blocks"][1]["chart"]["kind"] == "donut"
+
     async def test_no_midflow_chart_means_no_blocks(self) -> None:
         from langchain_core.messages import AIMessage
 
