@@ -257,6 +257,93 @@ def to_a2ui_messages(ui: AnswerUi) -> list[dict[str, Any]]:
     ]
 
 
+_CHART_ASK = (
+    r"\b(charts?|graphs?|plots?|visuali[sz]e|visuali[sz]ations?|donut|funnel|"
+    r"waterfall|histogram|candlestick|gantt|sparkline|gauge|heat ?map|pie)\b"
+)
+
+
+def _asks_for_charts(task: str) -> bool:
+    import re
+
+    return bool(re.search(_CHART_ASK, task, re.IGNORECASE))
+
+
+def _chart_deficiency(
+    parsed: AnswerUi, task: str, tool_charts: list[dict[str, Any]] | None, charts_enabled: bool
+) -> str | None:
+    """Deterministic check of the chart contract — prompt compliance is
+    probabilistic, so the binding rules are enforced here with one repair
+    pass (same doctrine as the planner and aggregator repairs)."""
+    if not charts_enabled:
+        return None
+    n = len(tool_charts or [])
+    refs = {
+        c.ref
+        for c in parsed.components
+        if c.type == "chart" and c.ref is not None and 0 <= c.ref < n
+    }
+    missing = [i for i in range(n) if i not in refs]
+    if missing:
+        return (
+            f"tool charts {', '.join(map(str, missing))} are not placed — add "
+            '{"type": "chart", "ref": <index>} as its own component for each, '
+            "at the position where the text discusses that chart's data"
+        )
+    has_data_chart = any(
+        c.type == "chart" and c.chart_kind and c.series for c in parsed.components
+    )
+    if n == 0 and not has_data_chart and _asks_for_charts(task):
+        return (
+            "the request explicitly asks for charts but the document contains no "
+            "chart components — add one for each dataset the request names, each "
+            "placed with its own narrative section"
+        )
+    return None
+
+
+def _component_text(c: UiComponent) -> str:
+    parts = [c.markdown or "", c.title or "", c.label or "", c.value or ""]
+    parts += [str(x) for x in (c.items or [])]
+    for row in c.rows or []:
+        parts += [str(v) for v in row]
+    for child in c.children or []:
+        parts.append(_component_text(child))
+    return " ".join(parts).lower()
+
+
+def place_missing_refs(ui: AnswerUi, tool_charts: list[dict[str, Any]]) -> list[int]:
+    """Deterministic last resort when the model leaves tool charts unplaced
+    even after the repair pass: insert each missing ref after the component
+    whose text best matches the chart's title/labels (falling back to the
+    end of the document). Guarantees every tool chart lands in-document."""
+    n = len(tool_charts)
+    placed = {
+        c.ref for c in ui.components if c.type == "chart" and c.ref is not None and 0 <= c.ref < n
+    }
+    forced: list[int] = []
+    for i, chart in enumerate(tool_charts):
+        if i in placed:
+            continue
+        tokens = {
+            w
+            for w in f"{chart.get('title', '')} {' '.join(map(str, chart.get('labels', [])))}".lower().split()
+            if len(w) > 3
+        }
+        best_idx, best_score = None, 0
+        for idx, c in enumerate(ui.components):
+            if c.type == "chart":
+                continue
+            score = sum(1 for t in tokens if t in _component_text(c))
+            if score > best_score:
+                best_idx, best_score = idx, score
+        insert_at = (best_idx + 1) if best_idx is not None else len(ui.components)
+        ui.components.insert(insert_at, UiComponent(type="chart", ref=i))
+        placed.add(i)
+        forced.append(i)
+    return forced
+
+
 async def generate_answer_ui(
     model_ref: str,
     task: str,
@@ -334,16 +421,42 @@ async def generate_answer_ui(
             )
         prompt = prompt.replace("{existing_charts}", existing)
         structured = model.with_structured_output(AnswerUi, include_raw=True)
-        result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
-            prompt, config={"callbacks": callbacks}
-        )
-        meta = getattr(result.get("raw"), "usage_metadata", None)
-        if meta:
-            usage["input_tokens"] = meta.get("input_tokens", 0)
-            usage["output_tokens"] = meta.get("output_tokens", 0)
-        parsed = result.get("parsed")
-        if parsed is None or not parsed.components:
+        parsed: AnswerUi | None = None
+        attempt_prompt = prompt
+        for attempt in range(2):
+            result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
+                attempt_prompt, config={"callbacks": callbacks}
+            )
+            meta = getattr(result.get("raw"), "usage_metadata", None)
+            if meta:
+                usage["input_tokens"] += meta.get("input_tokens", 0)
+                usage["output_tokens"] += meta.get("output_tokens", 0)
+            candidate = result.get("parsed")
+            if candidate is None or not candidate.components:
+                break  # keep the previous attempt's document, if any
+            parsed = candidate
+            deficiency = _chart_deficiency(parsed, task, tool_charts, charts_enabled)
+            if deficiency is None or attempt == 1:
+                break
+            logger.info("formatter_chart_repair", reason=deficiency)
+            # the repair attempt runs WITHOUT thinking: forced tool calls are
+            # far more reliable that way, and the repair is a mechanical edit
+            repair_params = (model_params or ModelParams()).model_copy(update={"effort": "none"})
+            structured = get_model(model_ref, repair_params).with_structured_output(
+                AnswerUi, include_raw=True
+            )
+            attempt_prompt = (
+                f"{prompt}\n\nYour previous attempt violated the chart contract: "
+                f"{deficiency}. Produce the FULL corrected document — all content "
+                "rules still apply."
+            )
+        if parsed is None:
             return None, usage
+        if charts_enabled and tool_charts:
+            # deterministic last resort — never depends on model compliance
+            forced = place_missing_refs(parsed, tool_charts)
+            if forced:
+                logger.info("formatter_refs_force_placed", indices=forced)
         if not charts_enabled:
             parsed.components = [c for c in parsed.components if c.type != "chart"]
             if not parsed.components:
