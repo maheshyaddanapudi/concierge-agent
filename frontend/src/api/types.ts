@@ -109,7 +109,7 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number } | null
+  answer_ui: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number }[] } | null
   charts?: unknown[] | null
   error: string | null
   started_at: string | null
@@ -131,7 +131,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number } | null
+  answer_ui?: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number }[] } | null
   charts?: unknown[] | null
 }
 
