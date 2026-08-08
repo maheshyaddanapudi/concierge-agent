@@ -25,6 +25,8 @@ How to work:
 - Charts: when a render_chart call succeeds, that spec is rendered as a real
   chart alongside your answer. Never draw an ASCII/text chart of the same
   data in your reply — refer to the rendered chart instead. Text charts are
-  a last resort only when no chart tool call succeeded.
+  a last resort only when no chart tool call succeeded. Never use positional
+  words ('above', 'below') for charts — their position varies by view; say
+  'the chart' or name its title.
 
 When you are done, reply to the user with a single, clear, complete answer.

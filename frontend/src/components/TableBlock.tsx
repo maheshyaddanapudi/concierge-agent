@@ -4,9 +4,12 @@
 export interface TableSpec {
   columns: string[]
   rows: string[][]
+  // per-column color scale over numeric cells (heatmap mode)
+  heat?: boolean
 }
 
 const NUMERIC = /^[\s$€£]?-?\d[\d,]*(\.\d+)?\s?(%|ms|s|units?|x)?$/i
+const num = (v: string) => parseFloat(String(v).replace(/[^\d.-]/g, ''))
 
 export function TableBlock({ spec }: { spec: TableSpec }) {
   if (!spec.rows.length) return null
@@ -16,6 +19,19 @@ export function TableBlock({ spec }: { spec: TableSpec }) {
   const numeric = cols.map((_, ci) =>
     spec.rows.every((r) => r[ci] == null || r[ci] === '' || NUMERIC.test(String(r[ci]).trim())),
   )
+  // heat: normalize each numeric column independently (deterministic display
+  // math only — mixed-scale columns stay comparable within themselves)
+  const heatFor = (ci: number, v: string): string | undefined => {
+    if (!spec.heat || !numeric[ci]) return undefined
+    const vals = spec.rows.map((r) => num(r[ci] ?? '')).filter((x) => !Number.isNaN(x))
+    if (vals.length < 2) return undefined
+    const lo = Math.min(...vals)
+    const hi = Math.max(...vals)
+    const x = num(v)
+    if (Number.isNaN(x) || hi === lo) return undefined
+    const t = (x - lo) / (hi - lo)
+    return `color-mix(in srgb, var(--color-accent-400) ${Math.round(8 + t * 55)}%, transparent)`
+  }
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800 bg-void-900/50">
       <table className="w-full border-collapse text-sm">
@@ -41,6 +57,7 @@ export function TableBlock({ spec }: { spec: TableSpec }) {
               {cols.map((_, ci) => (
                 <td
                   key={ci}
+                  style={{ background: heatFor(ci, row[ci] ?? '') }}
                   className={`px-3 py-1.5 text-slate-200 ${
                     numeric[ci] ? 'text-right font-mono text-[13px] tabular-nums' : 'text-left'
                   }`}

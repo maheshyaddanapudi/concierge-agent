@@ -52,9 +52,28 @@ class UiComponent(BaseModel):
     url: str | None = None
     urls: list[str] | None = None
     children: list["UiComponent"] | None = None
-    # chart (spec §7.1): data extracted from the answer, never invented
+    # chart (spec §7.1): data extracted from the answer, never invented.
+    # Point/range kinds (scatter, candlestick, gantt, …) are tool-only —
+    # the formatter works from prose, where labels+values is the honest shape.
     chart_kind: (
-        Literal["bar", "hbar", "stacked_bar", "line", "area", "pie", "donut", "histogram"] | None
+        Literal[
+            "bar",
+            "hbar",
+            "stacked_bar",
+            "stacked_bar_100",
+            "line",
+            "area",
+            "stacked_area",
+            "pie",
+            "donut",
+            "histogram",
+            "funnel",
+            "waterfall",
+            "lollipop",
+            "gauge",
+            "sparkline",
+        ]
+        | None
     ) = None
     labels: list[str] | None = None
     series: list[UiSeries] | None = None
@@ -62,6 +81,8 @@ class UiComponent(BaseModel):
     # charts — places an existing chart at this position instead of
     # re-emitting its data
     ref: int | None = None
+    # table only: render numeric cells with a per-column color scale
+    heat: bool | None = None
 
 
 class AnswerUi(BaseModel):
@@ -175,14 +196,13 @@ def build_blocks(ui: AnswerUi, tool_chart_count: int) -> list[dict[str, Any]]:
     for c in ui.components:
         if c.type == "table" and c.rows:
             flush()
-            blocks.append(
-                {
-                    "table": {
-                        "columns": [str(x) for x in (c.columns or [])],
-                        "rows": [[str(v) for v in row] for row in c.rows],
-                    }
-                }
-            )
+            table: dict[str, Any] = {
+                "columns": [str(x) for x in (c.columns or [])],
+                "rows": [[str(v) for v in row] for row in c.rows],
+            }
+            if c.heat:
+                table["heat"] = True
+            blocks.append({"table": table})
             continue
         if c.type != "chart":
             group.append(c)
@@ -258,20 +278,32 @@ async def generate_answer_ui(
         model = get_model(model_ref, model_params)
         prompt = load_prompt("formatter").replace("{task}", task).replace("{answer}", answer)
         chart_rules = (
-            '- chart {title?, chart_kind: "bar"|"hbar"|"stacked_bar"|"line"|"area"|'
-            '"pie"|"donut"|"histogram", labels: [..], '
+            '- chart {title?, chart_kind: "bar"|"hbar"|"stacked_bar"|"stacked_bar_100"|'
+            '"line"|"area"|"stacked_area"|"pie"|"donut"|"histogram"|"funnel"|'
+            '"waterfall"|"lollipop"|"gauge"|"sparkline", labels: [..], '
             "series: [{name?, values: [numbers]}]} — ONLY when the answer contains "
             "genuinely comparative or trending numbers; the data MUST be extracted "
             "from the answer text, never computed or invented; prefer a table unless "
-            "a chart clearly helps. Pick the kind that fits: bar for category "
-            "comparison, hbar when labels are long, stacked_bar for composition "
-            "across categories, line/area for trends over time (area emphasizes "
-            "magnitude), pie/donut for shares of a whole (single series), histogram "
-            "ONLY for data the answer already presents as bins (bin-range labels + "
-            "counts — never bin raw values yourself). PLACEMENT MATTERS: put each "
-            "chart component at the exact position in your component sequence where "
-            "the surrounding text discusses that data — next to its narrative, not "
-            "dumped at the start or end."
+            "a chart clearly helps. Pick the kind that fits: bar/hbar/lollipop for "
+            "category comparison (hbar when labels are long), stacked_bar for "
+            "composition (stacked_bar_100 when shares matter more than totals), "
+            "line/area/stacked_area for trends, pie/donut for shares of a whole "
+            "(single series), funnel for ordered stages, waterfall for signed "
+            "deltas walking from a start to an end value, gauge for one value "
+            "against a stated max ([value, max]), sparkline for a tiny inline "
+            "trend, histogram ONLY for data the answer already presents as bins. "
+            "Never compute bins, quartiles, or aggregates yourself. PLACEMENT "
+            "MATTERS: put each chart component at the exact position in your "
+            "component sequence where the surrounding text discusses that data. "
+            "SUPERSEDE RULE: when you emit a chart component (or place one via "
+            "ref), any ASCII/text-drawn chart of the same data in the answer AND "
+            "any apology that a chart could not be rendered are superseded "
+            "representations — DROP them (this is the one sanctioned exception "
+            "to PRESERVE EVERYTHING; the facts around them stay). Never refer "
+            "to a chart with positional words like 'above' or 'below'.\n"
+            "- table {columns, rows, heat?} — set heat: true ONLY for a matrix "
+            "of comparable numbers where intensity aids reading (it renders a "
+            "per-column color scale)."
             if charts_enabled
             else ""
         )

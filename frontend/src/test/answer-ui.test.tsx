@@ -141,14 +141,65 @@ import { ChartSvg } from '../components/ChartSvg'
 
 describe('ChartSvg kinds (spec §7.1)', () => {
   const base = { title: 'T', labels: ['a', 'b', 'c'], series: [{ name: 's', values: [1, 2, 3] }] }
-  const kinds = ['bar', 'hbar', 'stacked_bar', 'line', 'area', 'pie', 'donut', 'histogram'] as const
+  const kinds = [
+    'bar', 'hbar', 'stacked_bar', 'stacked_bar_100', 'line', 'area', 'stacked_area',
+    'pie', 'donut', 'histogram', 'funnel', 'waterfall', 'lollipop',
+  ] as const
   for (const kind of kinds) {
     it(`renders an svg for kind=${kind}`, () => {
       const { container } = render(<ChartSvg spec={{ ...base, kind }} />)
       expect(container.querySelector('svg')).not.toBeNull()
-      expect(container.querySelectorAll('rect, polyline, path, polygon').length).toBeGreaterThan(0)
+      expect(
+        container.querySelectorAll('rect, polyline, path, polygon, circle').length,
+      ).toBeGreaterThan(0)
     })
   }
+
+  const special: [string, object][] = [
+    ['gauge', { title: 'G', labels: ['CPU'], series: [{ name: '', values: [42, 100] }] }],
+    ['sparkline', { title: '', labels: [], series: [{ name: '', values: [1, 3, 2, 5] }] }],
+    ['scatter', { title: 'S', labels: [], series: [{ name: 'a', values: [], points: [[1, 2], [3, 4]] }] }],
+    ['bubble', { title: 'B', labels: [], series: [{ name: 'a', values: [], points: [[1, 2, 5], [3, 4, 9]] }] }],
+    ['candlestick', { title: 'C', labels: ['d1', 'd2'], series: [
+      { name: 'open', values: [10, 12] }, { name: 'high', values: [14, 15] },
+      { name: 'low', values: [9, 11] }, { name: 'close', values: [12, 11] }] }],
+    ['boxplot', { title: 'X', labels: ['g1'], series: [
+      { name: 'min', values: [1] }, { name: 'q1', values: [2] }, { name: 'median', values: [3] },
+      { name: 'q3', values: [4] }, { name: 'max', values: [5] }] }],
+    ['gantt', { title: 'P', labels: ['t1', 't2'], series: [],
+      ranges: [['2026-08-01', '2026-08-04'], ['2026-08-03', '2026-08-09']] }],
+    ['combo', { title: 'M', labels: ['a', 'b'], series: [
+      { name: 'vol', values: [5, 7], render: 'bar' }, { name: 'px', values: [6, 8], render: 'line' }] }],
+  ]
+  for (const [kind, fixture] of special) {
+    it(`renders an svg for kind=${kind} (shaped data)`, () => {
+      const { container } = render(<ChartSvg spec={{ kind, ...fixture } as never} />)
+      expect(container.querySelector('svg')).not.toBeNull()
+      expect(
+        container.querySelectorAll('rect, polyline, path, polygon, circle, line').length,
+      ).toBeGreaterThan(0)
+    })
+  }
+
+  it('heat tables color numeric cells per column', () => {
+    const { container } = render(
+      <AnswerBlock
+        markdown="raw"
+        payload={{
+          a2ui: a2uiSegment('x', 'h1'),
+          presentation: 'a2ui_first',
+          coverage: 100,
+          blocks: [
+            { table: { columns: ['w', 'n'], rows: [['a', '1'], ['b', '9']], heat: true } },
+          ],
+        }}
+        toolCharts={[]}
+      />,
+    )
+    const cells = Array.from(container.querySelectorAll('td'))
+    const shaded = cells.filter((c) => (c as HTMLElement).style.background)
+    expect(shaded.length).toBe(2) // only the numeric column shades
+  })
 
   it('thins dense date labels and drops the year after the first tick', () => {
     const labels = Array.from({ length: 30 }, (_, i) =>
