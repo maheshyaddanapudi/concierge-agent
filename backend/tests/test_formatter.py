@@ -56,6 +56,87 @@ class TestFormatterPayload:
         assert payload["presentation"] == "a2ui_first"
         assert payload["coverage"] == 100
 
+    async def test_blocks_preserve_chart_position(self) -> None:
+        """A chart placed between two text sections must survive as an
+        ordered blocks list — segment, chart, segment (spec §8.5)."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="The trend was up: 120 then 135."),
+                UiComponent(
+                    type="chart",
+                    chart_kind="bar",
+                    title="T",
+                    labels=["a", "b"],
+                    series=[{"name": "s", "values": [120.0, 135.0]}],  # type: ignore[list-item]
+                ),
+                UiComponent(type="text", markdown="Which is why we recommend rollout."),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "u2"}]
+            )
+        )
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "t", "120 then 135.", [], presentation="a2ui_first"
+        )
+        assert payload is not None
+        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b) for b in payload["blocks"]]
+        assert kinds == ["a2ui", "chart", "a2ui"]
+        assert payload["blocks"][1]["chart"]["kind"] == "bar"
+        assert payload["charts"], "parallel charts array stays for legacy/history consumers"
+
+    async def test_tool_chart_ref_placement_and_guards(self) -> None:
+        """Refs place tool charts mid-flow; invalid and duplicate refs are
+        dropped so the renderer's bottom slot stays the safety net."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Weekly changes below."),
+                UiComponent(type="chart", ref=0),
+                UiComponent(type="text", markdown="And the same chart again:"),
+                UiComponent(type="chart", ref=0),  # duplicate — dropped
+                UiComponent(type="chart", ref=7),  # out of range — dropped
+                UiComponent(type="text", markdown="Done."),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "u3"}]
+            )
+        )
+        tool_charts = [{"kind": "line", "title": "W", "labels": ["a"], "series": []}]
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "t", "answer", [], presentation="a2ui_first", tool_charts=tool_charts
+        )
+        assert payload is not None
+        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b) for b in payload["blocks"]]
+        assert kinds == ["a2ui", "tool_chart_ref", "a2ui"]
+        assert payload["blocks"][1]["tool_chart_ref"] == 0
+        assert "charts" not in payload  # refs alone add no formatter charts
+
+    async def test_no_midflow_chart_means_no_blocks(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(components=[UiComponent(type="text", markdown="Just prose.")])
+        fake_llm.push_message(
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "u4"}]
+            )
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "t", "answer", [])
+        assert payload is not None
+        assert "blocks" not in payload
+
     async def test_formatter_off_produces_no_artifact(self, client: AsyncClient) -> None:
         async with get_session_factory()() as session:
             await update_settings(

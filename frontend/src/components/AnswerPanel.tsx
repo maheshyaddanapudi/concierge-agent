@@ -9,11 +9,20 @@ import { AnswerUiView } from './AnswerUiView'
 import { ChartSvg, type ChartSpec } from './ChartSvg'
 import { Markdown } from './Markdown'
 
+export interface AnswerUiBlock {
+  a2ui?: unknown[]
+  chart?: ChartSpec
+  tool_chart_ref?: number
+}
+
 export interface AnswerUiPayload {
   a2ui?: unknown[]
   charts?: ChartSpec[]
   presentation?: string
   coverage?: number
+  // ordered render blocks (spec §8.5): present when the formatter placed a
+  // chart mid-flow — segments and charts render in sequence
+  blocks?: AnswerUiBlock[]
 }
 
 const RAW_BUBBLE =
@@ -47,6 +56,49 @@ function ToolCharts({ charts }: { charts: ChartSpec[] }) {
   )
 }
 
+/** Tool-chart indices a blocks payload places inline (valid refs only). */
+function placedRefs(payload: AnswerUiPayload | null | undefined, toolCount: number): Set<number> {
+  const placed = new Set<number>()
+  for (const b of payload?.blocks ?? []) {
+    if (b.tool_chart_ref != null && b.tool_chart_ref >= 0 && b.tool_chart_ref < toolCount)
+      placed.add(b.tool_chart_ref)
+  }
+  return placed
+}
+
+/** The structured document: ordered blocks when the formatter placed charts
+ * mid-flow, else the legacy layout (charts hoisted above the a2ui tree). */
+function StructuredDoc({
+  payload,
+  toolCharts,
+}: {
+  payload: AnswerUiPayload
+  toolCharts: ChartSpec[]
+}) {
+  if (payload.blocks?.length) {
+    return (
+      <div className={STRUCTURED_SHELL}>
+        <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">
+          answer panel · structured view
+        </div>
+        {payload.blocks.map((b, i) => {
+          if (b.a2ui) return <AnswerUiView key={i} bare messages={b.a2ui} />
+          if (b.chart) return <ChartSvg key={i} spec={b.chart} />
+          if (b.tool_chart_ref != null && toolCharts[b.tool_chart_ref])
+            return <ChartSvg key={i} spec={toolCharts[b.tool_chart_ref]} />
+          return null
+        })}
+      </div>
+    )
+  }
+  return (
+    <div className={STRUCTURED_SHELL}>
+      {payload.charts?.map((c, i) => <ChartSvg key={i} spec={c} />)}
+      {payload.a2ui && <AnswerUiView messages={payload.a2ui} />}
+    </div>
+  )
+}
+
 export function AnswerBlock({
   markdown,
   payload,
@@ -72,10 +124,7 @@ export function AnswerBlock({
     </div>
   )
   const structuredView = hasArtifact ? (
-    <div className={STRUCTURED_SHELL}>
-      {payload?.charts?.map((c, i) => <ChartSvg key={i} spec={c} />)}
-      {payload?.a2ui && <AnswerUiView messages={payload.a2ui} />}
-    </div>
+    <StructuredDoc payload={payload!} toolCharts={charts} />
   ) : null
 
   if (!hasArtifact) {
@@ -89,10 +138,13 @@ export function AnswerBlock({
   }
 
   if (a2uiFirst) {
+    // tool charts the document places inline don't repeat in the slot below
+    const placed = placedRefs(payload, charts.length)
+    const unplaced = charts.filter((_, i) => !placed.has(i))
     return (
       <div>
         {structuredView}
-        <ToolCharts charts={charts} />
+        <ToolCharts charts={unplaced} />
         <div className="mt-1.5">
           <button
             onClick={() => setShowAlt(!showAlt)}
@@ -151,10 +203,7 @@ export function AnswerTrace({
             structured artifact
             <CoverageBadge coverage={payload?.coverage} />
           </div>
-          <div className={STRUCTURED_SHELL}>
-            {payload?.charts?.map((c, i) => <ChartSvg key={i} spec={c} />)}
-            {payload?.a2ui && <AnswerUiView messages={payload.a2ui} />}
-          </div>
+          <StructuredDoc payload={payload!} toolCharts={charts} />
         </div>
       )}
     </div>
