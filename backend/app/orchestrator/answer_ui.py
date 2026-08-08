@@ -16,7 +16,7 @@ from typing import Any, Literal
 import structlog
 from pydantic import BaseModel, Field
 
-from app.llm import get_model
+from app.llm import ModelParams, get_model
 from app.prompts import load_prompt
 
 logger = structlog.get_logger("orchestrator.answer_ui")
@@ -147,6 +147,24 @@ def extract_charts(ui: AnswerUi) -> list[dict[str, Any]]:
     return charts
 
 
+def compute_coverage(answer: str, ui: AnswerUi) -> int:
+    """Deterministic content-coverage percent (spec §7.1): what fraction of
+    the raw answer's hard tokens — numbers, URLs, inline-code spans —
+    survived into the structured artifact. An instrument, never a gate;
+    an answer with no hard tokens scores 100 by definition."""
+    import re
+
+    numbers = re.findall(r"(?<![\w.])\d[\d,]*(?:\.\d+)?%?", answer)
+    urls = re.findall(r"https?://[^\s)\]>\"']+", answer)
+    code = re.findall(r"`([^`\n]+)`", answer)
+    tokens = {t.rstrip(".,;:") for t in (*numbers, *urls, *code) if t.strip()}
+    if not tokens:
+        return 100
+    rendered = ui.model_dump_json()
+    kept = sum(1 for t in tokens if t in rendered)
+    return round(100 * kept / len(tokens))
+
+
 def to_a2ui_messages(ui: AnswerUi) -> list[dict[str, Any]]:
     """Deterministic translation to A2UI v0.9 protocol messages."""
     builder = _A2uiBuilder()
@@ -165,18 +183,27 @@ def to_a2ui_messages(ui: AnswerUi) -> list[dict[str, Any]]:
 
 
 async def generate_answer_ui(
-    model_ref: str, task: str, answer: str, callbacks: list[Any]
+    model_ref: str,
+    task: str,
+    answer: str,
+    callbacks: list[Any],
+    *,
+    model_params: ModelParams | None = None,
+    presentation: str = "raw_first",
+    tool_charts: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
-    """Returns ({"a2ui": messages}, usage). Never raises — failure → (None, usage)."""
+    """The formatter call (spec §7.1): transform the canonical answer into
+    the structured artifact. Returns ({"a2ui", "charts"?, "presentation",
+    "coverage"}, usage). Never raises — failure → (None, usage), fail-open."""
     usage = {"input_tokens": 0, "output_tokens": 0}
     try:
         from app.registry_cache import get_cache
 
         charts_enabled = bool(await get_cache().setting("answer_ui_charts_enabled"))
-        model = get_model(model_ref)
-        prompt = load_prompt("answer_ui").replace("{task}", task).replace("{answer}", answer)
+        model = get_model(model_ref, model_params)
+        prompt = load_prompt("formatter").replace("{task}", task).replace("{answer}", answer)
         chart_rules = (
-            "- chart {title?, chart_kind: \"bar\"|\"line\"|\"pie\", labels: [..], "
+            '- chart {title?, chart_kind: "bar"|"line"|"pie", labels: [..], '
             "series: [{name?, values: [numbers]}]} — ONLY when the answer contains "
             "genuinely comparative or trending numbers; the data MUST be extracted "
             "from the answer text, never computed or invented; prefer a table unless "
@@ -185,6 +212,14 @@ async def generate_answer_ui(
             else ""
         )
         prompt = prompt.replace("{chart_rules}", chart_rules)
+        existing = ""
+        if tool_charts:
+            titles = ", ".join(repr(c.get("title") or c.get("kind", "chart")) for c in tool_charts)
+            existing = (
+                f"\nCharts already produced by tools during this run ({titles}) will be "
+                "rendered alongside your output — do NOT re-emit them as chart components."
+            )
+        prompt = prompt.replace("{existing_charts}", existing)
         structured = model.with_structured_output(AnswerUi, include_raw=True)
         result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
             prompt, config={"callbacks": callbacks}
@@ -200,11 +235,15 @@ async def generate_answer_ui(
             parsed.components = [c for c in parsed.components if c.type != "chart"]
             if not parsed.components:
                 return None, usage
-        payload: dict[str, Any] = {"a2ui": to_a2ui_messages(parsed)}
+        payload: dict[str, Any] = {
+            "a2ui": to_a2ui_messages(parsed),
+            "presentation": presentation,
+            "coverage": compute_coverage(answer, parsed),
+        }
         charts = extract_charts(parsed) if charts_enabled else []
         if charts:
             payload["charts"] = charts
         return payload, usage
     except Exception as exc:  # noqa: BLE001 - failure-safe by spec
-        logger.warning("answer_ui_generation_failed", error=str(exc))
+        logger.warning("formatter_generation_failed", error=str(exc))
         return None, usage

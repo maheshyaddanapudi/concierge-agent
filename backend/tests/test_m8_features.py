@@ -25,7 +25,7 @@ async def _m8_settings() -> None:
             session,
             {
                 "default_model": "fake:scripted",
-                "answer_ui_enabled": False,
+                "formatter_enabled": False,
                 "orchestrator_mode": "graph",
             },
         )
@@ -35,9 +35,7 @@ class TestSkillLoopLimit:
     def test_skilldoc_parses_max_tool_iterations(self) -> None:
         from app.skilldoc import parse_skill_document
 
-        doc = parse_skill_document(
-            "---\nname: deep\nmax_tool_iterations: 20\n---\nBody here."
-        )
+        doc = parse_skill_document("---\nname: deep\nmax_tool_iterations: 20\n---\nBody here.")
         assert doc.max_tool_iterations == 20
 
     def test_skilldoc_rejects_bad_limit(self) -> None:
@@ -68,9 +66,7 @@ class TestSkillLoopLimit:
         assert resp.status_code == 201, resp.text
         skill = resp.json()
         assert skill["max_tool_iterations"] == 12
-        resp = await client.patch(
-            f"{API}/skills/{skill['id']}", json={"max_tool_iterations": 3}
-        )
+        resp = await client.patch(f"{API}/skills/{skill['id']}", json={"max_tool_iterations": 3})
         assert resp.status_code == 200
         assert resp.json()["max_tool_iterations"] == 3
 

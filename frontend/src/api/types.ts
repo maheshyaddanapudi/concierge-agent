@@ -109,7 +109,8 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui?: unknown[]; charts?: unknown[] } | null
+  answer_ui: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number } | null
+  charts?: unknown[] | null
   error: string | null
   started_at: string | null
   finished_at: string | null
@@ -130,7 +131,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui?: unknown[]; charts?: unknown[] } | null
+  answer_ui?: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number } | null
+  charts?: unknown[] | null
 }
 
 export interface ConversationDetail {
@@ -166,7 +168,11 @@ export type Settings = Record<string, unknown> & {
   max_tool_iterations: number
   dynamic_worker_fallback_enabled: boolean
   direct_exposure_cap_warning: number
-  answer_ui_enabled: boolean
+  formatter_enabled: boolean
+  formatter_presentation: 'a2ui_first' | 'raw_first'
+  formatter_model: string | null
+  formatter_model_params: ModelParams | null
+  formatter_coverage_flag_threshold: number
   mcp_health_interval_s: number
   log_level: string
   langsmith_enabled: boolean

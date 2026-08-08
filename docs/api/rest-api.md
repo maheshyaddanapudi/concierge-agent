@@ -55,7 +55,7 @@ Records with `source: "static"` (native tools, native skills, seeded sub-agents/
 | `GET /api/v1/providers` | Read-only provider adapter panel: `[{provider_id, configured, models: [{id, display_name, supports_effort, supports_temperature, supports_max_output_tokens}]}]`. API keys are env-only and never appear here. |
 | `GET /api/v1/hitl/pending` | All runs currently `paused_hitl`, across every conversation: `[{run_id, conversation_id, chat_message, started_at}]`. |
 
-Notable settings keys: `orchestrator_mode` (`graph`/`agentic`), `default_model` / `planner_model` / `aggregator_model` (+ `*_params`), `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations`, `orchestrator_full_fallback_enabled`, `dynamic_worker_fallback_enabled`, `answer_ui_enabled`, `answer_ui_charts_enabled`, `registry_cache_mode` (`bypass`/`memory`/`redis`), `retrieval_enabled`, `retrieval_threshold`, `retrieval_top_k`, `embedding_model`, `log_level`, `langsmith_*`, `otlp_endpoint`, `mcp_health_interval_s`, `direct_exposure_cap_warning`.
+Notable settings keys: `orchestrator_mode` (`graph`/`agentic`), `default_model` / `planner_model` / `aggregator_model` (+ `*_params`), `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations`, `orchestrator_full_fallback_enabled`, `dynamic_worker_fallback_enabled`, `formatter_enabled`, `formatter_presentation`, `formatter_model` (+ `_params`), `formatter_coverage_flag_threshold`, `answer_ui_charts_enabled`, `registry_cache_mode` (`bypass`/`memory`/`redis`), `retrieval_enabled`, `retrieval_threshold`, `retrieval_top_k`, `embedding_model`, `log_level`, `langsmith_*`, `otlp_endpoint`, `mcp_health_interval_s`, `direct_exposure_cap_warning`.
 
 ## Tools router — `backend/app/api/tools.py` (prefix `/tools`)
 

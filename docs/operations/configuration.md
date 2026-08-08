@@ -51,7 +51,7 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 | `default_model_params` | object \| null (`{effort, temperature, max_output_tokens}`) | `null` | Params for the default model; validated against the model's declared support at save |
 | `planner_model` | `provider:model` \| null | `null` (→ default) | Graph-mode planner structured-output call |
 | `planner_model_params` | object \| null | `null` | Requires `planner_model` to be set |
-| `aggregator_model` | `provider:model` \| null | `null` (→ default) | Final answer merge + answer-UI generation call |
+| `aggregator_model` | `provider:model` \| null | `null` (→ default) | Final answer merge (graph mode); the formatter has its own model key |
 | `aggregator_model_params` | object \| null | `null` | Requires `aggregator_model` to be set |
 
 ### Limits
@@ -83,7 +83,11 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 
 | Key | Type | Default | Effect / consumer |
 |---|---|---|---|
-| `answer_ui_enabled` | bool | `true` | Post-answer A2UI generation call (`runner._maybe_answer_ui` → `answer_ui.py`); failure-safe, text answer always authoritative |
+| `formatter_enabled` | bool | `true` | The formatter role (spec §7.1): off = the post-answer transform call never runs and no structured artifact exists — raw renders directly (`runner._maybe_format_answer` → `answer_ui.py`) |
+| `formatter_presentation` | `a2ui_first`\|`raw_first` | `"a2ui_first"` | Which view is primary; frozen onto each run's artifact — history renders by run-time facts |
+| `formatter_model` | string\|null | `null` | Formatter's model; null → `default_model` (single hop, like planner/aggregator) |
+| `formatter_model_params` | object\|null | `null` | Effort/params for the formatter call |
+| `formatter_coverage_flag_threshold` | int 1–100 | `90` | Amber coverage flag below this — visual only, never a render gate |
 | `answer_ui_charts_enabled` | bool | `true` | Allows the `chart` component type in generated answer UI (`answer_ui.py`) |
 
 ### Observability
@@ -100,7 +104,7 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 
 There are no `app_settings` keys for HITL. The HITL queue in Settings is a live view (`GET /api/v1/hitl/pending` — all `paused_hitl` runs), resolved per run via `POST /api/v1/runs/{id}/hitl`.
 
-24 settings keys total.
+28 settings keys total.
 
 ## Live vs restart
 

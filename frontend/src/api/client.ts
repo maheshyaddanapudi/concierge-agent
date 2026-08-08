@@ -72,6 +72,7 @@ export function streamRun(
     'token',
     'thinking',
     'answer_ui',
+    'charts',
     'hitl_request',
     'run_status',
     'error',

@@ -43,6 +43,7 @@ def _run_out(run: Run) -> dict[str, Any]:
         "orchestrator_mode": run.orchestrator_mode,
         "final_answer": run.final_answer,
         "answer_ui": run.answer_ui,
+        "charts": run.charts,
         "error": run.error,
         "plan": run.plan,
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -95,6 +96,7 @@ async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[s
                     "content": run.final_answer,
                     "run_id": str(run.id),
                     "answer_ui": run.answer_ui,
+                    "charts": run.charts,
                 }
             )
         elif run.status in {"failed", "cancelled"} and run.error:

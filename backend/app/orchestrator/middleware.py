@@ -92,6 +92,9 @@ async def _record_tool_call(
         source=source,
         entity_id=entity_id,
         entity_name=name,
+        # persist the tool name on the step (node_id): traces show it and
+        # the runner's render_chart collection depends on it (spec §7.1)
+        node_id=name,
         parent_step_id=CURRENT_STEP_ID.get(),
     )
     return step_id

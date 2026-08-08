@@ -69,7 +69,7 @@ async def _orchestrator_settings() -> None:
             session,
             {
                 "default_model": "fake:scripted",
-                "answer_ui_enabled": False,
+                "formatter_enabled": False,
                 "orchestrator_mode": "graph",
             },
         )
@@ -856,7 +856,7 @@ class TestAgenticMode:
 class TestAnswerUi:
     async def test_answer_ui_generated_as_a2ui(self, client: AsyncClient) -> None:
         async with get_session_factory()() as session:
-            await update_settings(session, {"answer_ui_enabled": True})
+            await update_settings(session, {"formatter_enabled": True})
         plan_call(direct_answer="Revenue was down 12% in FY2024.")
         fake_llm.push_ai(
             "",
@@ -884,7 +884,7 @@ class TestAnswerUi:
 
     async def test_answer_ui_failure_safe(self, client: AsyncClient) -> None:
         async with get_session_factory()() as session:
-            await update_settings(session, {"answer_ui_enabled": True})
+            await update_settings(session, {"formatter_enabled": True})
         plan_call(direct_answer="Plain answer.")
         fake_llm.push_ai("not a structured payload at all")
         run_id = await send_chat(client, "plain?")
@@ -1286,8 +1286,11 @@ class TestToolFailureContainment:
         run_id = run.id
         set_run_context(
             RunContext(
-                run_id=run_id, mode="agentic", recorder=RunRecorder(run_id),
-                settings={}, callbacks=[],
+                run_id=run_id,
+                mode="agentic",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
             )
         )
         mw, tool = self._mw_with_raising_tool(strict=False)
@@ -1310,8 +1313,11 @@ class TestToolFailureContainment:
         run_id = run.id
         set_run_context(
             RunContext(
-                run_id=run_id, mode="graph", recorder=RunRecorder(run_id),
-                settings={}, callbacks=[],
+                run_id=run_id,
+                mode="graph",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
             )
         )
         mw, tool = self._mw_with_raising_tool(strict=True)
@@ -1436,8 +1442,11 @@ class TestLineageAndCallsigns:
         run = await create_run(None, "callsign test")
         set_run_context(
             RunContext(
-                run_id=run.id, mode="agentic", recorder=RunRecorder(run.id),
-                settings={}, callbacks=[],
+                run_id=run.id,
+                mode="agentic",
+                recorder=RunRecorder(run.id),
+                settings={},
+                callbacks=[],
             )
         )
         s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}")

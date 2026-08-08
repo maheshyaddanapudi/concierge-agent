@@ -99,19 +99,23 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             recorder.emit("run_status", {"status": "paused_hitl"})
             return
         answer = str(outcome.get("answer") or "")
-        answer_ui = await _maybe_answer_ui(ctx, task_text, answer)
+        tool_charts = await _collect_tool_charts(run_id)
+        answer_ui = await _maybe_format_answer(ctx, task_text, answer, tool_charts)
         async with get_session_factory()() as session:
             run = await session.get(Run, run_id)
             if run is not None:
                 run.status = "completed"
                 run.final_answer = answer
                 run.answer_ui = answer_ui
+                run.charts = tool_charts or None
                 run.finished_at = datetime.now(UTC)
                 await session.commit()
                 totals = {
                     "input_tokens": run.total_input_tokens,
                     "output_tokens": run.total_output_tokens,
                 }
+        if tool_charts:
+            recorder.emit("charts", {"charts": tool_charts})
         if answer_ui:
             recorder.emit("answer_ui", answer_ui)
         recorder.emit("run_status", {"status": "completed"})
@@ -130,13 +134,63 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         await _finalize_failure(run_id, mode, "failed", f"{type(exc).__name__}: {exc}")
 
 
-async def _maybe_answer_ui(ctx: RunContext, task: str, answer: str) -> dict[str, Any] | None:
-    if not answer or not ctx.settings.get("answer_ui_enabled", True):
+async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
+    """Chart specs produced by the render_chart native tool during the run
+    (spec §7.1): formatter-independent — they render with the primary answer
+    in every formatter state."""
+    import json
+
+    charts: list[dict[str, Any]] = []
+    async with get_session_factory()() as session:
+        steps = (
+            await session.execute(
+                select(RunStep)
+                .where(
+                    RunStep.run_id == run_id,
+                    RunStep.step_type == "tool_call",
+                    RunStep.status == "completed",
+                )
+                .order_by(RunStep.started_at)
+            )
+        ).scalars()
+        for step in steps:
+            if (step.node_id or "").split(".")[-1] != "render_chart":
+                continue
+            raw = (step.output or {}).get("result")
+            if not raw:
+                continue
+            try:
+                spec = json.loads(str(raw))
+                if isinstance(spec, dict) and spec.get("kind") and spec.get("labels"):
+                    charts.append(spec)
+            except (ValueError, TypeError):
+                continue  # truncated/invalid output — never break the answer
+    return charts
+
+
+async def _maybe_format_answer(
+    ctx: RunContext, task: str, answer: str, tool_charts: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The formatter role (spec §7.1): off = no call, no artifact — the raw
+    answer renders directly. Fail-open: any failure returns None."""
+    if not answer or not ctx.settings.get("formatter_enabled", True):
         return None
+    from app.llm import ModelParams
     from app.orchestrator.answer_ui import generate_answer_ui
 
-    ref = str(ctx.settings.get("aggregator_model") or ctx.settings.get("default_model"))
-    payload, usage = await generate_answer_ui(ref, task, answer, ctx.callbacks)
+    ref = str(ctx.settings.get("formatter_model") or ctx.settings.get("default_model"))
+    raw_params = ctx.settings.get("formatter_model_params")
+    params = ModelParams.model_validate(raw_params) if raw_params else None
+    presentation = str(ctx.settings.get("formatter_presentation") or "a2ui_first")
+    payload, usage = await generate_answer_ui(
+        ref,
+        task,
+        answer,
+        ctx.callbacks,
+        model_params=params,
+        presentation=presentation,
+        tool_charts=tool_charts,
+    )
     if usage["input_tokens"] or usage["output_tokens"]:
         async with get_session_factory()() as session:
             run = await session.get(Run, ctx.run_id)

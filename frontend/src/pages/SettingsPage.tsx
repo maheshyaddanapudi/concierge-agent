@@ -306,16 +306,6 @@ export function SettingsPage() {
             k="dynamic_worker_fallback_enabled"
             hint="rung 4: build ephemeral workers on the fly"
           />
-          <BoolSetting
-            label="Declarative answer UI"
-            k="answer_ui_enabled"
-            hint="model-generated A2UI panel under each answer"
-          />
-          <BoolSetting
-            label="Charts in answer panel"
-            k="answer_ui_charts_enabled"
-            hint="allow chart components (bar/line/pie) — data extracted from the answer, never invented"
-          />
           <IntSetting label="Max parallel dispatch" k="max_parallel_dispatch" />
           <IntSetting label="Max plan steps" k="max_plan_steps" />
           <IntSetting
@@ -329,6 +319,54 @@ export function SettingsPage() {
             hint="Tools/Skills pages warn above this"
           />
         </div>
+      </Section>
+
+      <Section title="Formatter (structured answers)">
+        <BoolSetting
+          label="Formatter"
+          k="formatter_enabled"
+          hint="transforms each answer into a structured A2UI view on its own model call — off = no call, raw answer renders directly, no structured artifact exists"
+        />
+        {Boolean(settings?.formatter_enabled) && (
+          <>
+            <ModelSelect
+              label="Formatter model"
+              refKey="formatter_model"
+              paramsKey="formatter_model_params"
+              allowInherit
+            />
+            <Field
+              label="Presentation"
+              hint="a2ui first = structured view primary, raw collapsed · raw first = raw primary, structured collapsed. Frozen per run — history always renders what happened at run time"
+            >
+              <div className="flex gap-2">
+                {(['a2ui_first', 'raw_first'] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => patch.mutate({ formatter_presentation: p })}
+                    className={`rounded-md border px-2.5 py-1 font-mono text-[11px] transition-colors ${
+                      settings?.formatter_presentation === p
+                        ? 'border-accent-500/50 bg-accent-500/10 text-accent-300'
+                        : 'border-slate-700 text-slate-400 hover:border-slate-500'
+                    }`}
+                  >
+                    {p === 'a2ui_first' ? 'A2UI first' : 'raw first'}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <BoolSetting
+              label="Charts in structured view"
+              k="answer_ui_charts_enabled"
+              hint="allow chart components (bar/line/pie) — data extracted from the answer, never invented"
+            />
+            <IntSetting
+              label="Coverage flag threshold (%)"
+              k="formatter_coverage_flag_threshold"
+              hint="answers whose structured view retains fewer hard tokens (numbers/URLs/code) than this show an amber flag — visual only, never a render gate"
+            />
+          </>
+        )}
       </Section>
 
       <Section title="Registry cache">
