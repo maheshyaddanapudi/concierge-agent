@@ -1035,6 +1035,50 @@ class TestBlockContent:
         assert not any("signature" in str(s["output"]) for s in skill_steps)
 
 
+class TestAggregatorEmptyAnswer:
+    """Thinking models occasionally stream an empty completion — the
+    aggregator retries once, then fails the run instead of persisting a
+    completed run with an empty final answer."""
+
+    def _plan_one_skill(self, skill_id: str) -> None:
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": skill_id},
+                    "task": "produce prose",
+                    "depends_on": [],
+                }
+            ]
+        )
+
+    async def test_empty_aggregation_retried_once(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        skill = await create_skill(name=f"aggretry-{uuid4().hex[:4]}", direct_exposure=True)
+        self._plan_one_skill(str(skill.id))
+        fake_llm.push_ai("skill prose")  # inline skill loop
+        fake_llm.push_message(AIMessage(content=""))  # aggregator: empty completion
+        fake_llm.push_ai("recovered aggregate")  # aggregator retry
+        run_id = await send_chat(client, "empty aggregate once")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["final_answer"] == "recovered aggregate"
+
+    async def test_empty_aggregation_twice_fails_run(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        skill = await create_skill(name=f"aggfail-{uuid4().hex[:4]}", direct_exposure=True)
+        self._plan_one_skill(str(skill.id))
+        fake_llm.push_ai("skill prose")
+        fake_llm.push_message(AIMessage(content=""))
+        fake_llm.push_message(AIMessage(content=""))
+        run_id = await send_chat(client, "empty aggregate twice")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        assert "empty answer" in (run["error"] or "")
+
+
 class TestParallelHitl:
     async def test_two_parallel_gates_approved_one_at_a_time(self, client: AsyncClient) -> None:
         """Parallel dispatch can leave two interrupts pending at once; each
