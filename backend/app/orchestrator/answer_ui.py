@@ -53,7 +53,9 @@ class UiComponent(BaseModel):
     urls: list[str] | None = None
     children: list["UiComponent"] | None = None
     # chart (spec §7.1): data extracted from the answer, never invented
-    chart_kind: Literal["bar", "line", "pie"] | None = None
+    chart_kind: (
+        Literal["bar", "hbar", "stacked_bar", "line", "area", "pie", "donut", "histogram"] | None
+    ) = None
     labels: list[str] | None = None
     series: list[UiSeries] | None = None
     # chart placement by reference: index into the run's tool-produced
@@ -152,12 +154,14 @@ def extract_charts(ui: AnswerUi) -> list[dict[str, Any]]:
 
 
 def build_blocks(ui: AnswerUi, tool_chart_count: int) -> list[dict[str, Any]]:
-    """Ordered render blocks preserving the formatter's chart placement
-    (spec §8.5): consecutive non-chart components become one a2ui segment;
-    a chart component becomes a chart block at that exact position —
-    {"chart": spec} for data charts, {"tool_chart_ref": i} for placements
-    of tool-produced charts. Invalid or repeated refs are dropped (the
-    renderer's bottom slot remains the safety net for unplaced charts)."""
+    """Ordered render blocks preserving the formatter's placement decisions
+    (spec §8.5): consecutive prose components become one a2ui segment; a
+    chart component becomes a chart block at that exact position — {"chart":
+    spec} for data charts, {"tool_chart_ref": i} for placements of
+    tool-produced charts — and a table component becomes a {"table": ...}
+    block rendered by the native themed table instead of catalog text rows.
+    Invalid or repeated refs are dropped (the renderer's bottom slot remains
+    the safety net for unplaced charts)."""
     blocks: list[dict[str, Any]] = []
     group: list[UiComponent] = []
     seen_refs: set[int] = set()
@@ -169,6 +173,17 @@ def build_blocks(ui: AnswerUi, tool_chart_count: int) -> list[dict[str, Any]]:
             group = []
 
     for c in ui.components:
+        if c.type == "table" and c.rows:
+            flush()
+            blocks.append(
+                {
+                    "table": {
+                        "columns": [str(x) for x in (c.columns or [])],
+                        "rows": [[str(v) for v in row] for row in c.rows],
+                    }
+                }
+            )
+            continue
         if c.type != "chart":
             group.append(c)
             continue
@@ -243,14 +258,20 @@ async def generate_answer_ui(
         model = get_model(model_ref, model_params)
         prompt = load_prompt("formatter").replace("{task}", task).replace("{answer}", answer)
         chart_rules = (
-            '- chart {title?, chart_kind: "bar"|"line"|"pie", labels: [..], '
+            '- chart {title?, chart_kind: "bar"|"hbar"|"stacked_bar"|"line"|"area"|'
+            '"pie"|"donut"|"histogram", labels: [..], '
             "series: [{name?, values: [numbers]}]} — ONLY when the answer contains "
             "genuinely comparative or trending numbers; the data MUST be extracted "
             "from the answer text, never computed or invented; prefer a table unless "
-            "a chart clearly helps. PLACEMENT MATTERS: put each chart component at "
-            "the exact position in your component sequence where the surrounding "
-            "text discusses that data — next to its narrative, not dumped at the "
-            "start or end."
+            "a chart clearly helps. Pick the kind that fits: bar for category "
+            "comparison, hbar when labels are long, stacked_bar for composition "
+            "across categories, line/area for trends over time (area emphasizes "
+            "magnitude), pie/donut for shares of a whole (single series), histogram "
+            "ONLY for data the answer already presents as bins (bin-range labels + "
+            "counts — never bin raw values yourself). PLACEMENT MATTERS: put each "
+            "chart component at the exact position in your component sequence where "
+            "the surrounding text discusses that data — next to its narrative, not "
+            "dumped at the start or end."
             if charts_enabled
             else ""
         )
@@ -297,11 +318,12 @@ async def generate_answer_ui(
         charts = extract_charts(parsed) if charts_enabled else []
         if charts:
             payload["charts"] = charts
-        if charts_enabled:
-            blocks = build_blocks(parsed, len(tool_charts or []))
-            # blocks only earn their keep when a chart actually sits mid-flow
-            if any("chart" in b or "tool_chart_ref" in b for b in blocks):
-                payload["blocks"] = blocks
+        blocks = build_blocks(parsed, len(tool_charts or []) if charts_enabled else 0)
+        if not charts_enabled:
+            blocks = [b for b in blocks if "chart" not in b and "tool_chart_ref" not in b]
+        # blocks earn their keep when a chart or native table sits mid-flow
+        if any(k in b for b in blocks for k in ("chart", "tool_chart_ref", "table")):
+            payload["blocks"] = blocks
         return payload, usage
     except Exception as exc:  # noqa: BLE001 - failure-safe by spec
         logger.warning("formatter_generation_failed", error=str(exc))

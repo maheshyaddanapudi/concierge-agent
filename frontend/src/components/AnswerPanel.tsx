@@ -8,11 +8,13 @@ import { useState } from 'react'
 import { AnswerUiView } from './AnswerUiView'
 import { ChartSvg, type ChartSpec } from './ChartSvg'
 import { Markdown } from './Markdown'
+import { TableBlock, type TableSpec } from './TableBlock'
 
 export interface AnswerUiBlock {
   a2ui?: unknown[]
   chart?: ChartSpec
   tool_chart_ref?: number
+  table?: TableSpec
 }
 
 export interface AnswerUiPayload {
@@ -84,6 +86,7 @@ function StructuredDoc({
         {payload.blocks.map((b, i) => {
           if (b.a2ui) return <AnswerUiView key={i} bare messages={b.a2ui} />
           if (b.chart) return <ChartSvg key={i} spec={b.chart} />
+          if (b.table) return <TableBlock key={i} spec={b.table} />
           if (b.tool_chart_ref != null && toolCharts[b.tool_chart_ref])
             return <ChartSvg key={i} spec={toolCharts[b.tool_chart_ref]} />
           return null

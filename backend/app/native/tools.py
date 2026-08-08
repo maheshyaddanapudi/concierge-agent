@@ -93,7 +93,7 @@ class _ChartSeries(BaseModel):
 class _ChartSpec(BaseModel):
     """render_chart args (spec §5b): data the caller actually holds."""
 
-    kind: Literal["bar", "line", "pie"]
+    kind: Literal["bar", "hbar", "stacked_bar", "line", "area", "pie", "donut", "histogram"]
     title: str = ""
     labels: list[str]
     series: list[_ChartSeries]
@@ -101,8 +101,12 @@ class _ChartSpec(BaseModel):
 
 @native_tool(
     "render_chart",
-    "Validate and normalize a chart specification (bar, line, or pie) from data "
-    "you already hold — labels plus one or more numeric series. Each series is "
+    "Validate and normalize a chart specification from data you already hold — "
+    "labels plus one or more numeric series. Kinds: bar (grouped), hbar "
+    "(horizontal, good for long labels), stacked_bar (composition), line "
+    "(trend), area (filled trend), pie / donut (shares, single series), "
+    "histogram (distribution — data must ALREADY be binned: labels are the bin "
+    'ranges, values the counts; never bin raw values yourself). Each series is '
     'an object {"name": str, "values": [numbers]} whose values align 1:1 with '
     "labels. Use ONLY with real data from the conversation or tool results, "
     "never invented numbers. The normalized spec is rendered as a chart in the "

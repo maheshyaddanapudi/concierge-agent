@@ -305,6 +305,21 @@ class TestRenderChartTool:
         assert spec["series"] == [{"name": "s", "values": [1.0, 2.0]}]
         assert '"data"' not in result
 
+    async def test_new_chart_kinds_accepted(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        for kind in ("hbar", "stacked_bar", "area", "donut", "histogram"):
+            result = await entry.fn(
+                kind=kind, labels=["a", "b"], series=[{"name": "s", "values": [1, 2]}]
+            )
+            assert json.loads(result)["spec"]["kind"] == kind
+
+    async def test_unknown_kind_rejected(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        with pytest.raises(ValueError, match="kind"):
+            await entry.fn(kind="radar", labels=["a"], series=[{"values": [1]}])
+
     async def test_alias_series_still_length_checked(self) -> None:
         entry = native_tools().get("render_chart")
         assert entry is not None
