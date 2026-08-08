@@ -284,7 +284,10 @@ async def generate_answer_ui(
             "series: [{name?, values: [numbers]}]} — ONLY when the answer contains "
             "genuinely comparative or trending numbers; the data MUST be extracted "
             "from the answer text, never computed or invented; prefer a table unless "
-            "a chart clearly helps. Pick the kind that fits: bar/hbar/lollipop for "
+            "a chart clearly helps — EXCEPT when the user's request explicitly asks "
+            "for charts/visualization: then emitting a chart component for each "
+            "dataset the request names is MANDATORY (data permitting), and 'prefer "
+            "a table' does not apply. Pick the kind that fits: bar/hbar/lollipop for "
             "category comparison (hbar when labels are long), stacked_bar for "
             "composition (stacked_bar_100 when shares matter more than totals), "
             "line/area/stacked_area for trends, pie/donut for shares of a whole "
@@ -316,10 +319,13 @@ async def generate_answer_ui(
             )
             existing = (
                 f"\nCharts already produced by tools during this run: {listing}. "
-                "Place each one exactly once at the position where the text discusses "
-                'its data, using {"type": "chart", "ref": <index>} — a ref places the '
-                "existing chart there; NEVER re-emit its data as a new chart component. "
-                "Any chart you leave unplaced still renders after the document."
+                "You MUST place EVERY one of these charts exactly once, using "
+                '{"type": "chart", "ref": <index>} as its own component at the '
+                "position where the text discusses that chart's data — refs are "
+                "REQUIRED components of your output, not optional. NEVER re-emit "
+                "a listed chart's data as a new chart component. Before answering, "
+                "verify every index above appears exactly once as a ref; a missing "
+                "ref is a formatting failure."
             )
         elif tool_charts:
             existing = (
