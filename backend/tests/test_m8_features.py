@@ -1,5 +1,6 @@
 """M8: per-skill loop limits (§3.3), form gates (§3.5), charts (§7.1/§5b)."""
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ from httpx import AsyncClient
 from app.db import get_session_factory
 from app.factory.dag import validate_workflow
 from app.llm import fake as fake_llm
-from app.native.provider import native_tools
+from app.native.provider import native_tools, scan_native
 from app.orchestrator.answer_ui import AnswerUi, extract_charts, to_a2ui_messages
 from app.settings_store import update_settings
 from tests.factory_helpers import create_skill, create_sub_agent
@@ -25,7 +26,7 @@ async def _m8_settings() -> None:
             session,
             {
                 "default_model": "fake:scripted",
-                "answer_ui_enabled": False,
+                "formatter_enabled": False,
                 "orchestrator_mode": "graph",
             },
         )
@@ -35,9 +36,7 @@ class TestSkillLoopLimit:
     def test_skilldoc_parses_max_tool_iterations(self) -> None:
         from app.skilldoc import parse_skill_document
 
-        doc = parse_skill_document(
-            "---\nname: deep\nmax_tool_iterations: 20\n---\nBody here."
-        )
+        doc = parse_skill_document("---\nname: deep\nmax_tool_iterations: 20\n---\nBody here.")
         assert doc.max_tool_iterations == 20
 
     def test_skilldoc_rejects_bad_limit(self) -> None:
@@ -68,9 +67,7 @@ class TestSkillLoopLimit:
         assert resp.status_code == 201, resp.text
         skill = resp.json()
         assert skill["max_tool_iterations"] == 12
-        resp = await client.patch(
-            f"{API}/skills/{skill['id']}", json={"max_tool_iterations": 3}
-        )
+        resp = await client.patch(f"{API}/skills/{skill['id']}", json={"max_tool_iterations": 3})
         assert resp.status_code == 200
         assert resp.json()["max_tool_iterations"] == 3
 
@@ -271,6 +268,12 @@ class TestCharts:
 
 
 class TestRenderChartTool:
+    @pytest.fixture(autouse=True)
+    def _ensure_native_registry(self) -> None:
+        # registration runs on import of app.native.tools (app startup does
+        # this via scan_native); make the class independent of fixture order
+        scan_native()
+
     async def test_registered_and_validates(self) -> None:
         entry = native_tools().get("render_chart")
         assert entry is not None
@@ -284,3 +287,33 @@ class TestRenderChartTool:
         assert entry is not None
         with pytest.raises(ValueError, match="values"):
             await entry.fn(kind="bar", labels=["a", "b"], series=[{"values": [1]}])
+
+    async def test_accepts_chartjs_style_aliases(self) -> None:
+        # models commonly guess the Chart.js convention {label, data} — it
+        # must validate outright, and the canonical dump must stay
+        # {name, values} (the ChartSvg renderer contract)
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        result = await entry.fn(
+            kind="line", labels=["a", "b"], series=[{"label": "s", "data": [1, 2]}]
+        )
+        assert '"name":"s"' in result.replace(" ", "")
+        assert '"values":[1.0,2.0]' in result.replace(" ", "")
+        assert '"data"' not in result
+
+    async def test_alias_series_still_length_checked(self) -> None:
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        with pytest.raises(ValueError, match="2 values"):
+            await entry.fn(kind="bar", labels=["a", "b", "c"], series=[{"data": [1, 2]}])
+
+    async def test_input_schema_advertises_series_shape(self) -> None:
+        # regression: series used to be advertised as a bare object array,
+        # so models had to guess the field names and eat a repair round-trip
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        schema = json.dumps(entry.input_schema)
+        assert '"values"' in schema
+        assert '"name"' in schema
+        series_ref = entry.input_schema["properties"]["series"]
+        assert series_ref.get("items", {}) != {}, "series items must not be untyped"

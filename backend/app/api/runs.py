@@ -68,6 +68,7 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
         "snapshot": run.snapshot,
         "final_answer": run.final_answer,
         "answer_ui": run.answer_ui,
+        "charts": run.charts,
         "error": run.error,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,

@@ -69,7 +69,7 @@ async def _orchestrator_settings() -> None:
             session,
             {
                 "default_model": "fake:scripted",
-                "answer_ui_enabled": False,
+                "formatter_enabled": False,
                 "orchestrator_mode": "graph",
             },
         )
@@ -856,7 +856,7 @@ class TestAgenticMode:
 class TestAnswerUi:
     async def test_answer_ui_generated_as_a2ui(self, client: AsyncClient) -> None:
         async with get_session_factory()() as session:
-            await update_settings(session, {"answer_ui_enabled": True})
+            await update_settings(session, {"formatter_enabled": True})
         plan_call(direct_answer="Revenue was down 12% in FY2024.")
         fake_llm.push_ai(
             "",
@@ -884,7 +884,7 @@ class TestAnswerUi:
 
     async def test_answer_ui_failure_safe(self, client: AsyncClient) -> None:
         async with get_session_factory()() as session:
-            await update_settings(session, {"answer_ui_enabled": True})
+            await update_settings(session, {"formatter_enabled": True})
         plan_call(direct_answer="Plain answer.")
         fake_llm.push_ai("not a structured payload at all")
         run_id = await send_chat(client, "plain?")
@@ -1033,6 +1033,50 @@ class TestBlockContent:
         skill_steps = [s for s in steps_of_type(run, "skill") if s.get("output")]
         assert any("skill prose" in str(s["output"]) for s in skill_steps)
         assert not any("signature" in str(s["output"]) for s in skill_steps)
+
+
+class TestAggregatorEmptyAnswer:
+    """Thinking models occasionally stream an empty completion — the
+    aggregator retries once, then fails the run instead of persisting a
+    completed run with an empty final answer."""
+
+    def _plan_one_skill(self, skill_id: str) -> None:
+        plan_call(
+            entries=[
+                {
+                    "id": "s1",
+                    "capability": {"type": "direct_skill", "id": skill_id},
+                    "task": "produce prose",
+                    "depends_on": [],
+                }
+            ]
+        )
+
+    async def test_empty_aggregation_retried_once(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        skill = await create_skill(name=f"aggretry-{uuid4().hex[:4]}", direct_exposure=True)
+        self._plan_one_skill(str(skill.id))
+        fake_llm.push_ai("skill prose")  # inline skill loop
+        fake_llm.push_message(AIMessage(content=""))  # aggregator: empty completion
+        fake_llm.push_ai("recovered aggregate")  # aggregator retry
+        run_id = await send_chat(client, "empty aggregate once")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert run["final_answer"] == "recovered aggregate"
+
+    async def test_empty_aggregation_twice_fails_run(self, client: AsyncClient) -> None:
+        from langchain_core.messages import AIMessage
+
+        skill = await create_skill(name=f"aggfail-{uuid4().hex[:4]}", direct_exposure=True)
+        self._plan_one_skill(str(skill.id))
+        fake_llm.push_ai("skill prose")
+        fake_llm.push_message(AIMessage(content=""))
+        fake_llm.push_message(AIMessage(content=""))
+        run_id = await send_chat(client, "empty aggregate twice")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        assert "empty answer" in (run["error"] or "")
 
 
 class TestParallelHitl:
@@ -1286,8 +1330,11 @@ class TestToolFailureContainment:
         run_id = run.id
         set_run_context(
             RunContext(
-                run_id=run_id, mode="agentic", recorder=RunRecorder(run_id),
-                settings={}, callbacks=[],
+                run_id=run_id,
+                mode="agentic",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
             )
         )
         mw, tool = self._mw_with_raising_tool(strict=False)
@@ -1310,8 +1357,11 @@ class TestToolFailureContainment:
         run_id = run.id
         set_run_context(
             RunContext(
-                run_id=run_id, mode="graph", recorder=RunRecorder(run_id),
-                settings={}, callbacks=[],
+                run_id=run_id,
+                mode="graph",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
             )
         )
         mw, tool = self._mw_with_raising_tool(strict=True)
@@ -1436,8 +1486,11 @@ class TestLineageAndCallsigns:
         run = await create_run(None, "callsign test")
         set_run_context(
             RunContext(
-                run_id=run.id, mode="agentic", recorder=RunRecorder(run.id),
-                settings={}, callbacks=[],
+                run_id=run.id,
+                mode="agentic",
+                recorder=RunRecorder(run.id),
+                settings={},
+                callbacks=[],
             )
         )
         s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}")

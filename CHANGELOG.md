@@ -8,6 +8,34 @@ milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
 earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #3].
 
+## M9 — The formatter: A2UI-first structured answers — 2026-08-08
+
+### Added
+
+- **The formatter role** (spec §7.1): an explicit presentation role beside
+  planner/aggregator, with its own Settings section — on/off (off = the
+  call never runs, raw renders directly, no artifact exists), model +
+  effort (`formatter_model`, null → default model), presentation
+  (`a2ui_first` default | `raw_first`), charts toggle, and a user-visible
+  coverage flag threshold. Conditional UI: the options exist only while
+  the formatter is on.
+- **Transformation prompt** (`prompts/formatter.md`): replaces the old
+  summarizer with a binding parity contract — preserve every fact,
+  number, warning, recommendation; drop only duplication; prose stays in
+  markdown `text` components — plus explicit negative examples.
+- **Artifact-driven, run-time-frozen rendering**: each artifact carries
+  its own `presentation` and `coverage`; history renders by what
+  happened at run time, never by current settings. No artifact → raw
+  only, no structured toggle. Live runs stream raw tokens and settle
+  into their arrangement when the artifact lands.
+- **Deterministic coverage metric**: numbers/URLs/code-span retention
+  computed in code per artifact, shown as a quiet badge (amber under the
+  threshold) — an instrument, never a render gate.
+- **Formatter-independent charts**: `render_chart` tool output is
+  persisted on `runs.charts` (new column + migration) and rendered with
+  the primary answer in every formatter state; tool names now persist on
+  trace steps.
+
 ## Post-M8 fixes — 2026-08-07
 
 ### Fixed

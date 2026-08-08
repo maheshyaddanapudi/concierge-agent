@@ -4,10 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, streamRun } from '../api/client'
-import { useConversation, useConversations, useInvalidate } from '../api/hooks'
+import { useConversation, useConversations, useInvalidate, useSettings } from '../api/hooks'
 import type { SseEvent } from '../api/types'
-import { AnswerPanel, type AnswerUiPayload } from '../components/AnswerPanel'
-import { Markdown } from '../components/Markdown'
+import { AnswerBlock, type AnswerUiPayload } from '../components/AnswerPanel'
 import { Button, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
 
 type LiveEvent = Pick<SseEvent, 'type' | 'payload'>
@@ -585,12 +584,25 @@ function LiveRun({
           </div>
         </details>
       )}
-      {tokens && (
-        <div className="animate-rise break-words rounded-lg border border-slate-800 bg-void-900/70 p-3 text-sm leading-relaxed text-slate-200">
-          <Markdown text={tokens} />
-          <span className="animate-blink text-accent-400">▮</span>
-        </div>
-      )}
+      {tokens &&
+        (() => {
+          // swap-at-completion (spec §8.5): raw tokens are the live progress
+          // view; when the formatter artifact lands the run settles into its
+          // arrangement in place
+          const artifact = [...events].reverse().find((e) => e.type === 'answer_ui')
+          const chartsEvt = [...events].reverse().find((e) => e.type === 'charts')
+          const finished = events.some((e) => e.type === 'done')
+          return (
+            <div className="animate-rise">
+              <AnswerBlock
+                markdown={tokens}
+                payload={(artifact?.payload as AnswerUiPayload | undefined) ?? null}
+                toolCharts={(chartsEvt?.payload.charts as unknown[] | undefined) ?? null}
+                streaming={!finished && !artifact}
+              />
+            </div>
+          )
+        })()}
       {events.length === 0 && !tokens && (
         <div className="flex items-center gap-2 px-1 py-2 font-mono text-[10px] uppercase tracking-widest text-slate-600">
           <span className="size-1.5 animate-pulse rounded-full bg-accent-400" /> engaging
@@ -604,6 +616,8 @@ function LiveRun({
 // ── page ─────────────────────────────────────────────────────────
 
 export function ChatPage() {
+  const { data: liveSettings } = useSettings()
+  const coverageFlagBelow = liveSettings?.formatter_coverage_flag_threshold
   const { data: conversations = [] } = useConversations()
   const [conversationId, setConversationId] = useState<string | null>(null)
   const { data: detail } = useConversation(conversationId)
@@ -776,10 +790,12 @@ export function ChatPage() {
               </div>
             ) : (
               <div key={i} className="max-w-[85%]">
-                <div className="break-words rounded-lg rounded-bl-sm border border-slate-800 bg-void-900/70 px-3.5 py-2 text-sm leading-relaxed text-slate-200">
-                  <Markdown text={m.content} />
-                </div>
-                <AnswerPanel payload={m.answer_ui as AnswerUiPayload | null} />
+                <AnswerBlock
+                  markdown={m.content}
+                  payload={m.answer_ui as AnswerUiPayload | null}
+                  toolCharts={m.charts}
+                  coverageFlagBelow={coverageFlagBelow}
+                />
                 <div className="mt-1 px-1 font-mono text-[9px] uppercase tracking-wider text-slate-600">
                   <Link to="/runs" className="hover:text-accent-400">
                     run trace ↗

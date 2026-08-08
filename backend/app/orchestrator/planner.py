@@ -4,6 +4,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -175,7 +176,21 @@ async def run_planner(
     errors: list[str] = []
     attempt_prompt = prompt
     for _ in range(2):
-        result: dict[str, Any] = await structured.ainvoke(attempt_prompt)  # type: ignore[assignment]
+        try:
+            result: dict[str, Any] = await structured.ainvoke(attempt_prompt)  # type: ignore[assignment]
+        except OutputParserException as exc:
+            # thinking-enabled models occasionally answer in prose instead of
+            # calling the forced plan tool (seen on trivial prompts) — treat
+            # it like any invalid plan: repair once, then fail (spec §7.1)
+            errors = [f"planner output failed schema validation: {exc}"]
+            raw_outputs.append(f"OutputParserException: {exc}")
+            attempt_prompt = (
+                prompt
+                + "\n\nYour previous response did not call the plan tool. You MUST respond "
+                + "by calling the provided tool with a valid plan. Fix these errors:\n"
+                + "\n".join(f"- {e}" for e in errors)
+            )
+            continue
         raw = result.get("raw")
         raw_outputs.append(getattr(raw, "content", None) or str(getattr(raw, "tool_calls", "")))
         meta = getattr(raw, "usage_metadata", None)

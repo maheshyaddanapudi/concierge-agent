@@ -9,7 +9,7 @@ from typing import Any, Literal, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.db import get_session_factory
 from app.llm import ModelParams, get_model
@@ -81,8 +81,12 @@ async def summarize_and_structure(
 
 
 class _ChartSeries(BaseModel):
-    name: str = ""
-    values: list[float]
+    # Chart.js-style `label`/`data` accepted as validation aliases so a
+    # first call in that common convention succeeds instead of burning a
+    # repair round-trip; canonical dump stays `name`/`values` (the renderer
+    # contract in ChartSvg.tsx)
+    name: str = Field("", validation_alias=AliasChoices("name", "label"))
+    values: list[float] = Field(validation_alias=AliasChoices("values", "data"))
 
 
 class _ChartSpec(BaseModel):
@@ -97,12 +101,14 @@ class _ChartSpec(BaseModel):
 @native_tool(
     "render_chart",
     "Validate and normalize a chart specification (bar, line, or pie) from data "
-    "you already hold — labels plus one or more numeric series. Use ONLY with "
-    "real data from the conversation or tool results, never invented numbers. "
-    "The normalized spec is rendered as a chart in the final answer panel.",
+    "you already hold — labels plus one or more numeric series. Each series is "
+    'an object {"name": str, "values": [numbers]} whose values align 1:1 with '
+    "labels. Use ONLY with real data from the conversation or tool results, "
+    "never invented numbers. The normalized spec is rendered as a chart in the "
+    "final answer panel.",
 )
 async def render_chart(
-    kind: str, labels: list[str], series: list[dict[str, Any]], title: str = ""
+    kind: str, labels: list[str], series: list[_ChartSeries], title: str = ""
 ) -> str:
     """Pure validation/normalization — no model call, no side effects."""
     spec = _ChartSpec.model_validate(

@@ -117,7 +117,7 @@ A human gate is waiting. Emitted by the worker executor just before the run paus
 
 ### `answer_ui`
 
-The declarative answer UI generated after a successful run when `answer_ui_enabled` is on (`backend/app/orchestrator/answer_ui.py`). Failure-safe: absent whenever generation fails or produces nothing — the streamed `token` text is always the source of truth.
+The formatter's structured artifact, generated after a successful run when `formatter_enabled` is on (`backend/app/orchestrator/answer_ui.py`). The payload carries `presentation` ('a2ui_first'|'raw_first', frozen at run time) and `coverage` (deterministic content-retention percent). Failure-safe: absent whenever generation fails or produces nothing — the streamed `token` text is always the source of truth, and with no artifact the UI shows no structured toggle at all. A separate `charts {charts: [..]}` event carries chart specs produced by the `render_chart` tool during the run — emitted whenever present, independent of the formatter.
 
 | Field | Type | Meaning |
 |---|---|---|

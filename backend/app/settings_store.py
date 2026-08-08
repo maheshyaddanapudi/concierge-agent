@@ -27,7 +27,12 @@ DEFAULTS: dict[str, Any] = {
     "max_tool_iterations": 8,
     "dynamic_worker_fallback_enabled": True,
     "direct_exposure_cap_warning": 10,
-    "answer_ui_enabled": True,
+    # the formatter (spec §7.1): presentation role, separate from the aggregator
+    "formatter_enabled": True,
+    "formatter_presentation": "a2ui_first",  # 'a2ui_first' | 'raw_first'
+    "formatter_model": None,  # null → falls back to default_model (single hop)
+    "formatter_model_params": None,
+    "formatter_coverage_flag_threshold": 90,  # visual flag only, never a gate
     "answer_ui_charts_enabled": True,
     "mcp_health_interval_s": 30,
     "log_level": "INFO",
@@ -44,8 +49,13 @@ DEFAULTS: dict[str, Any] = {
     "embedding_model": None,  # nullable 'provider:model'; null → lexical-only
 }
 
-_MODEL_KEYS = {"default_model", "planner_model", "aggregator_model"}
-_PARAMS_KEYS = {"default_model_params", "planner_model_params", "aggregator_model_params"}
+_MODEL_KEYS = {"default_model", "planner_model", "aggregator_model", "formatter_model"}
+_PARAMS_KEYS = {
+    "default_model_params",
+    "planner_model_params",
+    "aggregator_model_params",
+    "formatter_model_params",
+}
 _INT_KEYS = {
     "max_parallel_dispatch",
     "max_plan_steps",
@@ -59,10 +69,11 @@ _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
     "dynamic_worker_fallback_enabled",
     "langsmith_enabled",
-    "answer_ui_enabled",
+    "formatter_enabled",
     "answer_ui_charts_enabled",
     "retrieval_enabled",
 }
+_PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
 _STR_KEYS = {"langsmith_endpoint", "langsmith_project", "otlp_endpoint"}
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
@@ -144,6 +155,12 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
                     )
         elif key == "log_level" and value not in _LOG_LEVELS:
             errors.append(f"log_level must be one of {sorted(_LOG_LEVELS)}")
+        elif key == "formatter_presentation" and value not in _PRESENTATIONS:
+            errors.append(f"formatter_presentation must be one of {sorted(_PRESENTATIONS)}")
+        elif key == "formatter_coverage_flag_threshold" and (
+            not isinstance(value, int) or not 1 <= value <= 100
+        ):
+            errors.append("formatter_coverage_flag_threshold must be an integer 1–100")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
         elif key in _BOOL_KEYS and not isinstance(value, bool):

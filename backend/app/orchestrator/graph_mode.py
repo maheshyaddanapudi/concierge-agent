@@ -328,21 +328,39 @@ async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
         for entry_id, o in sorted(outputs.items())
     )
     prompt = load_prompt("aggregator").format(task=state["task"], outputs=formatted)
-    chunks: list[str] = []
     usage = {"input_tokens": 0, "output_tokens": 0}
-    async for chunk in model.astream(prompt, config={"callbacks": ctx.callbacks}):
-        thinking = thinking_from_content(chunk.content)
-        if thinking:
-            ctx.recorder.emit("thinking", {"text": thinking})
-        text = text_from_content(chunk.content)
-        if text:
-            chunks.append(text)
-            ctx.recorder.emit("token", {"text": text})
-        meta = getattr(chunk, "usage_metadata", None)
-        if meta:
-            usage["input_tokens"] += meta.get("input_tokens", 0)
-            usage["output_tokens"] += meta.get("output_tokens", 0)
-    answer = "".join(chunks)
+
+    async def stream_answer() -> str:
+        chunks: list[str] = []
+        async for chunk in model.astream(prompt, config={"callbacks": ctx.callbacks}):
+            thinking = thinking_from_content(chunk.content)
+            if thinking:
+                ctx.recorder.emit("thinking", {"text": thinking})
+            text = text_from_content(chunk.content)
+            if text:
+                chunks.append(text)
+                ctx.recorder.emit("token", {"text": text})
+            meta = getattr(chunk, "usage_metadata", None)
+            if meta:
+                usage["input_tokens"] += meta.get("input_tokens", 0)
+                usage["output_tokens"] += meta.get("output_tokens", 0)
+        return "".join(chunks)
+
+    # thinking models occasionally return an empty completion — retry once
+    # before failing the run (same repair-once policy as the planner)
+    answer = await stream_answer()
+    if not answer.strip():
+        logger.warning("aggregator_empty_answer_retry", run_id=str(ctx.run_id), model=ref)
+        answer = await stream_answer()
+    if not answer.strip():
+        await ctx.recorder.finish_step(
+            step_id,
+            status="failed",
+            error="aggregator returned an empty answer twice",
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"],
+        )
+        raise RunFailed("aggregation produced an empty answer after a retry")
     await ctx.recorder.finish_step(
         step_id,
         output={"answer": answer},
