@@ -280,7 +280,11 @@ class TestRenderChartTool:
         result = await entry.fn(
             kind="pie", labels=["a", "b"], series=[{"name": "s", "values": [1, 2]}]
         )
-        assert '"kind":"pie"' in result.replace(" ", "")
+        envelope = json.loads(result)
+        assert envelope["spec"]["kind"] == "pie"
+        # the status line is the model's only signal that a real chart renders
+        assert "rendered as a real chart" in envelope["status"]
+        assert "ASCII" in envelope["status"]
 
     async def test_rejects_mismatched_lengths(self) -> None:
         entry = native_tools().get("render_chart")
@@ -297,8 +301,8 @@ class TestRenderChartTool:
         result = await entry.fn(
             kind="line", labels=["a", "b"], series=[{"label": "s", "data": [1, 2]}]
         )
-        assert '"name":"s"' in result.replace(" ", "")
-        assert '"values":[1.0,2.0]' in result.replace(" ", "")
+        spec = json.loads(result)["spec"]
+        assert spec["series"] == [{"name": "s", "values": [1.0, 2.0]}]
         assert '"data"' not in result
 
     async def test_alias_series_still_length_checked(self) -> None:
