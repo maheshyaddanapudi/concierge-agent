@@ -183,6 +183,116 @@ class TestFormatterPayload:
         assert payload["charts"][0]["kind"] == "donut"
         assert payload["blocks"][1]["chart"]["kind"] == "donut"
 
+    async def test_unplaced_tool_charts_trigger_repair(self) -> None:
+        """Ref placement is enforced in code, not just prompted: a document
+        that leaves tool charts unplaced gets ONE repair invocation."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        no_refs = AnswerUi(components=[UiComponent(type="text", markdown="Trend discussed.")])
+        with_ref = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Trend discussed."),
+                UiComponent(type="chart", ref=0),
+                UiComponent(type="text", markdown="After."),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": no_refs.model_dump(), "id": "r1"}])
+        )
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": with_ref.model_dump(), "id": "r2"}])
+        )
+        tool_charts = [{"kind": "line", "title": "W", "labels": ["a"], "series": []}]
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "t", "answer", [], tool_charts=tool_charts
+        )
+        assert payload is not None
+        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b) for b in payload["blocks"]]
+        assert kinds == ["a2ui", "tool_chart_ref", "a2ui"], "repair result must be used"
+
+    async def test_chart_ask_without_charts_triggers_repair(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        text_only = AnswerUi(components=[UiComponent(type="text", markdown="Values: 1, 2, 3.")])
+        with_chart = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Values: 1, 2, 3."),
+                UiComponent(
+                    type="chart",
+                    chart_kind="bar",
+                    labels=["a", "b", "c"],
+                    series=[{"name": "", "values": [1.0, 2.0, 3.0]}],  # type: ignore[list-item]
+                ),
+            ]
+        )
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": text_only.model_dump(), "id": "c1"}])
+        )
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": with_chart.model_dump(), "id": "c2"}])
+        )
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "please chart the values", "Values: 1, 2, 3.", []
+        )
+        assert payload is not None
+        assert payload["charts"], "repair must yield a chart when the user asked for one"
+
+    def test_place_missing_refs_matches_narrative(self) -> None:
+        from app.orchestrator.answer_ui import place_missing_refs
+
+        ui = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Revenue grew each month this quarter."),
+                UiComponent(type="text", markdown="The trial funnel shows a big activation leak."),
+            ]
+        )
+        charts = [{"kind": "funnel", "title": "Trial Funnel", "labels": ["Trials", "Activated"]}]
+        forced = place_missing_refs(ui, charts)
+        assert forced == [0]
+        # inserted right after the funnel narrative, not at the end by accident
+        assert ui.components[2].type == "chart" and ui.components[2].ref == 0
+
+    async def test_stubborn_model_still_gets_refs_force_placed(self) -> None:
+        """Even if BOTH attempts ignore the ref contract, the code places the
+        tool charts deterministically — placement never depends on the model."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        chartless = AnswerUi(
+            components=[UiComponent(type="text", markdown="The weekly trend is discussed here.")]
+        )
+        for i in range(2):
+            fake_llm.push_message(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "AnswerUi", "args": chartless.model_dump(), "id": f"s{i}"}],
+                )
+            )
+        tool_charts = [{"kind": "line", "title": "Weekly Trend", "labels": ["w1"], "series": []}]
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "t", "answer", [], tool_charts=tool_charts
+        )
+        assert payload is not None
+        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b) for b in payload["blocks"]]
+        assert "tool_chart_ref" in kinds, f"forced ref placement missing: {kinds}"
+
+    async def test_compliant_document_needs_no_repair(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        ui = AnswerUi(components=[UiComponent(type="text", markdown="No charts requested.")])
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "n1"}])
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "summarize this", "text", [])
+        assert payload is not None  # single invocation, no repair consumed
+
     async def test_no_midflow_chart_means_no_blocks(self) -> None:
         from langchain_core.messages import AIMessage
 
