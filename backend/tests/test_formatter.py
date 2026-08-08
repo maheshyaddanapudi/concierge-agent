@@ -100,6 +100,19 @@ class TestToolCharts:
             return run
 
     async def test_render_chart_steps_are_collected(self) -> None:
+        # current tool output: status envelope with the spec nested under "spec"
+        spec = {
+            "kind": "bar",
+            "title": "T",
+            "labels": ["a", "b"],
+            "series": [{"name": "s", "values": [1.0, 2.0]}],
+        }
+        run = await self._make_run_with_chart_step({"status": "chart accepted", "spec": spec})
+        charts = await _collect_tool_charts(run.id)
+        assert charts == [spec]
+
+    async def test_legacy_bare_spec_output_still_collected(self) -> None:
+        # runs persisted before the envelope change stored the bare spec
         spec = {
             "kind": "bar",
             "title": "T",

@@ -5,6 +5,7 @@ tool: one LLM call that converts raw text into a structured JSON summary.
 It proves the subgraph-as-tool path alongside MCP tools in the same skill.
 """
 
+import json
 from typing import Any, Literal, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -120,4 +121,15 @@ async def render_chart(
                 f"series {entry.name or '?'!r} has {len(entry.values)} values "
                 f"for {len(spec.labels)} labels"
             )
-    return spec.model_dump_json()
+    # the tool result is the model's only observation of what happened — say
+    # explicitly that a real chart WILL render, or models hedge with ASCII
+    # duplicates of the same data in their prose answer
+    return json.dumps(
+        {
+            "status": (
+                "chart accepted — it will be rendered as a real chart in the "
+                "answer panel; do not draw an ASCII/text version of this data"
+            ),
+            "spec": spec.model_dump(),
+        }
+    )

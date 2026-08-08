@@ -162,6 +162,8 @@ async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
                 continue
             try:
                 spec = json.loads(str(raw))
+                if isinstance(spec, dict) and isinstance(spec.get("spec"), dict):
+                    spec = spec["spec"]  # render_chart status envelope
                 if isinstance(spec, dict) and spec.get("kind") and spec.get("labels"):
                     charts.append(spec)
             except (ValueError, TypeError):
