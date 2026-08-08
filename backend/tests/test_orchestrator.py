@@ -593,6 +593,57 @@ class TestFallback:
         assert "fallback is disabled" in run["error"]
 
 
+class TestRecursionBudget:
+    """GraphRecursionError must surface as a clean RunFailed chat message,
+    never a raw traceback (seen live: a broken fetch tool kept the agentic
+    loop retrying until the recursion limit)."""
+
+    async def test_agentic_recursion_limit_fails_cleanly(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from langgraph.errors import GraphRecursionError
+
+        import app.orchestrator.agentic_mode as agentic_mode
+
+        class _RunawayAgent:
+            async def astream(self, *args: Any, **kwargs: Any) -> Any:
+                raise GraphRecursionError("Recursion limit of 100 reached")
+                yield  # pragma: no cover - makes this an async generator
+
+        async def fake_build() -> Any:
+            return _RunawayAgent()
+
+        monkeypatch.setattr(agentic_mode, "build_agentic_agent", fake_build)
+        async with get_session_factory()() as session:
+            await update_settings(session, {"orchestrator_mode": "agentic"})
+        run_id = await send_chat(client, "loop forever")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        assert "step budget" in (run["error"] or "")
+        assert "GraphRecursionError" not in (run["error"] or "")
+        assert "Traceback" not in (run["error"] or "")
+
+    async def test_graph_recursion_limit_fails_cleanly(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from langgraph.errors import GraphRecursionError
+
+        import app.orchestrator.runner as runner_module
+
+        class _RunawayGraph:
+            async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+                raise GraphRecursionError("Recursion limit of 100 reached")
+
+        monkeypatch.setattr(
+            runner_module, "build_orchestrator_graph", lambda checkpointer: _RunawayGraph()
+        )
+        run_id = await send_chat(client, "graph loop forever")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "failed"
+        assert "step budget" in (run["error"] or "")
+        assert "GraphRecursionError" not in (run["error"] or "")
+
+
 class TestCancelRetry:
     async def test_cancel_running(self, client: AsyncClient) -> None:
         tool = await create_tool(

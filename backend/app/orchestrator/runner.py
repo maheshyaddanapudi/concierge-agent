@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from sqlalchemy import select, update
 
@@ -252,7 +253,14 @@ async def _run_graph(
 
     from langchain_core.runnables import RunnableConfig
 
-    state = await graph.ainvoke(graph_input, config=cast(RunnableConfig, config))
+    try:
+        state = await graph.ainvoke(graph_input, config=cast(RunnableConfig, config))
+    except GraphRecursionError as exc:
+        raise RunFailed(
+            "the orchestrator exceeded its step budget (recursion limit 100) before "
+            "finishing — a step may be failing repeatedly; check the run trace, "
+            "then retry"
+        ) from exc
     if state.get("__interrupt__"):
         if resume is not None:
             await _emit_pending_hitl(graph, config, ctx)
@@ -343,17 +351,24 @@ async def _run_agentic(
 
     last_todos: list[dict[str, Any]] | None = None
     interrupted = False
-    async for chunk in agent.astream(graph_input, config=config, stream_mode="updates"):
-        if "__interrupt__" in chunk:
-            interrupted = True
-            continue
-        for delta in chunk.values():
-            if not isinstance(delta, dict):
+    try:
+        async for chunk in agent.astream(graph_input, config=config, stream_mode="updates"):
+            if "__interrupt__" in chunk:
+                interrupted = True
                 continue
-            todos = extract_todos(delta)
-            if todos is not None and todos != last_todos:
-                last_todos = todos
-                ctx.recorder.emit("plan", {"todos": todos, "mode": "agentic"})
+            for delta in chunk.values():
+                if not isinstance(delta, dict):
+                    continue
+                todos = extract_todos(delta)
+                if todos is not None and todos != last_todos:
+                    last_todos = todos
+                    ctx.recorder.emit("plan", {"todos": todos, "mode": "agentic"})
+    except GraphRecursionError as exc:
+        raise RunFailed(
+            "the agentic loop exceeded its step budget (recursion limit 100) before "
+            "reaching an answer — the ask may be too broad, or a tool may be failing "
+            "repeatedly; check the run trace, then narrow the ask or retry"
+        ) from exc
     if interrupted:
         if resume is not None:
             await _emit_pending_hitl(agent, config, ctx)
