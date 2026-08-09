@@ -1,6 +1,12 @@
-# Acceptance Evidence — Full Replacement Campaign (Formatter Era)
+# Acceptance Evidence — Full Regression Recapture (Direct-Invocation Era)
+
+**Date**: 2026-08-09 · **Models**: genuine `anthropic:claude-sonnet-4-6` for every role (default/planner/aggregator/formatter inherit, first-boot resolved) across all stages, **except** stage 20, which keeps its heterogeneous role mix (`claude-opus-5` default + `claude-sonnet-5` planner/formatter) because mixed models are that stage's claim. · **Method**: a file-for-file 1:1 replacement of all 161 frames of the previous campaign, re-run from a **fresh `docker compose up`** (wiped volumes, first-boot seed) on the branch carrying direct sub-agent invocation (spec §7.5) and the seeded native tier — proving no base behavior regressed under the new code. Same prompt discipline and UI-first method as the prior round; the API verified outcomes (run settlement, route rungs) but never produced evidence. New-feature evidence lives in `docs/acceptance-new/` stages 25+.
+
+<details><summary>Previous campaign header (2026-08-07 → 08, sonnet-5 era)</summary>
 
 **Date**: 2026-08-07 → 2026-08-08 · **Models**: genuine `anthropic:claude-sonnet-5` default (effort `medium`, planner effort `high`) for the core stages; `anthropic:claude-opus-5` + `claude-sonnet-5` role mixes for stages 19–20; the M9 **formatter** enabled (`a2ui_first`, inheriting the default model) for every run unless a stage explicitly turns it off. · **Method**: a one-to-one replacement of the previous acceptance evidence **plus** every capability added since (stages 18–24), driven through the real UI in Chromium against the running `docker compose` stack. The API was used only to *verify* what the UI did (run settlement, route rungs, checkpoint counts) — never to produce evidence.
+
+</details>
 
 Prompt discipline: chat prompts avoid capability names except in the stages whose claim *is* explicit invocation (site-analyst gate stages). The orchestrator routes on its own judgment; traces verify what it chose after the fact.
 
