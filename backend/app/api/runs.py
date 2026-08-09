@@ -64,6 +64,9 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
         "chat_message": run.chat_message,
         "status": run.status,
         "orchestrator_mode": run.orchestrator_mode,
+        "target_sub_agent_id": str(run.target_sub_agent_id)
+        if run.target_sub_agent_id
+        else None,
         "plan": run.plan,
         "snapshot": run.snapshot,
         "final_answer": run.final_answer,

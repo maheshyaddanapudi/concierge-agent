@@ -4,10 +4,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, streamRun } from '../api/client'
-import { useConversation, useConversations, useInvalidate, useSettings } from '../api/hooks'
+import {
+  useConversation,
+  useConversations,
+  useInvalidate,
+  useSettings,
+  useSubAgents,
+} from '../api/hooks'
 import type { SseEvent } from '../api/types'
 import { AnswerBlock, type AnswerUiPayload } from '../components/AnswerPanel'
-import { Button, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
+import { Button, Select, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
 
 type LiveEvent = Pick<SseEvent, 'type' | 'payload'>
 
@@ -631,10 +637,19 @@ export function ChatPage() {
   const [searchParams] = useSearchParams()
   const invalidate = useInvalidate()
   const bottomRef = useRef<HTMLDivElement>(null)
+  // direct invocation pin (spec §7.5): messages run against this sub agent,
+  // planner bypassed; null = orchestrator (auto)
+  const [targetId, setTargetId] = useState<string | null>(null)
+  const { data: subAgents = [] } = useSubAgents()
+  const exposedAgents = subAgents.filter(
+    (a) => a.status === 'active' && a.direct_exposure && !a.deleted_at,
+  )
+  const agentName = (id: string | null | undefined) =>
+    subAgents.find((a) => a.id === id)?.name ?? 'sub agent'
 
   useEffect(() => {
-    const invoke = searchParams.get('invoke')
-    if (invoke) setMessage(`Use the "${invoke}" sub agent: `)
+    const target = searchParams.get('target')
+    if (target) setTargetId(target)
   }, [searchParams])
 
   // re-attach to an in-flight or HITL-paused run when reopening its
@@ -674,6 +689,7 @@ export function ChatPage() {
     }
     const body: Record<string, unknown> = { message: text }
     if (conversationId) body.conversation_id = conversationId
+    if (targetId) body.target_sub_agent_id = targetId
     const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
     setConversationId(result.conversation_id)
     setLiveRunId(result.run_id)
@@ -773,12 +789,19 @@ export function ChatPage() {
               </p>
             </div>
           )}
-          {messages.map((m, i) =>
-            m.role === 'user' ? (
-              <div key={i} className="flex justify-end">
+          {messages.map((m, i) => {
+            const run = detail?.runs.find((r) => r.id === m.run_id)
+            const direct = run?.orchestrator_mode === 'direct'
+            return m.role === 'user' ? (
+              <div key={i} className="flex flex-col items-end">
                 <div className="max-w-[70%] break-words rounded-lg rounded-br-sm border border-accent-500/30 bg-accent-500/10 px-3.5 py-2 text-sm text-slate-100">
                   {m.content}
                 </div>
+                {direct && (
+                  <div className="mt-0.5 px-1 font-mono text-[9px] uppercase tracking-wider text-accent-400/80">
+                    → {agentName(run?.target_sub_agent_id)} · direct
+                  </div>
+                )}
               </div>
             ) : m.role === 'error' ? (
               // a run that produced no answer still shows why — same look as
@@ -802,8 +825,8 @@ export function ChatPage() {
                   </Link>
                 </div>
               </div>
-            ),
-          )}
+            )
+          })}
           {liveRunId && (
             <div className="max-w-[85%]">
               <LiveRun runId={liveRunId} onDone={liveDone} onStatus={setLiveStatus} />
@@ -825,6 +848,29 @@ export function ChatPage() {
               </button>
             </div>
           )}
+          <div className="mb-1.5 flex items-center gap-2 px-1">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-slate-600">
+              target
+            </span>
+            <Select
+              value={targetId ?? ''}
+              onChange={(e) => setTargetId(e.target.value || null)}
+              className="max-w-64 !py-1 !text-xs"
+              title="pin messages to a sub agent — direct invocation, planner bypassed"
+            >
+              <option value="">Orchestrator (auto)</option>
+              {exposedAgents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </Select>
+            {targetId && (
+              <span className="rounded-full border border-accent-500/40 bg-accent-500/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-accent-300">
+                → {agentName(targetId)} · direct
+              </span>
+            )}
+          </div>
           <div className="flex items-end gap-2">
             <TextArea
               rows={2}

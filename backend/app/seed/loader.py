@@ -176,6 +176,7 @@ async def seed_sub_agents(session: AsyncSession) -> None:
             workflow=workflow,
             kind="custom",
             source="static",
+            direct_exposure=True,
             skills=[research, file_ops],
         )
         session.add(agent)
@@ -202,6 +203,8 @@ async def upsert_native_sub_agents(session: AsyncSession) -> None:
                     source="static",
                     native_ref=entry.native_ref,
                     covers_skill_ids=entry.covers_skill_ids,
+                    # spec §3.4: static seeds ship exposed; the toggle stays live
+                    direct_exposure=True,
                 )
             )
         else:

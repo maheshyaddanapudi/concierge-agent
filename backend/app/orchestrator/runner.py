@@ -34,7 +34,12 @@ logger = structlog.get_logger("orchestrator.runner")
 RUNNING_TASKS: dict[UUID, asyncio.Task[None]] = {}
 
 
-async def create_run(conversation_id: UUID | None, message: str, mode: str | None = None) -> Run:
+async def create_run(
+    conversation_id: UUID | None,
+    message: str,
+    mode: str | None = None,
+    target_sub_agent_id: UUID | None = None,
+) -> Run:
     async with get_session_factory()() as session:
         if conversation_id is None:
             conversation = Conversation(title=message[:80] or "New conversation")
@@ -51,6 +56,7 @@ async def create_run(conversation_id: UUID | None, message: str, mode: str | Non
             chat_message=message,
             status="running",
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
+            target_sub_agent_id=target_sub_agent_id,
         )
         session.add(run)
         await session.commit()
@@ -72,6 +78,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         mode = run.orchestrator_mode
         task_text = run.chat_message
         conversation_id = run.conversation_id
+        target_sub_agent_id = run.target_sub_agent_id
     settings = await load_settings_snapshot()
     recorder = RunRecorder(run_id)
     ctx = RunContext(
@@ -91,7 +98,9 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         recorder.emit("run_status", {"status": "running"})
     started = datetime.now(UTC)
     try:
-        if mode == "agentic":
+        if mode == "direct":
+            outcome = await _run_direct(ctx, task_text, target_sub_agent_id, resume)
+        elif mode == "agentic":
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
         else:
             outcome = await _run_graph(ctx, task_text, conversation_id, resume)
@@ -324,6 +333,54 @@ async def _emit_pending_hitl(graph: Any, config: dict[str, Any], ctx: RunContext
         )
 
 
+async def _run_direct(
+    ctx: RunContext,
+    task_text: str,
+    target_sub_agent_id: UUID | None,
+    resume: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Direct sub-agent invocation (spec §7.5): a one-node graph on the run's
+    checkpointer thread so worker HITL pauses/resumes exactly like graph-mode
+    dispatch; the shared finalization tail (formatter included) applies."""
+    from app.orchestrator.direct_mode import (
+        DirectInvokeError,
+        build_direct_graph,
+        check_direct_invokable,
+        record_direct_route,
+    )
+
+    if target_sub_agent_id is None:
+        raise RunFailed("direct run has no target sub agent — this is a bug")
+    checkpointer = await get_checkpointer()
+    graph = build_direct_graph(checkpointer)
+    config: dict[str, Any] = {
+        "configurable": {"thread_id": str(ctx.run_id)},
+        "callbacks": ctx.callbacks,
+        "recursion_limit": 100,
+    }
+    if resume is not None:
+        graph_input: Any = await _resume_command(graph, config, resume)
+    else:
+        # gate + route step before the graph starts: fresh runs only, so HITL
+        # resume replays never duplicate the route record
+        try:
+            await check_direct_invokable(str(target_sub_agent_id))
+        except DirectInvokeError as exc:
+            raise RunFailed(str(exc)) from exc
+        await record_direct_route(str(target_sub_agent_id))
+        graph_input = {"task": task_text, "sub_agent_id": str(target_sub_agent_id)}
+    from typing import cast
+
+    from langchain_core.runnables import RunnableConfig
+
+    state = await graph.ainvoke(graph_input, config=cast(RunnableConfig, config))
+    if state.get("__interrupt__"):
+        if resume is not None:
+            await _emit_pending_hitl(graph, config, ctx)
+        return {"paused": True}
+    return {"paused": False, "answer": state.get("answer", "")}
+
+
 async def _run_agentic(
     ctx: RunContext,
     task_text: str,
@@ -433,7 +490,10 @@ async def retry_run(run_id: UUID) -> Run:
             raise ValueError("only failed runs can be retried")
         conversation_id = run.conversation_id
         message = run.chat_message
-    new_run = await create_run(conversation_id, message)
+        # a direct run retries as a direct run — the pin is part of the ask
+        mode = run.orchestrator_mode if run.orchestrator_mode == "direct" else None
+        target = run.target_sub_agent_id
+    new_run = await create_run(conversation_id, message, mode=mode, target_sub_agent_id=target)
     start_run_task(new_run.id)
     return new_run
 

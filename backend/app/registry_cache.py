@@ -111,6 +111,7 @@ def _sub_agent_record(a: SubAgent) -> dict[str, Any]:
         "model_params": a.model_params,
         "workflow": a.workflow,
         "native_ref": a.native_ref,
+        "direct_exposure": a.direct_exposure,
         "covers_skill_ids": [str(x) for x in (a.covers_skill_ids or [])],
         "skill_ids": [str(s.id) for s in a.skills],
         "skill_names": [s.name for s in a.skills],

@@ -33,7 +33,10 @@ class Run(Base):
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
     status: Mapped[str] = mapped_column(String(16), default="running")
+    # 'graph' | 'agentic' | 'direct' (spec §7.5)
     orchestrator_mode: Mapped[str] = mapped_column(String(16), default="graph")
+    # set only on 'direct' runs: the sub agent the user pinned (spec §7.5)
+    target_sub_agent_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
     # the formatter's structured artifact (spec §7.1 answer_ui) — carries its
     # own presentation + coverage so history renders by run-time facts

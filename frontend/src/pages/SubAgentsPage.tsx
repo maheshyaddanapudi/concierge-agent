@@ -32,6 +32,7 @@ import {
   StatusPill,
   TextArea,
   TextInput,
+  Toggle,
   cx,
 } from '../components/ui'
 
@@ -192,6 +193,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
   const [model, setModel] = useState<string | null>(agent?.model ?? null)
   const [params, setParams] = useState<ModelParams | null>(agent?.model_params ?? null)
   const [workflow, setWorkflow] = useState<Workflow>(agent?.workflow ?? { nodes: [], edges: [] })
+  const [exposure, setExposure] = useState(agent?.direct_exposure ?? false)
   const [template, setTemplate] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [validation, setValidation] = useState<string[] | null>(null)
@@ -222,6 +224,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
       model,
       model_params: params && Object.keys(params).length ? params : null,
       workflow,
+      direct_exposure: exposure,
     }
     try {
       if (agent) await api.patch(`/sub-agents/${agent.id}`, body)
@@ -300,6 +303,21 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
           value={description}
           disabled={isStatic}
           onChange={(e) => setDescription(e.target.value)}
+        />
+      </Field>
+      <Field
+        label="Direct invocation"
+        hint="exposed agents can be pinned from chat or POST /sub-agents/{id}/invoke — live on static records"
+      >
+        <Toggle
+          checked={exposure}
+          onChange={async (v) => {
+            setExposure(v)
+            if (agent) {
+              await api.patch(`/sub-agents/${agent.id}`, { direct_exposure: v })
+              invalidate('sub-agents')
+            }
+          }}
         />
       </Field>
       <Field label="Persona">
@@ -539,12 +557,24 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
 
 function NativeAgentCard({ agent }: { agent: SubAgent }) {
   const { data: skills = [] } = useSkills()
+  const invalidate = useInvalidate()
+  const [exposure, setExposure] = useState(agent.direct_exposure)
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-300">
         Native sub agent — the graph is code; the worker factory is bypassed. Read-only except
-        status.
+        status and direct exposure.
       </div>
+      <Field label="Direct invocation" hint="exposed agents can be pinned from chat">
+        <Toggle
+          checked={exposure}
+          onChange={async (v) => {
+            setExposure(v)
+            await api.patch(`/sub-agents/${agent.id}`, { direct_exposure: v })
+            invalidate('sub-agents')
+          }}
+        />
+      </Field>
       <Field label="Description">
         <p className="text-sm text-slate-300">{agent.description}</p>
       </Field>
@@ -613,6 +643,7 @@ export function SubAgentsPage() {
                 <span className="font-medium text-slate-200">{a.name}</span>
                 <KindBadge kind={a.kind} />
                 <SourceBadge source={a.source} />
+                {a.direct_exposure && <Chip tone="direct">direct</Chip>}
               </div>
             ),
           },
@@ -653,15 +684,16 @@ export function SubAgentsPage() {
           { header: 'Status', render: (a) => <StatusPill status={a.status} /> },
           {
             header: '',
-            render: (a) => (
-              <Button
-                variant="ghost"
-                onClick={() => navigate(`/?invoke=${encodeURIComponent(a.name)}`)}
-                title="opens Chat pre-targeted at this sub agent"
-              >
-                Test invoke →
-              </Button>
-            ),
+            render: (a) =>
+              a.status === 'active' && a.direct_exposure ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate(`/?target=${a.id}`)}
+                  title="opens Chat pinned to this sub agent — the next message runs as a direct run, planner bypassed"
+                >
+                  Invoke →
+                </Button>
+              ) : null,
           },
         ]}
       />
