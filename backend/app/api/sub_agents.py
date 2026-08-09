@@ -23,6 +23,7 @@ from app.registry_cache import get_cache
 from app.retrieval import schedule_embedding
 from app.schemas.sub_agent import (
     SubAgentCreate,
+    SubAgentInvoke,
     SubAgentOut,
     SubAgentOverlapCheck,
     SubAgentPatch,
@@ -85,6 +86,7 @@ async def create_sub_agent(body: SubAgentCreate, session: SessionDep) -> SubAgen
         workflow=body.workflow,
         kind="custom",
         source="dynamic",
+        direct_exposure=body.direct_exposure,
         skills=skills,
     )
     session.add(agent)
@@ -153,6 +155,45 @@ async def validate_sub_agent(agent_id: UUID, session: SessionDep) -> ValidateRes
 
         errors = await compile_workflow_check(session, agent.workflow or {})
     return ValidateResult(valid=not errors, errors=errors)
+
+
+@router.post("/{agent_id}/invoke", status_code=201)
+async def invoke_sub_agent(
+    agent_id: UUID, body: SubAgentInvoke, session: SessionDep
+) -> dict[str, Any]:
+    """Direct invocation (spec §7.5): pin this sub agent, skip routing. The
+    run keeps the full lifecycle — SSE, HITL, formatter, trace, metrics."""
+    from app.orchestrator.runner import create_run, start_run_task
+
+    agent = await fetch_or_404(session, SubAgent, agent_id)
+    if agent.status != "active":
+        raise HTTPException(status_code=409, detail=f"sub agent {agent.name!r} is not active")
+    if not agent.direct_exposure:
+        raise HTTPException(
+            status_code=403,
+            detail=f"sub agent {agent.name!r} is not exposed for direct invocation",
+        )
+    if not body.message.strip():
+        raise HTTPException(status_code=422, detail="message must not be empty")
+    if body.include_history_summary and not body.conversation_id:
+        raise HTTPException(
+            status_code=422,
+            detail="include_history_summary requires a conversation_id — a fresh "
+            "conversation has no history to summarize",
+        )
+    conversation_id = UUID(str(body.conversation_id)) if body.conversation_id else None
+    try:
+        run = await create_run(
+            conversation_id,
+            body.message,
+            mode="direct",
+            target_sub_agent_id=agent.id,
+            include_history_summary=body.include_history_summary,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    start_run_task(run.id)
+    return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
 
 
 @router.delete("/{agent_id}", status_code=204)

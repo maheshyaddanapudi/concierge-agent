@@ -8,6 +8,78 @@ milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
 earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #3].
 
+## M11 — Opt-in history summary for direct invocations — 2026-08-09
+
+### Added
+
+- **`include_history_summary` (spec §7.5)**: direct runs stay cold by
+  default; the flag is the one sanctioned way to hand a pinned sub agent
+  conversational context — restoring the translator role the planner plays
+  for routed dispatch. One summarization call (default model, effort low,
+  prompt `app/prompts/history_summary.md`, the planner's capped window),
+  recorded as a `summary` step with usage rolled up; the worker receives
+  the summary block + the user's verbatim message; fail-open to the cold
+  task. Checkpointed task → HITL resume never re-summarizes; retry
+  preserves the flag (`runs.include_history_summary`, migration
+  `d4f7b2c8e1a9`). Gating: 422 on `/chat` without a target (the
+  orchestrator always gets history), 422 on `/invoke` without a
+  `conversation_id` (nothing to summarize).
+- **Composer checkbox** shown only while a sub agent is pinned AND the
+  conversation has a completed run; summarized direct bubbles carry a
+  `+ctx` marker.
+- Stage 27 acceptance evidence: visibility rules, cold-vs-context
+  side-by-side (the cold run cannot recall a number; the context run can),
+  the traced summary step, and both 422 gates — plus stages 25/26/12
+  re-captured with the checkbox present.
+
+## M10 — Direct sub-agent invocation — 2026-08-09
+
+### Added
+
+- **Direct invocation (spec §7.5)**: a sub agent with `direct_exposure=true`
+  can be pinned to handle a request without the planner. Four surfaces, one
+  path: `POST /sub-agents/{id}/invoke` (`{message, conversation_id?}` →
+  `run_id`), `POST /chat` with `target_sub_agent_id`, the Sub Agents page
+  "Invoke →" row action, and the chat composer's target picker
+  ("Orchestrator (auto)" + every active exposed agent, with a visible pin
+  chip). Every surface creates a persisted run with
+  `orchestrator_mode='direct'` + `target_sub_agent_id`.
+- **`sub_agents.direct_exposure`** (migration `c9e1f5a2d7b8`): mirrors the
+  tools/skills flag — togglable on static records, `direct` chip in the
+  table, toggle on both the custom editor and the native card. Static seeds
+  ship exposed; the migration backfills existing static agents.
+- **`direct` orchestrator mode**: a one-node graph on the run's checkpointer
+  thread reuses the ladder executor (`resolve_capability` +
+  `execute_resolution`), so native and custom agents run the exact worker
+  code paths routed dispatch uses — HITL pause/resume, step recording, and
+  a pinned `route` step (rung `native_sub_agent`/`custom_sub_agent`) for
+  trace parity. The shared runner tail applies unchanged: formatter on →
+  full `answer_ui` treatment; off → raw markdown. Gating (active + exposed)
+  is enforced at the API (403/409) and re-checked at execution start;
+  `retry` on a failed direct run preserves the pin.
+
+### Changed
+
+- Chat user bubbles for direct runs carry a `→ agent · direct` marker; the
+  Runs page mode badge shows `direct`. The Sub Agents page "Test invoke"
+  action (message-prefix hint) is replaced by real pinning via `/?target=`.
+
+### Added (seeded native tier)
+
+- **Two new native skills over previously-untagged tools** (spec §9):
+  `workspace-auditor` (directory_tree, list_directory_with_sizes,
+  search_files, get_file_info — read-only workspace mapping) and
+  `workspace-curator` (create_directory, move_file, read_multiple_files —
+  tidy, never delete).
+- **`workspace-warden`, the first seeded native sub agent** (spec §3.4): a
+  hand-written two-stage LangGraph (`audit → curate`) over both skills. The
+  graph is code (factory bypassed for construction) but each stage delegates
+  to the factory's skill-node semantics — scoped tools, model resolution,
+  middleware stack identical to factory-built workers. Registered with
+  covered skills by NAME; the seed pass resolves names to registry uuids
+  (`_resolve_covers`). Ships exposed, so all four §7.5 direct-invocation
+  surfaces work on the native tier out of the box.
+
 ## M9 — The formatter: A2UI-first structured answers — 2026-08-08
 
 ### Added

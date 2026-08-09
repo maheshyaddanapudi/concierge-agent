@@ -30,19 +30,28 @@ RUN npx -y @modelcontextprotocol/server-filesystem --help >/dev/null 2>&1 || tru
 # Install at build time with undici pinned to 6.x; jsdom's nested copy must
 # go so resolution falls back to the hoisted 6.x. Every step fails the build
 # loudly — a silent skip here ships a broken fetch tool.
-RUN dir=$(find /root/.cache/uv -type d -path '*readabilipy/javascript' | head -1); \
-    test -n "$dir" || { echo "BUILD ERROR: readabilipy not found — the uvx mcp-server-fetch prewarm above must have failed (network?)"; exit 1; }; \
-    cd "$dir" \
-    && npm install \
-    && npm install undici@6.21.3 --no-save \
-    && rm -rf node_modules/jsdom/node_modules/undici
-# build-time proof: the resolved undici is 6.x and the extraction pipeline runs
-RUN dir=$(find /root/.cache/uv -type d -path '*readabilipy/javascript' | head -1); \
-    cd "$dir" \
-    && node -e "const v=require('undici/package.json').version; if(!v.startsWith('6.')) {console.error('BUILD ERROR: undici '+v+' resolved, need 6.x for node 20'); process.exit(1)}" \
-    && printf '<html><body><article><h1>t</h1><p>x</p></article></body></html>' > /tmp/rt.html \
-    && node ExtractArticle.js -i /tmp/rt.html >/dev/null \
-    && rm /tmp/rt.html
+# Fix EVERY cached copy — tool envs under archive-v0 AND the wheel cache
+# (wheels-v6). uvx rebuilds tool environments by copying packages from the
+# wheel cache, so a fix baked only into the current env is lost the next
+# time uvx constructs a fresh env (seen after a long container suspension):
+# the new copy has no node_modules and readabilipy re-runs `npm install` at
+# request time, pulling node>=22-only undici 8 again.
+RUN dirs=$(find /root/.cache/uv -type d -path '*readabilipy/javascript'); \
+    test -n "$dirs" || { echo "BUILD ERROR: readabilipy not found — the uvx mcp-server-fetch prewarm above must have failed (network?)"; exit 1; }; \
+    for dir in $dirs; do \
+      cd "$dir" \
+      && npm install \
+      && npm install undici@6.21.3 --no-save \
+      && rm -rf node_modules/jsdom/node_modules/undici || exit 1; \
+    done
+# build-time proof: EVERY cached copy resolves undici 6.x and extracts
+RUN for dir in $(find /root/.cache/uv -type d -path '*readabilipy/javascript'); do \
+      cd "$dir" \
+      && node -e "const v=require('undici/package.json').version; if(!v.startsWith('6.')) {console.error('BUILD ERROR: undici '+v+' resolved in $dir, need 6.x for node 20'); process.exit(1)}" \
+      && printf '<html><body><article><h1>t</h1><p>x</p></article></body></html>' > /tmp/rt.html \
+      && node ExtractArticle.js -i /tmp/rt.html >/dev/null \
+      && rm /tmp/rt.html || exit 1; \
+    done
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

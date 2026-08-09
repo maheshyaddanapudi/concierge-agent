@@ -80,6 +80,7 @@ export interface SubAgent extends RegistryRecord {
   workflow: Workflow | null
   native_ref: string | null
   covers_skill_ids: string[] | null
+  direct_exposure: boolean
   skills: Skill[]
 }
 
@@ -105,7 +106,9 @@ export interface Run {
   conversation_id: string
   chat_message: string
   status: RunStatus
-  orchestrator_mode: 'graph' | 'agentic'
+  orchestrator_mode: 'graph' | 'agentic' | 'direct'
+  target_sub_agent_id?: string | null
+  include_history_summary?: boolean
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null

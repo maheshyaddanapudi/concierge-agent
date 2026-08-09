@@ -8,7 +8,9 @@ manager connects in M2) are re-reconciled on every seed run.
 
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,8 @@ from app.config import get_config
 from app.models import McpServer, Skill, SubAgent, Tool
 from app.native.provider import native_sub_agents, native_tools, scan_native
 from app.skilldoc import scan_skill_files
+
+logger = structlog.get_logger("seed")
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "native" / "skills"
 
@@ -176,6 +180,7 @@ async def seed_sub_agents(session: AsyncSession) -> None:
             workflow=workflow,
             kind="custom",
             source="static",
+            direct_exposure=True,
             skills=[research, file_ops],
         )
         session.add(agent)
@@ -185,9 +190,33 @@ async def seed_sub_agents(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def _resolve_covers(session: AsyncSession, covers: list[str]) -> list[str]:
+    """covers_skill_ids entries may be registry uuids or skill NAMES — code
+    can't know DB-generated uuids, so native registrations use names and the
+    seed pass resolves them here. Unresolvable entries are dropped with a log
+    (the skill may ingest on a later seed run and reconcile then)."""
+    resolved: list[str] = []
+    for ref in covers:
+        try:
+            UUID(ref)
+            resolved.append(ref)
+            continue
+        except ValueError:
+            pass
+        skill = (
+            await session.execute(select(Skill).where(Skill.name == ref))
+        ).scalar_one_or_none()
+        if skill is None:
+            logger.warning("native_covers_unresolved", ref=ref)
+            continue
+        resolved.append(str(skill.id))
+    return resolved
+
+
 async def upsert_native_sub_agents(session: AsyncSession) -> None:
     """Native sub agent cards from the @native_sub_agent scan (spec §3.4)."""
     for name, entry in native_sub_agents().items():
+        covers = await _resolve_covers(session, entry.covers_skill_ids)
         agent = (
             await session.execute(
                 select(SubAgent).where(SubAgent.name == name, SubAgent.source == "static")
@@ -201,13 +230,15 @@ async def upsert_native_sub_agents(session: AsyncSession) -> None:
                     kind="native",
                     source="static",
                     native_ref=entry.native_ref,
-                    covers_skill_ids=entry.covers_skill_ids,
+                    covers_skill_ids=covers,
+                    # spec §3.4: static seeds ship exposed; the toggle stays live
+                    direct_exposure=True,
                 )
             )
         else:
             agent.description = entry.description
             agent.native_ref = entry.native_ref
-            agent.covers_skill_ids = entry.covers_skill_ids
+            agent.covers_skill_ids = covers
     await session.commit()
 
 

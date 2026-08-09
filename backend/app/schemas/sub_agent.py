@@ -13,6 +13,7 @@ class SubAgentCreate(ApiModel):
     model: str | None = None
     model_params: dict[str, Any] | None = None
     workflow: dict[str, Any]
+    direct_exposure: bool = False
 
 
 class SubAgentOverlapCheck(ApiModel):
@@ -32,6 +33,7 @@ class SubAgentPatch(ApiModel):
     model_params: dict[str, Any] | None = None
     workflow: dict[str, Any] | None = None
     status: Status | None = None
+    direct_exposure: bool | None = None
 
 
 class SubAgentOut(RegistryOut):
@@ -42,7 +44,17 @@ class SubAgentOut(RegistryOut):
     workflow: dict[str, Any] | None
     native_ref: str | None
     covers_skill_ids: list[Any] | None
+    direct_exposure: bool
     skills: list[SkillOut] = []
+
+
+class SubAgentInvoke(ApiModel):
+    """Direct invocation body (spec §7.5)."""
+
+    message: str
+    conversation_id: Any | None = None
+    # §7.5 opt-in: requires conversation_id (422 without — no history exists)
+    include_history_summary: bool = False
 
 
 class ValidateResult(ApiModel):
