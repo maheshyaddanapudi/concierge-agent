@@ -40,6 +40,22 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
   Runs page mode badge shows `direct`. The Sub Agents page "Test invoke"
   action (message-prefix hint) is replaced by real pinning via `/?target=`.
 
+### Added (seeded native tier)
+
+- **Two new native skills over previously-untagged tools** (spec §9):
+  `workspace-auditor` (directory_tree, list_directory_with_sizes,
+  search_files, get_file_info — read-only workspace mapping) and
+  `workspace-curator` (create_directory, move_file, read_multiple_files —
+  tidy, never delete).
+- **`workspace-warden`, the first seeded native sub agent** (spec §3.4): a
+  hand-written two-stage LangGraph (`audit → curate`) over both skills. The
+  graph is code (factory bypassed for construction) but each stage delegates
+  to the factory's skill-node semantics — scoped tools, model resolution,
+  middleware stack identical to factory-built workers. Registered with
+  covered skills by NAME; the seed pass resolves names to registry uuids
+  (`_resolve_covers`). Ships exposed, so all four §7.5 direct-invocation
+  surfaces work on the native tier out of the box.
+
 ## M9 — The formatter: A2UI-first structured answers — 2026-08-08
 
 ### Added
