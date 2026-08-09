@@ -113,6 +113,7 @@ The **[docs/ index](./docs/README.md)** covers the whole suite. Highlights:
 | M6 | Test suites green + compose polish + acceptance script passes | ✅ complete |
 | M7 | Registry cache layer (spec §7.3: bypass/memory/redis, event invalidation, refresh UI) + progressive-disclosure retrieval (spec §7.4: hybrid top-K, embeddings port — dark by default) | ✅ complete |
 | M10 | Direct sub-agent invocation (spec §7.5: `direct_exposure` gate, `POST /sub-agents/{id}/invoke`, chat target picker, `orchestrator_mode='direct'` runs with full lifecycle — HITL, formatter, trace parity) | ✅ complete |
+| M11 | Opt-in history summary for direct invocations (spec §7.5: `include_history_summary` flag, one traced summarization call, composer checkbox with strict visibility rules, `+ctx` markers — cold by default, byte-identical without the flag) | ✅ complete |
 
 **Direct sub-agent invocation (spec §7.5)** — a sub agent with `direct_exposure=true` (toggle on its detail drawer; static seeds ship exposed) can be invoked without the planner: pin it in the chat composer's target picker (or the "Invoke →" row action on the Sub Agents page), or call `POST /api/v1/sub-agents/{id}/invoke` with `{message}`. The pin replaces only the routing decision — direct runs keep the shared lifecycle: SSE streaming, HITL pause/resume, run/step trace with a pinned `route` step, metrics under `mode='direct'`, and the formatter treatment (on = structured `answer_ui`, off = raw markdown) identical to routed runs.
 

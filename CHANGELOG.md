@@ -8,6 +8,30 @@ milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
 earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #3].
 
+## M11 — Opt-in history summary for direct invocations — 2026-08-09
+
+### Added
+
+- **`include_history_summary` (spec §7.5)**: direct runs stay cold by
+  default; the flag is the one sanctioned way to hand a pinned sub agent
+  conversational context — restoring the translator role the planner plays
+  for routed dispatch. One summarization call (default model, effort low,
+  prompt `app/prompts/history_summary.md`, the planner's capped window),
+  recorded as a `summary` step with usage rolled up; the worker receives
+  the summary block + the user's verbatim message; fail-open to the cold
+  task. Checkpointed task → HITL resume never re-summarizes; retry
+  preserves the flag (`runs.include_history_summary`, migration
+  `d4f7b2c8e1a9`). Gating: 422 on `/chat` without a target (the
+  orchestrator always gets history), 422 on `/invoke` without a
+  `conversation_id` (nothing to summarize).
+- **Composer checkbox** shown only while a sub agent is pinned AND the
+  conversation has a completed run; summarized direct bubbles carry a
+  `+ctx` marker.
+- Stage 27 acceptance evidence: visibility rules, cold-vs-context
+  side-by-side (the cold run cannot recall a number; the context run can),
+  the traced summary step, and both 422 gates — plus stages 25/26/12
+  re-captured with the checkbox present.
+
 ## M10 — Direct sub-agent invocation — 2026-08-09
 
 ### Added
