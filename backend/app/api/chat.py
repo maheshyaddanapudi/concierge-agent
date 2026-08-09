@@ -28,6 +28,8 @@ class ChatRequest(ApiModel):
     # optional pin (spec §7.5): the message runs as a 'direct' run against
     # this sub agent instead of going through the orchestrator
     target_sub_agent_id: UUID | None = None
+    # §7.5 opt-in, target-only: summarize history into the worker's context
+    include_history_summary: bool = False
 
 
 class HitlRequest(ApiModel):
@@ -47,6 +49,7 @@ def _run_out(run: Run) -> dict[str, Any]:
         "target_sub_agent_id": str(run.target_sub_agent_id)
         if run.target_sub_agent_id
         else None,
+        "include_history_summary": run.include_history_summary,
         "final_answer": run.final_answer,
         "answer_ui": run.answer_ui,
         "charts": run.charts,
@@ -129,6 +132,12 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
     asyncio task in this process (spec §2)."""
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty")
+    if body.include_history_summary and body.target_sub_agent_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="include_history_summary applies only to sub-agent-pinned messages — "
+            "the orchestrator always receives conversation history",
+        )
     if body.target_sub_agent_id is not None:
         # pinned message (spec §7.5): same gating as /sub-agents/{id}/invoke
         from app.models import SubAgent
@@ -144,7 +153,11 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
                 detail=f"sub agent {agent.name!r} is not exposed for direct invocation",
             )
         run = await create_run(
-            body.conversation_id, body.message, mode="direct", target_sub_agent_id=agent.id
+            body.conversation_id,
+            body.message,
+            mode="direct",
+            target_sub_agent_id=agent.id,
+            include_history_summary=body.include_history_summary,
         )
     else:
         run = await create_run(body.conversation_id, body.message)

@@ -80,6 +80,50 @@ def build_direct_graph(
     return graph.compile(checkpointer=checkpointer)
 
 
+async def summarize_history(conversation_id: Any) -> str | None:
+    """Opt-in §7.5 history summary: ONE call on the default model at low
+    effort over the same capped window the planner sees, recorded as a
+    `summary` step with usage rolled up. Returns None when the conversation
+    has no completed history (nothing to summarize) — the caller then runs
+    the plain cold task. Fail-open: a summarization error logs, records the
+    failed step, and the run proceeds without context rather than dying."""
+    from app.llm import ModelParams, get_model, text_from_content
+    from app.orchestrator.graph_mode import build_history
+    from app.prompts import load_prompt
+    from app.registry_cache import get_cache
+
+    ctx = require_run_context()
+    history = await build_history(conversation_id)
+    if not history.strip():
+        return None
+    ref = str(await get_cache().setting("default_model"))
+    step_id = await ctx.recorder.start_step(
+        "summary", tier="orchestrator", model=ref, input={"chars": len(history)}
+    )
+    try:
+        model = get_model(ref, ModelParams(effort="low"))
+        prompt = load_prompt("history_summary").format(history=history)
+        ai = await model.ainvoke(prompt, config={"callbacks": ctx.callbacks})
+        text = text_from_content(ai.content).strip()
+        usage = getattr(ai, "usage_metadata", None) or {}
+        await ctx.recorder.finish_step(
+            step_id,
+            output={"summary": text},
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+        )
+        return text or None
+    except Exception as exc:  # noqa: BLE001 - fail-open by design (spec §7.5)
+        logger.warning("history_summary_failed", error=str(exc))
+        await ctx.recorder.finish_step(step_id, status="failed", error=str(exc))
+        return None
+
+
+def compose_task_with_summary(summary: str, task: str) -> str:
+    """The worker input shape (spec §7.5): summary block + verbatim request."""
+    return f"Conversation summary (context):\n{summary}\n\nCurrent request: {task}"
+
+
 async def record_direct_route(sub_agent_id: str) -> None:
     """One route step per direct run (spec §7.5) — recorded before the graph
     starts so HITL resume replays never duplicate it. Trace parity: the same

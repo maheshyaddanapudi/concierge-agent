@@ -108,6 +108,7 @@ export interface Run {
   status: RunStatus
   orchestrator_mode: 'graph' | 'agentic' | 'direct'
   target_sub_agent_id?: string | null
+  include_history_summary?: boolean
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null

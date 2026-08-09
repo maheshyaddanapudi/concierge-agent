@@ -53,6 +53,8 @@ class SubAgentInvoke(ApiModel):
 
     message: str
     conversation_id: Any | None = None
+    # §7.5 opt-in: requires conversation_id (422 without — no history exists)
+    include_history_summary: bool = False
 
 
 class ValidateResult(ApiModel):

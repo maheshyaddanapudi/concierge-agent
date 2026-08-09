@@ -640,6 +640,10 @@ export function ChatPage() {
   // direct invocation pin (spec §7.5): messages run against this sub agent,
   // planner bypassed; null = orchestrator (auto)
   const [targetId, setTargetId] = useState<string | null>(null)
+  // §7.5 opt-in history summary — only meaningful while pinned AND the
+  // conversation already has a completed run (the orchestrator always gets
+  // history; a first message has none to summarize)
+  const [includeSummary, setIncludeSummary] = useState(false)
   const { data: subAgents = [] } = useSubAgents()
   const exposedAgents = subAgents.filter(
     (a) => a.status === 'active' && a.direct_exposure && !a.deleted_at,
@@ -690,6 +694,7 @@ export function ChatPage() {
     const body: Record<string, unknown> = { message: text }
     if (conversationId) body.conversation_id = conversationId
     if (targetId) body.target_sub_agent_id = targetId
+    if (targetId && includeSummary && hasHistory) body.include_history_summary = true
     const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
     setConversationId(result.conversation_id)
     setLiveRunId(result.run_id)
@@ -731,6 +736,8 @@ export function ChatPage() {
   }
 
   const messages = detail?.messages ?? []
+  const hasHistory = detail?.runs.some((r) => r.status === 'completed') ?? false
+  const showSummaryOption = targetId !== null && hasHistory
 
   return (
     <div className="flex h-full">
@@ -800,6 +807,7 @@ export function ChatPage() {
                 {direct && (
                   <div className="mt-0.5 px-1 font-mono text-[9px] uppercase tracking-wider text-accent-400/80">
                     → {agentName(run?.target_sub_agent_id)} · direct
+                    {run?.include_history_summary ? ' · +ctx' : ''}
                   </div>
                 )}
               </div>
@@ -869,6 +877,20 @@ export function ChatPage() {
               <span className="rounded-full border border-accent-500/40 bg-accent-500/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-accent-300">
                 → {agentName(targetId)} · direct
               </span>
+            )}
+            {showSummaryOption && (
+              <label
+                className="flex cursor-pointer items-center gap-1.5 font-mono text-[9px] uppercase tracking-widest text-slate-400"
+                title="one summarization call compresses this conversation into the pinned agent's context — off = the agent sees only your message (spec §7.5)"
+              >
+                <input
+                  type="checkbox"
+                  checked={includeSummary}
+                  onChange={(e) => setIncludeSummary(e.target.checked)}
+                  className="size-3 accent-[var(--color-accent-400,#2dd4bf)]"
+                />
+                include chat summary
+              </label>
             )}
           </div>
           <div className="flex items-end gap-2">

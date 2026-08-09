@@ -39,6 +39,7 @@ async def create_run(
     message: str,
     mode: str | None = None,
     target_sub_agent_id: UUID | None = None,
+    include_history_summary: bool = False,
 ) -> Run:
     async with get_session_factory()() as session:
         if conversation_id is None:
@@ -57,6 +58,7 @@ async def create_run(
             status="running",
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
             target_sub_agent_id=target_sub_agent_id,
+            include_history_summary=include_history_summary,
         )
         session.add(run)
         await session.commit()
@@ -79,6 +81,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         task_text = run.chat_message
         conversation_id = run.conversation_id
         target_sub_agent_id = run.target_sub_agent_id
+        include_history_summary = run.include_history_summary
     settings = await load_settings_snapshot()
     recorder = RunRecorder(run_id)
     ctx = RunContext(
@@ -99,7 +102,14 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
     started = datetime.now(UTC)
     try:
         if mode == "direct":
-            outcome = await _run_direct(ctx, task_text, target_sub_agent_id, resume)
+            outcome = await _run_direct(
+                ctx,
+                task_text,
+                target_sub_agent_id,
+                resume,
+                conversation_id=conversation_id,
+                include_history_summary=include_history_summary,
+            )
         elif mode == "agentic":
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
         else:
@@ -338,6 +348,9 @@ async def _run_direct(
     task_text: str,
     target_sub_agent_id: UUID | None,
     resume: dict[str, Any] | None,
+    *,
+    conversation_id: UUID | None = None,
+    include_history_summary: bool = False,
 ) -> dict[str, Any]:
     """Direct sub-agent invocation (spec §7.5): a one-node graph on the run's
     checkpointer thread so worker HITL pauses/resumes exactly like graph-mode
@@ -346,7 +359,9 @@ async def _run_direct(
         DirectInvokeError,
         build_direct_graph,
         check_direct_invokable,
+        compose_task_with_summary,
         record_direct_route,
+        summarize_history,
     )
 
     if target_sub_agent_id is None:
@@ -368,7 +383,15 @@ async def _run_direct(
         except DirectInvokeError as exc:
             raise RunFailed(str(exc)) from exc
         await record_direct_route(str(target_sub_agent_id))
-        graph_input = {"task": task_text, "sub_agent_id": str(target_sub_agent_id)}
+        worker_task = task_text
+        if include_history_summary and conversation_id is not None:
+            # §7.5 opt-in: one summarization call, then summary + verbatim ask.
+            # The composed task is checkpointed with the graph state, so HITL
+            # resume never re-summarizes.
+            summary = await summarize_history(conversation_id)
+            if summary:
+                worker_task = compose_task_with_summary(summary, task_text)
+        graph_input = {"task": worker_task, "sub_agent_id": str(target_sub_agent_id)}
     from typing import cast
 
     from langchain_core.runnables import RunnableConfig
@@ -490,10 +513,18 @@ async def retry_run(run_id: UUID) -> Run:
             raise ValueError("only failed runs can be retried")
         conversation_id = run.conversation_id
         message = run.chat_message
-        # a direct run retries as a direct run — the pin is part of the ask
+        # a direct run retries as a direct run — the pin (and its summary
+        # opt-in) is part of the ask
         mode = run.orchestrator_mode if run.orchestrator_mode == "direct" else None
         target = run.target_sub_agent_id
-    new_run = await create_run(conversation_id, message, mode=mode, target_sub_agent_id=target)
+        with_summary = run.include_history_summary
+    new_run = await create_run(
+        conversation_id,
+        message,
+        mode=mode,
+        target_sub_agent_id=target,
+        include_history_summary=with_summary,
+    )
     start_run_task(new_run.id)
     return new_run
 
