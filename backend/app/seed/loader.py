@@ -23,6 +23,13 @@ logger = structlog.get_logger("seed")
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "native" / "skills"
 AGENTS_DIR = Path(__file__).resolve().parents[1] / "native" / "sub_agents"
+# skill names seed_sub_agents composes research-concierge from (spec §9): a
+# missing one aborts boot, so app.doclint enforces their presence in the
+# shipped skills directory
+REQUIRED_STATIC_SKILLS = ("web-research", "file-ops")
+# the static sub-agent name seed_sub_agents owns; an .agent.md claiming it
+# would fight the code path for the same registry row
+STATIC_SEED_AGENT_NAMES = ("research-concierge",)
 
 
 async def seed_mcp_servers(session: AsyncSession) -> None:
@@ -147,8 +154,13 @@ async def seed_sub_agents(session: AsyncSession) -> None:
     }
     research = skills.get("web-research")
     file_ops = skills.get("file-ops")
-    if research is None or file_ops is None:  # pragma: no cover - seed order bug
-        raise RuntimeError("native skills must be seeded before sub agents")
+    if research is None or file_ops is None:
+        # reachable from a lint-clean skills directory if someone renames or
+        # deletes one of these files — app.doclint guards the shipped dir so
+        # the build fails before an image can crash at boot here
+        raise RuntimeError(
+            "static seed requires the skills " + ", ".join(sorted(REQUIRED_STATIC_SKILLS))
+        )
     workflow = {
         "nodes": [
             {"id": "research", "type": "skill", "skill_id": str(research.id)},

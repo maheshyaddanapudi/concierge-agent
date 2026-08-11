@@ -105,7 +105,7 @@ class TestFormGates:
             "edges": [{"from": "START", "to": "g"}, {"from": "g", "to": "END"}],
         }
         errors = validate_workflow(bad, set())
-        assert any("choice needs >=2 options" in e for e in errors)
+        assert any("options' list with >=2" in e for e in errors)
         assert any("ids must be unique" in e for e in errors)
         assert any("non-empty 'id'" in e for e in errors)
 

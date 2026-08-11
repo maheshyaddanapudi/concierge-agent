@@ -191,7 +191,7 @@ class TestAgentErrors:
             "    - { id: w, type: skill, skill: s1 }\n"
             "    - id: gate\n"
             "      type: hitl\n"
-            "      prompt: ok?\n"
+            "      prompt: 'ok?'\n"
             "      questions:\n"
             "        - { id: q1, kind: choice, prompt: pick, options: [only-one] }\n"
             "  edges:\n"
@@ -201,7 +201,7 @@ class TestAgentErrors:
             "---\n"
         )
         errors, _ = lint_all(skills, agents)
-        assert any("choice needs >=2 options" in e for e in errors)
+        assert any("options' list with >=2" in e for e in errors)
 
     def test_duplicate_agent_names(self, tmp_path: Path) -> None:
         skills, agents = tmp_path / "s", tmp_path / "a"
@@ -210,6 +210,160 @@ class TestAgentErrors:
         (agents / "clone.agent.md").write_text(AGENT.format(name="a1", skill="s1", extra=""))
         errors, _ = lint_all(skills, agents)
         assert any("duplicate agent name" in e for e in errors)
+
+
+class TestAdversarialHoles:
+    """Each case was confirmed live against a scratch Postgres by the M12b
+    adversarial audit: the document linted clean, then broke the seed."""
+
+    def test_required_static_skills_guarded_in_shipped_tree(self, tmp_path: Path) -> None:
+        # renaming web-research.skill.md lints clean but aborts boot, because
+        # seed_sub_agents composes research-concierge from it by name
+        from app.doclint import lint_all as _lint
+        from app.seed.loader import REQUIRED_STATIC_SKILLS, SKILLS_DIR
+
+        errors, _ = _lint(SKILLS_DIR, tmp_path)
+        assert errors == []  # the real tree has them
+        assert set(REQUIRED_STATIC_SKILLS) <= {p.stem.removesuffix(".skill") for p in
+                                               SKILLS_DIR.glob("*.skill.md")}
+        # an arbitrary directory is NOT held to the shipped contract
+        write_skill(tmp_path / "s", "unrelated")
+        errors, _ = _lint(tmp_path / "s", tmp_path / "a")
+        assert errors == []
+
+    def test_name_exceeding_registry_column(self, tmp_path: Path) -> None:
+        (tmp_path / "long.skill.md").write_text(
+            f"---\nname: {'x' * 300}\ndescription: d\npersona: p\ntools: []\n---\nbody"
+        )
+        errors, _, _ = lint_skills(tmp_path)
+        assert any("registry column is 255" in e for e in errors)
+
+    def test_control_characters_in_name(self, tmp_path: Path) -> None:
+        (tmp_path / "nul.skill.md").write_text(
+            '---\nname: "bad\\0name"\ndescription: d\npersona: p\ntools: []\n---\nbody'
+        )
+        errors, _, _ = lint_skills(tmp_path)
+        assert any("control characters" in e for e in errors)
+
+    def test_bool_max_tool_iterations_rejected(self, tmp_path: Path) -> None:
+        # isinstance(True, int) — a YAML bool used to seed a budget of 1
+        (tmp_path / "b.skill.md").write_text(
+            "---\nname: b\ndescription: d\npersona: p\ntools: []\n"
+            "max_tool_iterations: true\n---\nbody"
+        )
+        errors, _, _ = lint_skills(tmp_path)
+        assert any("max_tool_iterations" in e for e in errors)
+
+    def test_int32_overflow_max_tool_iterations(self, tmp_path: Path) -> None:
+        (tmp_path / "o.skill.md").write_text(
+            "---\nname: o\ndescription: d\npersona: p\ntools: []\n"
+            "max_tool_iterations: 10000000000\n---\nbody"
+        )
+        errors, _, _ = lint_skills(tmp_path)
+        assert any("INTEGER column" in e for e in errors)
+
+    def test_non_scalar_prose_and_quoted_bool(self, tmp_path: Path) -> None:
+        (tmp_path / "p.skill.md").write_text(
+            "---\nname: p\ndescription:\n  short: s\n  long: l\n"
+            "persona:\n  - line one\n  - line two\n"
+            'direct_exposure: "false"\ntools: []\n---\nbody'
+        )
+        errors, _, _ = lint_skills(tmp_path)
+        joined = " ".join(errors)
+        assert "'description' must be a string" in joined
+        assert "'persona' must be a string" in joined
+        assert "must be a YAML boolean" in joined
+
+    def test_skill_ref_on_non_skill_node(self, tmp_path: Path) -> None:
+        """The seed pops `skill` off ANY node, so a dangling ref on a hitl
+        node errors the row — the linter used to only look at skill nodes."""
+        skills, agents = tmp_path / "s", tmp_path / "a"
+        write_skill(skills, "s1")
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "x.agent.md").write_text(
+            "---\nname: x\ndescription: d\npersona: p\nworkflow:\n"
+            "  nodes:\n"
+            "    - { id: w, type: skill, skill: s1 }\n"
+            "    - { id: gate, type: hitl, prompt: 'ok?', skill: ghost }\n"
+            "  edges:\n"
+            "    - { from: START, to: w }\n"
+            "    - { from: w, to: gate }\n"
+            "    - { from: gate, to: END }\n"
+            "---\n"
+        )
+        errors, warnings = lint_all(skills, agents)
+        assert any("ghost" in e for e in errors)
+        assert any("the runtime ignores it" in w for w in warnings)
+
+    def test_agent_name_colliding_with_code_registered_agent(self, tmp_path: Path) -> None:
+        skills, agents = tmp_path / "s", tmp_path / "a"
+        write_skill(skills, "s1")
+        write_agent(agents, "workspace-warden")  # a @native_sub_agent name
+        errors, _ = lint_all(skills, agents)
+        assert any("already owned by a code-registered" in e for e in errors)
+
+        write_agent(agents, "research-concierge")  # the static seed's own
+        errors, _ = lint_all(skills, agents)
+        assert any("research-concierge" in e for e in errors)
+
+    def test_reserved_and_router_colliding_node_ids(self, tmp_path: Path) -> None:
+        skills, agents = tmp_path / "s", tmp_path / "a"
+        write_skill(skills, "s1")
+        agents.mkdir(parents=True, exist_ok=True)
+        for bad_id in ("__start__", "__route__w"):
+            (agents / "r.agent.md").write_text(
+                "---\nname: r\ndescription: d\npersona: p\nworkflow:\n"
+                "  nodes:\n"
+                "    - { id: w, type: skill, skill: s1 }\n"
+                f"    - {{ id: {bad_id}, type: skill, skill: s1 }}\n"
+                "  edges:\n"
+                "    - { from: START, to: w }\n"
+                f"    - {{ from: w, to: {bad_id} }}\n"
+                f"    - {{ from: {bad_id}, to: END }}\n"
+                "---\n"
+            )
+            errors, _ = lint_all(skills, agents)
+            assert any("reserved" in e for e in errors), f"{bad_id} must be rejected"
+
+    def test_choice_options_shapes(self, tmp_path: Path) -> None:
+        skills, agents = tmp_path / "s", tmp_path / "a"
+        write_skill(skills, "s1")
+        agents.mkdir(parents=True, exist_ok=True)
+
+        def gate_doc(options: str) -> str:
+            return (
+                "---\nname: g\ndescription: d\npersona: p\nworkflow:\n"
+                "  nodes:\n"
+                "    - { id: w, type: skill, skill: s1 }\n"
+                "    - id: gate\n      type: hitl\n      prompt: 'ok?'\n"
+                "      questions:\n"
+                f"        - {{ id: q, kind: choice, prompt: pick, options: {options} }}\n"
+                "  edges:\n"
+                "    - { from: START, to: w }\n"
+                "    - { from: w, to: gate }\n"
+                "    - { from: gate, to: END }\n"
+                "---\n"
+            )
+
+        # scalar string: len('yes') >= 2 used to pass the old length check
+        (agents / "g.agent.md").write_text(gate_doc("yes"))
+        errors, _ = lint_all(skills, agents)
+        assert any("options' list with >=2" in e for e in errors)
+
+        # YAML 1.1 reads these as booleans → blank, indistinguishable chips
+        (agents / "g.agent.md").write_text(gate_doc("[yes, no]"))
+        errors, _ = lint_all(skills, agents)
+        assert any("YAML reads them" in e for e in errors)
+
+        # duplicates render two identical chips
+        (agents / "g.agent.md").write_text(gate_doc("['a', 'a']"))
+        errors, _ = lint_all(skills, agents)
+        assert any("duplicate choice options" in e for e in errors)
+
+        # the correct form still passes
+        (agents / "g.agent.md").write_text(gate_doc("['yes', 'no']"))
+        errors, _ = lint_all(skills, agents)
+        assert errors == []
 
 
 class TestCli:

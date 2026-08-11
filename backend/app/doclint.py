@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from app.agentdoc import AgentDocError, parse_agent_document, skill_name_refs
+from app.agentdoc import AgentDocError, parse_agent_document
 from app.factory.dag import validate_workflow
 from app.skilldoc import SkillDocError, parse_skill_document, validate_mentions
 
@@ -26,19 +26,60 @@ _KNOWN_AGENT_KEYS = {
 }
 _MODEL_REF_RE = re.compile(r"^[a-z][a-z0-9_]*:[A-Za-z0-9._\-]+$")
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---", re.DOTALL)
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+# registry columns the documents feed (spec §3): names are String(255) and
+# max_tool_iterations is a Postgres INTEGER — over-running either aborts the
+# seed transaction at boot, so the document must not be shippable
+_NAME_MAX = 255
+_INT32_MAX = 2_147_483_647
 
 
-def _frontmatter_keys(text: str) -> set[str]:
+def _frontmatter(text: str) -> dict[str, object]:
     import yaml
 
     match = _FRONTMATTER_RE.match(text)
     if not match:
-        return set()
+        return {}
     try:
         meta = yaml.safe_load(match.group(1)) or {}
     except yaml.YAMLError:
-        return set()
-    return set(meta) if isinstance(meta, dict) else set()
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _frontmatter_keys(text: str) -> set[str]:
+    return set(_frontmatter(text))
+
+
+def _name_errors(filename: str, name: str) -> list[str]:
+    out: list[str] = []
+    if len(name) > _NAME_MAX:
+        out.append(f"{filename}: name is {len(name)} chars; the registry column is {_NAME_MAX}")
+    if _CONTROL_CHARS_RE.search(name):
+        out.append(f"{filename}: name contains control characters (Postgres rejects NUL bytes)")
+    return out
+
+
+def _prose_errors(filename: str, raw: dict[str, object]) -> list[str]:
+    """description/persona are str()-coerced by the parsers, so a nested YAML
+    value would reach the registry as a Python repr — and the description is
+    what the planner routes on. direct_exposure is bool()-coerced, so the
+    string "false" would seed as EXPOSED, inverting the author's intent."""
+    out: list[str] = []
+    for key in ("description", "persona"):
+        value = raw.get(key)
+        if value is not None and not isinstance(value, str):
+            out.append(
+                f"{filename}: {key!r} must be a string — a {type(value).__name__} would be "
+                "stored as its Python repr"
+            )
+    exposure = raw.get("direct_exposure")
+    if exposure is not None and not isinstance(exposure, bool):
+        out.append(
+            f"{filename}: 'direct_exposure' must be a YAML boolean, not "
+            f"{type(exposure).__name__} — quoted \"false\" would seed as exposed"
+        )
+    return out
 
 
 def lint_skills(directory: Path) -> tuple[list[str], list[str], set[str]]:
@@ -55,6 +96,12 @@ def lint_skills(directory: Path) -> tuple[list[str], list[str], set[str]]:
         if doc.name in names:
             errors.append(f"{path.name}: duplicate skill name {doc.name!r}")
         names.add(doc.name)
+        errors.extend(_name_errors(path.name, doc.name))
+        errors.extend(_prose_errors(path.name, _frontmatter(text)))
+        if doc.max_tool_iterations is not None and doc.max_tool_iterations > _INT32_MAX:
+            errors.append(
+                f"{path.name}: max_tool_iterations exceeds the registry INTEGER column"
+            )
         for err in validate_mentions(doc.instructions, doc.tools):
             errors.append(f"{path.name}: {err}")
         for key in doc.tools:
@@ -76,10 +123,28 @@ def lint_skills(directory: Path) -> tuple[list[str], list[str], set[str]]:
     return errors, warnings, names
 
 
+def _reserved_agent_names() -> set[str]:
+    """Names owned by code: @native_sub_agent registrations plus the static
+    seed's own agent. Import failures degrade to the hardcoded set rather
+    than failing the lint over an unrelated import error."""
+    from app.seed.loader import STATIC_SEED_AGENT_NAMES
+
+    names = set(STATIC_SEED_AGENT_NAMES)
+    try:
+        from app.native.provider import native_sub_agents, scan_native
+
+        scan_native()
+        names |= set(native_sub_agents())
+    except Exception:  # noqa: BLE001 - lint must not die on an import problem
+        pass
+    return names
+
+
 def lint_agents(directory: Path, skill_names: set[str]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     seen: set[str] = set()
+    reserved_agent_names = _reserved_agent_names()
     for path in sorted(directory.glob("*.agent.md")) if directory.exists() else []:
         text = path.read_text(encoding="utf-8")
         try:
@@ -110,6 +175,13 @@ def lint_agents(directory: Path, skill_names: set[str]) -> tuple[list[str], list
                 errors.append(f"{path.name}: invalid model_params — {detail}")
         if doc.model_params is not None and doc.model is None:
             warnings.append(f"{path.name}: model_params set without an explicit model")
+        errors.extend(_name_errors(path.name, doc.name))
+        errors.extend(_prose_errors(path.name, _frontmatter(text)))
+        if doc.name in reserved_agent_names:
+            errors.append(
+                f"{path.name}: name {doc.name!r} is already owned by a code-registered or "
+                "static-seeded sub agent — the two would fight over one registry row"
+            )
         if path.name != f"{doc.name}.agent.md":
             warnings.append(f"{path.name}: filename does not match name {doc.name!r}")
         if not doc.persona.strip():
@@ -120,12 +192,25 @@ def lint_agents(directory: Path, skill_names: set[str]) -> tuple[list[str], list
         if unknown:
             warnings.append(f"{path.name}: unknown frontmatter keys {sorted(unknown)}")
         # resolve by-name refs against the scanned .skill.md set; uuid refs
-        # point at dynamic records and cannot be verified offline
-        for ref in skill_name_refs(doc.workflow):
-            if ref not in skill_names:
+        # point at dynamic records and cannot be verified offline. Collect
+        # from EVERY node, not just type='skill' ones — the seed pops `skill`
+        # off any node, so a stray ref on a hitl node still has to resolve
+        for node in doc.workflow["nodes"]:
+            if not isinstance(node, dict):
+                continue
+            ref = node.get("skill")
+            if ref is None:
+                continue
+            if not isinstance(ref, str) or ref not in skill_names:
                 errors.append(
-                    f"{path.name}: skill {ref!r} is not a scanned .skill.md — by-name "
-                    "references must resolve to static skill files"
+                    f"{path.name}: node {node.get('id')!r} references skill {ref!r}, which is "
+                    "not a scanned .skill.md — by-name references must resolve to static "
+                    "skill files"
+                )
+            if node.get("type") != "skill":
+                warnings.append(
+                    f"{path.name}: node {node.get('id')!r} is type "
+                    f"{node.get('type')!r} but declares a skill — the runtime ignores it"
                 )
         synthetic: dict[str, str] = {n: str(uuid4()) for n in skill_names}
         active_ids = set(synthetic.values())
@@ -160,7 +245,21 @@ def lint_agents(directory: Path, skill_names: set[str]) -> tuple[list[str], list
 def lint_all(skills_dir: Path, agents_dir: Path) -> tuple[list[str], list[str]]:
     skill_errors, skill_warnings, names = lint_skills(skills_dir)
     agent_errors, agent_warnings = lint_agents(agents_dir, names)
-    return skill_errors + agent_errors, skill_warnings + agent_warnings
+    errors = skill_errors + agent_errors
+    # the shipped skills directory additionally owes the seed the two skills
+    # research-concierge is composed from — renaming one lints clean and then
+    # aborts boot, so the shipped tree is held to a stricter contract than an
+    # arbitrary directory under test
+    from app.seed.loader import REQUIRED_STATIC_SKILLS, SKILLS_DIR
+
+    if skills_dir.resolve() == SKILLS_DIR.resolve():
+        for required in REQUIRED_STATIC_SKILLS:
+            if required not in names:
+                errors.append(
+                    f"skills directory is missing {required!r} — the static seed composes "
+                    "research-concierge from it and aborts boot without it"
+                )
+    return errors, skill_warnings + agent_warnings
 
 
 def main(argv: list[str]) -> int:
