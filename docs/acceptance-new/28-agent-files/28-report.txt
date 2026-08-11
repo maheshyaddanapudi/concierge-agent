@@ -1,0 +1,10 @@
+Stage 28 — declarative .agent.md static sub-agents (spec §3.4)
+
+registry: workspace-reporter kind=custom source=static status=active exposed=true provenance=file:workspace-reporter.agent.md
+workflow: audit → approve_report → write (skill nodes carry resolved uuids: true)
+gate run 4b25701e: completed mode=direct rungs=[custom_sub_agent] hitl_answers={"fmt":"markdown","extra":"Add a one-line recommendation at the end."}
+on disk:
+drwxr-xr-x 2 root root 4096 Aug  9 18:40 reports
+-rw-r--r-- 1 root root 3748 Aug 11 22:31 workspace-audit-report.md
+invoke-API run 97a637e8: completed mode=direct (deny path: no second report written)
+PART 28 COMPLETE — file-defined agent verified end to end
