@@ -22,6 +22,7 @@ from app.skilldoc import scan_skill_files
 logger = structlog.get_logger("seed")
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "native" / "skills"
+AGENTS_DIR = Path(__file__).resolve().parents[1] / "native" / "sub_agents"
 
 
 async def seed_mcp_servers(session: AsyncSession) -> None:
@@ -213,6 +214,113 @@ async def _resolve_covers(session: AsyncSession, covers: list[str]) -> list[str]
     return resolved
 
 
+async def seed_agent_files(session: AsyncSession, directory: Path | None = None) -> None:
+    """.agent.md scan → sub_agents registry (spec §3.4): declarative static
+    custom agents. Definition follows the file; user toggles survive reseeds;
+    invalid files land as status='error' (never crash boot, never vanish
+    silently); removed files mark their rows inactive."""
+    from app.agentdoc import scan_agent_files
+    from app.factory.dag import validate_workflow
+    from app.factory.worker import compile_workflow_check
+
+    docs, parse_errors = scan_agent_files(directory or AGENTS_DIR)
+    for err in parse_errors:
+        logger.error("agent_file_unparseable", error=err)
+
+    active_skills = {
+        s.name: s
+        for s in (
+            await session.execute(
+                select(Skill).where(Skill.status == "active", Skill.deleted_at.is_(None))
+            )
+        ).scalars()
+    }
+    seen_refs: set[str] = set()
+    for doc in docs:
+        ref = f"file:{doc.filename}"
+        seen_refs.add(ref)
+        errors: list[str] = []
+        # by-name sugar → registry uuids; the stored workflow is pure §3.5
+        workflow: dict[str, Any] = {"nodes": [], "edges": list(doc.workflow["edges"])}
+        for node in doc.workflow["nodes"]:
+            node = dict(node)
+            skill_name = node.pop("skill", None)
+            if skill_name is not None:
+                skill = active_skills.get(str(skill_name))
+                if skill is None:
+                    errors.append(f"skill {skill_name!r} is not an active registry skill")
+                else:
+                    node["skill_id"] = str(skill.id)
+            workflow["nodes"].append(node)
+        if not errors:
+            active_ids = {str(s.id) for s in active_skills.values()}
+            errors = validate_workflow(workflow, active_ids)
+        if not errors:
+            errors = await compile_workflow_check(
+                session, workflow, persona=doc.persona, model=doc.model,
+                model_params=doc.model_params,
+            )
+        if errors:
+            logger.error("agent_file_invalid", file=doc.filename, errors=errors)
+        by_id = {str(s.id): s for s in active_skills.values()}
+        node_skill_ids = {
+            str(nd["skill_id"]) for nd in workflow["nodes"] if nd.get("skill_id")
+        }
+        bound = [by_id[sid] for sid in sorted(node_skill_ids) if sid in by_id]
+        agent = (
+            await session.execute(
+                select(SubAgent).where(SubAgent.name == doc.name, SubAgent.source == "static")
+            )
+        ).scalar_one_or_none()
+        if agent is None:
+            session.add(
+                SubAgent(
+                    name=doc.name,
+                    description=doc.description,
+                    persona=doc.persona,
+                    model=doc.model,
+                    model_params=doc.model_params,
+                    workflow=workflow,
+                    kind="custom",
+                    source="static",
+                    native_ref=ref,
+                    direct_exposure=doc.direct_exposure,
+                    status="error" if errors else "active",
+                    skills=bound,
+                )
+            )
+        else:
+            # definition always follows the file; status/direct_exposure are
+            # the user's toggles — except error↔active transitions driven by
+            # the file's validity itself
+            agent.description = doc.description
+            agent.persona = doc.persona
+            agent.model = doc.model
+            agent.model_params = doc.model_params
+            agent.workflow = workflow
+            agent.native_ref = ref
+            agent.skills = bound
+            if errors:
+                agent.status = "error"
+            elif agent.status == "error":
+                agent.status = "active"
+    # a removed file deactivates its row — history stays intact, no deletes
+    file_rows = (
+        await session.execute(
+            select(SubAgent).where(
+                SubAgent.source == "static",
+                SubAgent.kind == "custom",
+                SubAgent.native_ref.like("file:%"),
+            )
+        )
+    ).scalars()
+    for row in file_rows:
+        if row.native_ref not in seen_refs and row.status != "inactive":
+            logger.warning("agent_file_removed", name=row.name, ref=row.native_ref)
+            row.status = "inactive"
+    await session.commit()
+
+
 async def upsert_native_sub_agents(session: AsyncSession) -> None:
     """Native sub agent cards from the @native_sub_agent scan (spec §3.4)."""
     for name, entry in native_sub_agents().items():
@@ -293,6 +401,7 @@ async def seed_all(session: AsyncSession) -> dict[str, int]:
     await upsert_native_tools(session)
     await seed_native_skills(session)
     await seed_sub_agents(session)
+    await seed_agent_files(session)
     await upsert_native_sub_agents(session)
     await resolve_first_boot_default_model(session)
     counts: dict[str, int] = {}

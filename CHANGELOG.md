@@ -32,6 +32,29 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
   the traced summary step, and both 422 gates — plus stages 25/26/12
   re-captured with the checkbox present.
 
+## M12 — Declarative .agent.md sub-agents — 2026-08-09
+
+### Added
+
+- **`.agent.md` (spec §3.4)**: a third authoring path onto the same
+  sub_agents registry row — YAML frontmatter (name, description, persona,
+  model/model_params, direct_exposure, §3.5 workflow) + a documentation
+  body. Skill nodes reference skills by NAME; the seed pass resolves them
+  to registry uuids, validates with the same structural + factory-compile
+  checks the API applies at save, and upserts keyed on (name, static) with
+  file provenance in native_ref.
+- **Lifecycle**: invalid files land as status='error' (UI-visible, logged,
+  never crash boot); a fixed file flips error→active; a removed file marks
+  its row inactive (never deletes); user status/direct_exposure toggles
+  survive reseeds while definition fields always follow the file.
+- **Seeded example**: workspace-reporter.agent.md — audit(workspace-auditor)
+  → form gate (report format + free-text addendum) → write(file-ops), with
+  an empty-workspace branch; ships direct_exposure=true, so every §7.5
+  surface works on a file-defined agent out of the box.
+- 9 tests: parser rejections, seed resolution + static rules + form-gate
+  direct invocation, and the full reseed lifecycle (toggle survival,
+  error→active recovery, file-removal deactivation, malformed-file skip).
+
 ## M10 — Direct sub-agent invocation — 2026-08-09
 
 ### Added
