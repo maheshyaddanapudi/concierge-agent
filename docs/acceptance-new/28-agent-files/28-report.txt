@@ -14,3 +14,15 @@ PART 28 COMPLETE — file-defined agent verified end to end
 graph routed run 34037231: completed mode=graph target_pin=none dispatched_to=workspace-reporter route_rung=custom_sub_agent hitl=1
 agentic routed run f228a219: completed mode=agentic target_pin=none dispatched_to=workspace-reporter route_rung=custom_sub_agent hitl=1
 PART 28b COMPLETE — file-defined agent reached via orchestrator in BOTH modes
+
+— 28c coexistence matrix (md agent present in registry) —
+workspace-warden direct: run 4bd00d19 completed mode=direct ✓
+workspace-warden × graph (routed): run 00a5ad6a completed pin=none ✓
+workspace-warden × agentic (routed): run d69ac245 completed pin=none ✓
+research-concierge direct: run be840818 completed mode=direct ✓
+research-concierge × graph (routed): run cfacb9fe completed pin=none ✓
+research-concierge × agentic (routed): run d9e99503 completed pin=none ✓
+site-analyst direct (unexposed) → 403 ✓ (gating intact)
+site-analyst × graph (routed): run 6dfbde09 completed pin=none ✓
+site-analyst × agentic (routed): run dcd65c13 completed pin=none ✓
+PART 28c COMPLETE — every sub-agent kind verified alongside the md-defined agent
