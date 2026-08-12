@@ -41,7 +41,7 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 |---|---|---|---|
 | `orchestrator_mode` | `"graph"` \| `"agentic"` | `"graph"` | Mode stamped onto each new run at creation (`runner.create_run`); graph = plan→resolve→dispatch→aggregate StateGraph, agentic = single `create_agent` concierge |
 | `orchestrator_full_fallback_enabled` | bool | `true` | Enables the self-service full-catalog fallback when routing fails (`graph_mode.py`) |
-| `dynamic_worker_fallback_enabled` | bool | `true` | Allows rung-4 ephemeral dynamic workers in the resolution ladder (`ladder.py`) |
+| `dynamic_worker_fallback_enabled` | bool | `true` | Allows rung-4 ephemeral dynamic workers in the resolution ladder (`ladder.py`). They compose `direct_exposure=true` skills only, whatever this is set to |
 
 ### Models
 

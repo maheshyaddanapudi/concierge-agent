@@ -340,12 +340,20 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
         lines: list[str] = []
         for tool in tools:
             snap = self._current[tool.name]
-            # the registry id is part of the catalog line: spin_worker's
-            # contract is ids-only, so the model must be able to quote them
-            lines.append(
-                f"- {tool.name} (skill id: {snap.get('id')}): "
-                f"{snap.get('description') or snap['name']}"
-            )
+            desc = snap.get("description") or snap["name"]
+            if snap.get("direct_exposure"):
+                # the registry id is part of the catalog line: spin_worker's
+                # contract is ids-only, so the model must be able to quote them
+                lines.append(f"- {tool.name} (skill id: {snap.get('id')}): {desc}")
+            else:
+                # only the full-catalog fallback surfaces a non-exposed skill,
+                # and only to run it inline, in the open (spec §7.0). It is not
+                # composable into an ephemeral worker (§7.1 rung 4), so the line
+                # withholds the id spin_worker would need to quote.
+                lines.append(
+                    f"- {tool.name} (fallback only — call it directly; it cannot be "
+                    f"composed into an ephemeral worker): {desc}"
+                )
         if len(tools) < self._catalog_total:
             # spec §7.4: a ranked slice must announce itself
             lines.append(catalog_footer("skills", len(tools), self._catalog_total))
