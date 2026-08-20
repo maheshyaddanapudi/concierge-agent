@@ -351,6 +351,9 @@ async def gate_candidates(
 async def _near_duplicate(
     text: str, scope: str, kind: str, conversation_id: UUID | None
 ) -> UUID | None:
+    """True-cosine near-duplicate check against the top hybrid hit (the RRF
+    relevance is rank-normalized — the top hit is always 1.0 — so it must
+    never gate); exact normalized-text equality is the lexical fallback."""
     from app.memory.rank import recall
 
     hits = await recall(
@@ -365,11 +368,23 @@ async def _near_duplicate(
     if not hits:
         return None
     top = hits[0]
-    if top.relevance >= GATE_DUP_COSINE:
-        return top.memory.id
-    # lexical fallback: exact normalized match
     if top.memory.text.lower() == text.lower():
         return top.memory.id
+    try:
+        from app.retrieval import _query_vector, cosine
+
+        qvec = await _query_vector(text)
+        if qvec is None:
+            return None
+        key = await active_model_key()
+        if key is None:
+            return None
+        async with get_session_factory()() as session:
+            row = await session.get(MemoryEmbedding, (top.memory.id, "memories", key))
+        if row is not None and cosine(qvec, list(row.embedding)) >= GATE_DUP_COSINE:
+            return top.memory.id
+    except Exception as exc:  # noqa: BLE001 — the gate stays deterministic-safe
+        logger.warning("memory_dup_check_failed", error=str(exc))
     return None
 
 
