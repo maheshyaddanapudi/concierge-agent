@@ -101,6 +101,8 @@ class RunContext:
     # retrieval (spec §7.4): the ranking query + ids pinned past ranking
     query_text: str = ""
     pinned_ids: set[str] = field(default_factory=set)
+    # §16.5: exemplars injected into this run's planner (vote lifecycle)
+    used_exemplar_ids: list[Any] = field(default_factory=list)
 
     def next_worker_callsign(self) -> str:
         n = self.worker_count

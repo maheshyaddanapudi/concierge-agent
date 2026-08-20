@@ -131,7 +131,10 @@ async def remember(
 ) -> Memory:
     """Insert one memory row under the §16.2 rules. Raises MemoryWriteError."""
     _validate(kind, scope, source)
-    if source in MACHINE_SOURCES and run_id is None:
+    # inferred memories may cite other memories instead of a run — the
+    # evidence list IS their provenance (spec §16.2 reflection)
+    cites_evidence = source == "inferred" and bool(payload and payload.get("evidence"))
+    if source in MACHINE_SOURCES and run_id is None and not cites_evidence:
         raise MemoryWriteError(f"source '{source}' requires provenance (run_id)")
     if scope == "conversation" and conversation_id is None:
         raise MemoryWriteError("scope 'conversation' requires conversation_id")

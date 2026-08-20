@@ -195,7 +195,15 @@ async def run_planner(
         conversation_id=ctx.conversation_id if ctx else None,
         surface="planner",
     )
-    prompt = build_planner_prompt(task, history, summaries, max_plan_steps, memory_block)
+    # §16.5: budgeted "what worked before" few-shots + vote-lifecycle tracking
+    from app.memory.procedural import exemplar_block
+
+    exemplars, exemplar_ids = await exemplar_block(task)
+    if ctx is not None and exemplar_ids:
+        ctx.used_exemplar_ids = list(exemplar_ids)
+    prompt = build_planner_prompt(
+        task, history, summaries, max_plan_steps, memory_block + exemplars
+    )
     structured = model.with_structured_output(PlannerOutput, include_raw=True)
     raw_outputs: list[Any] = []
     usage = {"input_tokens": 0, "output_tokens": 0}

@@ -20,10 +20,14 @@ _POST_RUN_DEBOUNCE_S = 1.0
 # advisory-lock namespace (spec §16.2): classid fixed, objid per job class
 _LOCK_CLASSID = 42016
 
-# M15 extraction; M17 adds periodic jobs
+# M15 extraction + M16 procedural learning; M17 adds periodic jobs
 from app.memory.extract import post_run_extract  # noqa: E402
+from app.memory.procedural import post_run_procedural  # noqa: E402
 
-POST_RUN_EXTRA: list[Callable[[UUID], Awaitable[None]]] = [post_run_extract]
+POST_RUN_EXTRA: list[Callable[[UUID], Awaitable[None]]] = [
+    post_run_extract,
+    post_run_procedural,
+]
 
 
 def on_run_completed(run_id: UUID) -> None:

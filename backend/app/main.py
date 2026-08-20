@@ -58,7 +58,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     startup_task = asyncio.create_task(manager.start())
     # retrieval (spec §7.4): embed stale records without blocking readiness
     backfill_task = asyncio.create_task(backfill_embeddings())
+    # memory consolidation loop (spec §16.2) — cheap ticks when memory is off
+    from app.memory.lifecycle import run_periodic_loop
+
+    memory_stop = asyncio.Event()
+    memory_loop_task = asyncio.create_task(run_periodic_loop(memory_stop))
     yield
+    memory_stop.set()
+    memory_loop_task.cancel()
+    from app.memory.scheduler import shutdown as memory_shutdown
+
+    memory_shutdown()
     backfill_task.cancel()
     await get_cache().stop_listener()
     startup_task.cancel()
