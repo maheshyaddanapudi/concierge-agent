@@ -121,7 +121,44 @@ about your dog, Biscuit" — the forbid rule now targets actual transplantation
 
 ## 4. M16 measured goal — fallback rate with procedural learning
 
-<!-- FALLBACK_RESULTS -->
+**Design** (`experiments/memory/fallback_experiment.py`): warm plan exemplars
+with two successful direct-phrased asks that route to sub agents
+(site-analyst → `custom_sub_agent`, workspace-warden → `native_sub_agent`),
+then send indirect paraphrases — the stage-30 shape that fell back — with
+procedural learning OFF vs ON and compare route rungs. Extraction stays off
+to isolate the L3 effect.
+
+**Result: the effect was not measurable, for two instructive reasons.**
+
+| round | asks | fallback OFF | fallback ON |
+|---|---|---|---|
+| 1 | indirect, some capability words ("site notes", "workspace") | 0/3 | 0/3 |
+| 2 | oblique, zero capability words ("line 3 walkthrough", "field visit") | 0/3 | 0/3 |
+
+- **Round 1:** the router never failed. `claude-sonnet-4-6` over the seeded
+  registry descriptions routed every indirect paraphrase to the right sub
+  agent without exemplar help. The stage-30 fallback finding did not
+  reproduce under these conditions — the control arm has nothing for L3 to
+  fix.
+- **Round 2 (the interesting one):** the two obliquest asks produced
+  `rungs=[]` in *both* arms — **no routing happened at all**. The planner
+  answered directly from the injected episodic digests of the warm-up runs,
+  citing memory ids and reproducing the specifics correctly (vibration
+  2.1 mm/s, part SC-118, pending PLC firmware). The asks designed to confuse
+  the router never reached the router: **L1 episodic memory absorbed the
+  re-asks upstream of L3's target problem.** Fallback-prone indirect asks
+  are typically *re*-asks about prior work — and prior work is exactly what
+  digests cover.
+
+**Conclusion:** the L3 exemplar mechanism is implemented and exercised
+(both warm-ups harvested exemplars; recall, voting, and fallback→mined-skill
+clustering are covered by the unit suite), but on this catalog its
+end-to-end effect is masked — first by a router that doesn't fail on
+paraphrases, then by episodic injection answering repeat asks before routing
+begins. This *strengthens* the F4 recommendation: procedural learning is a
+targeted layer for catalogs/models where routing demonstrably fails, not a
+default-on layer. The layer to reach for first is episodic+semantic — it
+removed the failure class this experiment went looking for.
 
 ## 5. Defects found *by* the experiment (fixed on this branch)
 
