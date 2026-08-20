@@ -74,21 +74,31 @@ async def build_memory_block(
             floor=floor,
         )
         pinned_ids = {m.id for m in pinned}
+        # approved standing instructions get their own labeled section: they
+        # earned activation through review (or explicit user statement) and,
+        # unlike remembered facts, are meant to steer behavior (spec §16.3)
+        instr_lines = [
+            f"- [{str(h.memory.id)[:8]}] {h.memory.text}"
+            for h in hits
+            if h.memory.kind == "instruction" and h.memory.id not in pinned_ids
+        ]
         mem_lines = [
             f"- [{h.memory.kind} {str(h.memory.id)[:8]} score={h.score:.2f}] {h.memory.text}"
             for h in hits
-            if h.memory.id not in pinned_ids
+            if h.memory.id not in pinned_ids and h.memory.kind != "instruction"
         ]
 
         episodes = await recall_digests(query, k=3, exclude_conversation_id=conversation_id)
         epi_lines = [f"- [episode {str(d.id)[:8]} score={s:.2f}] {d.text}" for d, s in episodes]
 
-        # spend the main budget on memories first, then episodes
-        mem_lines = _clip(mem_lines, budget)
-        used = sum(max(len(x) // _CHARS_PER_TOKEN, 1) for x in mem_lines)
+        # spend the main budget on instructions, then memories, then episodes
+        instr_lines = _clip(instr_lines, budget)
+        used = sum(max(len(x) // _CHARS_PER_TOKEN, 1) for x in instr_lines)
+        mem_lines = _clip(mem_lines, max(budget - used, 0))
+        used += sum(max(len(x) // _CHARS_PER_TOKEN, 1) for x in mem_lines)
         epi_lines = _clip(epi_lines, max(budget - used, 0))
 
-        if not pinned_lines and not mem_lines and not epi_lines:
+        if not pinned_lines and not instr_lines and not mem_lines and not epi_lines:
             return "", stats
 
         from app.prompts import load_prompt
@@ -98,6 +108,11 @@ async def build_memory_block(
 
         block = load_prompt("memory_block").format(
             pinned_section=section("Pinned profile", pinned_lines),
+            instructions_section=section(
+                "Approved standing instructions (the user approved these — follow them "
+                "unless the current request overrides)",
+                instr_lines,
+            ),
             memories_section=section("Relevant memories", mem_lines),
             episodes_section=section("Similar past episodes (other conversations)", epi_lines),
         )

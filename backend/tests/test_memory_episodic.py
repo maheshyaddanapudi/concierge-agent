@@ -315,3 +315,20 @@ async def test_job_lock_exclusive_across_sessions() -> None:
         await release_job_lock(s1, 7)
         assert await acquire_job_lock(s2, 7) is True
         await release_job_lock(s2, 7)
+
+
+async def test_block_approved_instructions_get_their_own_section() -> None:
+    await _enable()
+    await remember(
+        text="always mention the runbook when deploys come up",
+        kind="instruction",
+        source="user_stated",
+    )
+    await remember(text="the deploy runbook lives in the wiki", kind="fact", source="user_stated")
+    block, _ = await build_memory_block(
+        "how should I handle the deploy", conversation_id=None, surface="planner"
+    )
+    assert "Approved standing instructions" in block
+    assert "always mention the runbook" in block
+    # facts stay under the data fence, not the instructions header
+    assert block.index("never invent a remembered fact") < block.index("Approved standing")

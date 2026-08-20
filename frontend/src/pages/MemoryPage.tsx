@@ -247,8 +247,8 @@ export function MemoryPage() {
   const [newKind, setNewKind] = useState('fact')
   const invalidate = useInvalidate()
 
-  const storeFilters = useMemo(
-    () => (tab === 'review' ? { status: 'quarantined' } : { kind, status, q }),
+  const storeFilters = useMemo<Record<string, string>>(
+    () => (tab === 'review' ? { status: 'quarantined', kind: '', q: '' } : { kind, status, q }),
     [tab, kind, status, q],
   )
   const { data: rows = [] } = useMemories(storeFilters)
