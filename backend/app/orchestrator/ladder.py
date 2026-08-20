@@ -171,6 +171,19 @@ async def _dynamic_resolution(skill_ids: list[str]) -> Resolution:
         skill = await cache.skill_by_id(sid)
         if skill is None or skill["status"] != "active":
             raise ResolutionError(f"skill {sid} is not active")
+        if not skill["direct_exposure"]:
+            # ephemeral workers compose EXPOSED skills only (spec §7.1 rung 4).
+            # A hidden skill has exactly two sanctioned routes: a sub agent that
+            # owns it (rungs 2-3, reached above), or the full-catalog fallback
+            # (§7.0), which runs it inline, in the open, with its own route step
+            # and chat banner. Without this check a run that engaged the
+            # fallback could learn a hidden skill's id and then launder it
+            # through spin_worker into an ephemeral worker.
+            raise ResolutionError(
+                f"skill {skill['name']!r} is not exposed to the orchestrator, so it cannot "
+                "be composed into an ephemeral worker; reach it through a sub agent that "
+                "owns it, or with use_full_catalog, which runs it inline"
+            )
         snaps.append(skill)
     if not snaps:
         raise ResolutionError("spin_worker needs at least one skill")

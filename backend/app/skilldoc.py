@@ -48,7 +48,11 @@ def parse_skill_document(text: str) -> SkillDoc:
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise SkillDocError("'tools' must be a list of tool_key strings")
     max_iter = meta.get("max_tool_iterations")
-    if max_iter is not None and (not isinstance(max_iter, int) or max_iter < 1):
+    # isinstance(True, int) is True and True >= 1 — a YAML bool would slip
+    # through and seed a loop budget of exactly one tool call
+    if max_iter is not None and (
+        isinstance(max_iter, bool) or not isinstance(max_iter, int) or max_iter < 1
+    ):
         raise SkillDocError("'max_tool_iterations' must be a positive integer")
     return SkillDoc(
         name=name.strip(),

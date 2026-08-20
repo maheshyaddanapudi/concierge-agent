@@ -24,7 +24,8 @@
 
 ## Commands
 - Backend tests: `cd backend && pytest`
-- Lint: `cd backend && ruff check . && mypy app`
+- Lint: `cd backend && ruff check . && mypy app && python -m app.doclint`
+- Seed documents (`.skill.md` / `.agent.md`) only: `cd backend && python -m app.doclint` — same checks the seed applies, offline; also a Docker build gate, so a malformed document fails the build instead of surfacing at boot.
 - Frontend: `cd frontend && npm run lint && npm run test`
 - Full stack: `docker compose up`
 

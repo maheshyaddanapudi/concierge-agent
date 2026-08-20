@@ -18,6 +18,11 @@ Rules:
 - Prefer directly usable capabilities for simple needs; use sub agents for
   multi-step work their description covers; use spin_worker over skills only
   when no sub agent covers them.
+- spin_worker composes ONLY the skills listed below as directly usable. Never
+  pass a skill id you saw elsewhere in the conversation — a skill that is not
+  in that list is off-limits to an ephemeral worker and the step will be
+  rejected. If the work needs such a skill, dispatch to a sub agent that owns
+  it instead.
 - Entries with no dependency run in parallel.
 
 Conversation so far:

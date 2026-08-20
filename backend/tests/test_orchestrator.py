@@ -300,12 +300,14 @@ class TestResolutionLadder:
         assert "custom_sub_agent" in route_rungs(run)
 
     async def test_rung4_ephemeral_dynamic_worker(self, client: AsyncClient) -> None:
-        skill = await create_skill(name=f"lonely-{uuid4().hex[:4]}")
+        # rung 4 is reached by NAMING skills (spec §7.1): the planner emits a
+        # spin_worker entry over exposed skills no sub agent covers
+        skill = await create_skill(name=f"lonely-{uuid4().hex[:4]}", direct_exposure=True)
         plan_call(
             entries=[
                 {
                     "id": "s1",
-                    "capability": {"type": "direct_skill", "id": str(skill.id)},
+                    "capability": {"type": "spin_worker", "skill_ids": [str(skill.id)]},
                     "task": "nobody covers this",
                     "depends_on": [],
                 }
@@ -414,6 +416,35 @@ class TestPlanRepairAndFailure:
         run = await wait_run(client, run_id, {"completed", "failed"})
         assert run["status"] == "completed"
         assert run["final_answer"] == "repaired fine"
+
+    async def test_spin_worker_over_hidden_skill_is_a_validation_error(self) -> None:
+        """spec §7.1 rung 4: plan validation rejects a spin_worker entry over a
+        non-exposed skill, so the planner gets a repair round instead of a
+        mid-run resolution failure."""
+        from app.db import get_session_factory
+        from app.orchestrator.planner import PlannerOutput, validate_plan
+
+        hidden = await create_skill(name=f"planhidden-{uuid4().hex[:6]}")
+        shown = await create_skill(name=f"planshown-{uuid4().hex[:6]}", direct_exposure=True)
+        plan = PlannerOutput.model_validate(
+            {
+                "entries": [
+                    {
+                        "id": "s1",
+                        "capability": {
+                            "type": "spin_worker",
+                            "skill_ids": [str(shown.id), str(hidden.id)],
+                        },
+                        "task": "t",
+                        "depends_on": [],
+                    }
+                ]
+            }
+        )
+        async with get_session_factory()() as session:
+            errors = await validate_plan(session, plan, 5)
+        assert any("not exposed to you" in e for e in errors)
+        assert not any(str(shown.id) in e for e in errors)
 
     async def test_invalid_twice_fails_with_raw_outputs(self, client: AsyncClient) -> None:
         bogus = str(uuid4())
@@ -1280,7 +1311,7 @@ class TestSpinWorkerStrictIds:
     async def test_dynamic_resolution_accepts_valid_uuid(self) -> None:
         from app.orchestrator.ladder import resolve_capability
 
-        skill = await create_skill(name=f"byid-{uuid4().hex[:6]}")
+        skill = await create_skill(name=f"byid-{uuid4().hex[:6]}", direct_exposure=True)
         res = await resolve_capability({"type": "spin_worker", "skill_ids": [str(skill.id)]})
         assert res.rung == "dynamic_worker"
         assert res.payload["skills"][0]["id"] == str(skill.id)
@@ -1335,6 +1366,118 @@ class TestSpinWorkerStrictIds:
 
         await mw.awrap_model_call(_Req(), handler)
         assert f"(skill id: {skill.id})" in seen["system"]
+
+
+class TestEphemeralWorkerExposureGate:
+    """spec §7.1 rung 4: an ephemeral worker composes EXPOSED skills only.
+    A hidden skill is reachable through a sub agent that owns it, or through
+    the full-catalog fallback which runs it inline in the open — never by
+    laundering its id into a worker the user was never shown."""
+
+    @staticmethod
+    def _capture_req() -> Any:
+        class _Req:
+            tools: list[Any] = []
+            system_message = None
+
+            def override(self, **kw: Any) -> Any:
+                req = _Req()
+                for key, value in kw.items():
+                    setattr(req, key, value)
+                return req
+
+        return _Req()
+
+    async def test_spin_worker_rejects_non_exposed_skill(self) -> None:
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        skill = await create_skill(name=f"hidden-{uuid4().hex[:6]}")
+        assert skill.direct_exposure is False
+        with pytest.raises(ResolutionError) as exc:
+            await resolve_capability({"type": "spin_worker", "skill_ids": [str(skill.id)]})
+        assert "not exposed" in str(exc.value)
+        assert "use_full_catalog" in str(exc.value)
+
+    async def test_spin_worker_rejects_a_mixed_batch(self) -> None:
+        """One hidden skill poisons the whole composition — no partial worker."""
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        ok = await create_skill(name=f"open-{uuid4().hex[:6]}", direct_exposure=True)
+        hidden = await create_skill(name=f"shut-{uuid4().hex[:6]}")
+        with pytest.raises(ResolutionError):
+            await resolve_capability(
+                {"type": "spin_worker", "skill_ids": [str(ok.id), str(hidden.id)]}
+            )
+
+    async def test_direct_skill_descent_never_spins_a_worker_for_hidden_skill(self) -> None:
+        """A hidden skill nobody covers used to fall through to rung 4. It now
+        stops with guidance instead of manufacturing a worker over it."""
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+
+        skill = await create_skill(name=f"uncovered-{uuid4().hex[:6]}")
+        with pytest.raises(ResolutionError) as exc:
+            await resolve_capability({"type": "direct_skill", "id": str(skill.id)})
+        assert "not exposed" in str(exc.value)
+
+    async def test_hidden_skill_still_reachable_through_its_sub_agent(self) -> None:
+        """The gate closes rung 4 only — rungs 2-3 remain the sanctioned route."""
+        from app.orchestrator.ladder import resolve_capability
+
+        skill = await create_skill(name=f"owned-{uuid4().hex[:6]}")
+        agent = await create_sub_agent(
+            {
+                "nodes": [{"id": "n", "type": "skill", "skill_id": str(skill.id)}],
+                "edges": [{"from": "START", "to": "n"}, {"from": "n", "to": "END"}],
+            },
+            name=f"owner-{uuid4().hex[:4]}",
+        )
+        res = await resolve_capability({"type": "direct_skill", "id": str(skill.id)})
+        assert res.rung == "custom_sub_agent"
+        assert res.entity_id == str(agent.id)
+
+    async def test_fallback_learned_id_cannot_be_laundered_into_a_worker(self) -> None:
+        """The escalation that reveals hidden ids does not widen what a worker
+        may compose: full_catalog is a read surface, not a grant."""
+        from app.orchestrator.context import RunContext, RunFlags, set_run_context
+        from app.orchestrator.ladder import ResolutionError, resolve_capability
+        from app.orchestrator.recorder import RunRecorder
+
+        run_id = uuid4()
+        set_run_context(
+            RunContext(
+                run_id=run_id,
+                mode="agentic",
+                recorder=RunRecorder(run_id),
+                settings={},
+                callbacks=[],
+                flags=RunFlags(full_catalog=True),
+            )
+        )
+        skill = await create_skill(name=f"laundered-{uuid4().hex[:6]}")
+        with pytest.raises(ResolutionError) as exc:
+            await resolve_capability({"type": "spin_worker", "skill_ids": [str(skill.id)]})
+        assert "not exposed" in str(exc.value)
+
+    async def test_full_catalog_line_withholds_the_id_of_a_hidden_skill(self) -> None:
+        """spin_worker's contract is ids-only, so the catalog simply does not
+        print an id the model is not allowed to compose (spec §7.1 rung 4)."""
+        from app.orchestrator.middleware import SkillsRegistryMiddleware
+
+        shown = await create_skill(name=f"shown-{uuid4().hex[:6]}", direct_exposure=True)
+        hidden = await create_skill(name=f"veiled-{uuid4().hex[:6]}")
+        mw = SkillsRegistryMiddleware(mode="full_catalog")
+        seen: dict[str, Any] = {}
+
+        async def handler(req: Any) -> str:
+            seen["system"] = req.system_message.text if req.system_message is not None else ""
+            return "ok"
+
+        await mw.awrap_model_call(self._capture_req(), handler)
+        system = seen["system"]
+        assert f"(skill id: {shown.id})" in system
+        assert str(hidden.id) not in system
+        assert hidden.name in system  # still callable inline — just not composable
+        assert "fallback only" in system
 
 
 class TestToolFailureContainment:
@@ -1544,8 +1687,8 @@ class TestLineageAndCallsigns:
                 callbacks=[],
             )
         )
-        s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}")
-        s2 = await create_skill(name=f"cs-two-{uuid4().hex[:4]}")
+        s1 = await create_skill(name=f"cs-one-{uuid4().hex[:4]}", direct_exposure=True)
+        s2 = await create_skill(name=f"cs-two-{uuid4().hex[:4]}", direct_exposure=True)
         r1 = await resolve_capability(
             {"type": "spin_worker", "skill_ids": [str(s1.id), str(s2.id)]}
         )

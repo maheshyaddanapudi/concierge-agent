@@ -426,8 +426,11 @@ async def _reload(skill: Skill) -> dict[str, Any]:
 
 
 class TestCompileAtSave:
-    async def test_compile_failure_rejected_at_save(self, client: Any) -> None:
-        """Structurally valid but uncompilable DAG → 422 (spec §6)."""
+    async def test_router_namespace_collision_rejected_at_save(self, client: Any) -> None:
+        """A node id colliding with the factory's synthesized `__route__<id>`
+        namespace is rejected at save (spec §6). It used to reach the factory
+        and fail there; it is now caught by structural validation, one step
+        earlier and with a message naming the actual problem."""
         from httpx import AsyncClient
 
         assert isinstance(client, AsyncClient)
@@ -453,7 +456,28 @@ class TestCompileAtSave:
             },
         )
         assert resp.status_code == 422
-        assert "compile" in resp.text.lower()
+        assert "reserved" in resp.text.lower()
+
+    async def test_uncompilable_snapshot_surfaces_as_compile_error(self) -> None:
+        """compile-time = save-time (spec §6): a DAG the factory cannot build
+        is reported as an error rather than raising out of the check."""
+        from app.db import get_session_factory
+        from app.factory.worker import build_worker, compile_workflow_check
+
+        skill = await create_skill(name="orphan-skill")
+        workflow = {
+            "nodes": [{"id": "n1", "type": "skill", "skill_id": str(skill.id)}],
+            "edges": [{"from": "START", "to": "n1"}, {"from": "n1", "to": "END"}],
+        }
+        # the factory raises when a skill node is missing from the snapshot
+        with pytest.raises(ValueError, match="not in snapshot"):
+            build_worker({"sub_agent": {}, "workflow": workflow, "skills": {}}, None)
+        # and the save-time check reports it instead of propagating
+        async with get_session_factory()() as session:
+            errors = await compile_workflow_check(
+                session, {"nodes": workflow["nodes"], "edges": []}
+            )
+        assert errors, "an unbuildable workflow must produce compile errors"
 
 
 class TestPostgresCheckpointer:

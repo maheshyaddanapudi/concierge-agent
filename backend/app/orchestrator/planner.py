@@ -94,6 +94,15 @@ async def validate_plan(session: AsyncSession, plan: PlannerOutput, max_steps: i
             for sid in cap.skill_ids:
                 if not await _exists(session, Skill, sid):
                     errors.append(f"entry {entry.id!r}: unknown skill id {sid!r}")
+                elif not await _is_exposed(session, sid):
+                    # spec §7.1 rung 4: ephemeral workers compose exposed
+                    # skills only. Catching it here turns a mid-run resolution
+                    # failure into a repair retry the planner can act on.
+                    errors.append(
+                        f"entry {entry.id!r}: skill id {sid!r} is not exposed to you and "
+                        "cannot be composed into an ephemeral worker; use a sub agent that "
+                        "owns it, or drop the entry"
+                    )
         else:
             if not cap.id:
                 errors.append(f"entry {entry.id!r}: capability requires an id")
@@ -106,6 +115,11 @@ async def validate_plan(session: AsyncSession, plan: PlannerOutput, max_steps: i
             if not await _exists(session, model, cap.id):
                 errors.append(f"entry {entry.id!r}: unknown {cap.type} id {cap.id!r}")
     return errors
+
+
+async def _is_exposed(session: AsyncSession, raw_id: str) -> bool:
+    skill = await session.get(Skill, UUID(raw_id))
+    return bool(skill is not None and skill.direct_exposure)
 
 
 async def _exists(session: AsyncSession, model: type[Any], raw_id: str) -> bool:

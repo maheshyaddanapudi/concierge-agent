@@ -17,9 +17,24 @@ RUN uv export --frozen --no-dev --no-hashes -o /tmp/requirements.txt \
 
 COPY . .
 
+# seed-document gate (spec §13): every .skill.md / .agent.md must be valid
+# BEFORE the image ships. Without this a malformed document only surfaces at
+# boot — a skill that never loads, or an agent row stuck at status='error'.
+# Pure offline validation: no DB, no API keys, no network.
+RUN python -m app.doclint
+
 # pre-warm the seeded MCP servers into local caches so first connect is fast
 # and works without registry access at runtime
-RUN uvx --with "mcp<2" mcp-server-fetch --help >/dev/null 2>&1 || true
+# This prewarm must SUCCEED, not silently pass. With `|| true` a network
+# blip cached a no-op layer, and every later build then failed at the
+# verification gate below with a misleading "network?" message — the real
+# cause (a poisoned cache layer) was invisible and survived rebuilds until
+# someone busted the cache by hand. Fail here, where the cause is.
+RUN uvx --with "mcp<2" mcp-server-fetch --help >/dev/null 2>&1 \
+    && find /root/.cache/uv -type d -path '*readabilipy/javascript' | grep -q . \
+    || { echo "BUILD ERROR: mcp-server-fetch prewarm failed — readabilipy is not in the uv cache. Check network/proxy access to PyPI, then rebuild."; exit 1; }
+# genuinely optional: a cold npx here only makes the first filesystem-server
+# spawn slower (its output goes to stderr, so it cannot corrupt JSON-RPC)
 RUN npx -y @modelcontextprotocol/server-filesystem --help >/dev/null 2>&1 || true
 
 # readabilipy (inside mcp-server-fetch's uv env) shells out to node and runs

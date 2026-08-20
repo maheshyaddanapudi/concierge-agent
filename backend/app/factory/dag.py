@@ -5,12 +5,19 @@ path to END, no cycles, all skill_ids resolve to active skills, unique node
 ids, edges reference existing nodes, at most one error edge per node.
 """
 
+import re
 from collections import defaultdict
 from typing import Any
 
 START = "START"
 END = "END"
 NODE_TYPES = {"skill", "hitl"}
+# the factory synthesizes a router node per branching node as
+# f"{ROUTER_PREFIX}{node_id}" (worker.py); a user node id that collides with
+# one makes the compiled graph ambiguous, and LangGraph reserves its own
+# dunder sentinels (__start__/__end__) — reject the whole shape
+ROUTER_PREFIX = "__route__"
+_RESERVED_ID_RE = re.compile(r"^__.*__$")
 
 
 def validate_workflow(
@@ -69,14 +76,38 @@ def validate_workflow(
                                 f"node {nid!r} question {q['id']!r}: kind must be "
                                 "approve|choice|text"
                             )
-                        if q.get("kind") == "choice" and len(q.get("options") or []) < 2:
-                            errors.append(
-                                f"node {nid!r} question {q['id']!r}: choice needs >=2 options"
-                            )
+                        if q.get("kind") == "choice":
+                            opts = q.get("options")
+                            if not isinstance(opts, list) or len(opts) < 2:
+                                # a scalar `options: yes` has len()>=2 as a
+                                # string — type-check before measuring
+                                errors.append(
+                                    f"node {nid!r} question {q['id']!r}: choice needs an "
+                                    "'options' list with >=2 entries"
+                                )
+                            elif not all(isinstance(o, str) and o.strip() for o in opts):
+                                # YAML 1.1 reads [yes, no] / [on, off] as
+                                # booleans — the chips would render blank
+                                errors.append(
+                                    f"node {nid!r} question {q['id']!r}: choice options must be "
+                                    "non-empty strings (quote yes/no/on/off — YAML reads them "
+                                    "as booleans)"
+                                )
+                            elif len(set(opts)) != len(opts):
+                                errors.append(
+                                    f"node {nid!r} question {q['id']!r}: duplicate choice options"
+                                )
                     if len(set(qids)) != len(qids):
                         errors.append(f"node {nid!r}: question ids must be unique")
         if nid in {START, END}:
             errors.append(f"node id {nid!r} is reserved")
+        elif _RESERVED_ID_RE.match(nid) or nid.startswith(ROUTER_PREFIX):
+            # LangGraph's own __start__/__end__ sentinels, plus the factory's
+            # __route__<node> namespace (which does NOT end in __)
+            errors.append(
+                f"node id {nid!r} is reserved (ids may not be __dunder__ or start with "
+                f"{ROUTER_PREFIX!r})"
+            )
 
     seen: set[str] = set()
     for nid in node_ids:
