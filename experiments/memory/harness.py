@@ -133,9 +133,13 @@ async def _settle_consolidation(client: httpx.AsyncClient, seconds: float = 18.0
 
 
 async def reset_state(client: httpx.AsyncClient) -> None:
-    await client.post(f"{BASE}/memories/purge")
-    await client.post(f"{BASE}/runs/purge")
-    await client.patch(f"{BASE}/settings", json=dict(_RESET_KEYS))
+    (await client.post(f"{BASE}/memories/purge")).raise_for_status()
+    (await client.delete(f"{BASE}/runs")).raise_for_status()
+    (await client.patch(f"{BASE}/settings", json=dict(_RESET_KEYS))).raise_for_status()
+    status = (await client.get(f"{BASE}/memories/status")).json()
+    left = sum(status["counts"].values())
+    if left:
+        raise RuntimeError(f"purge left {left} memories — configs would contaminate each other")
 
 
 async def run_config(name: str) -> ConfigResult:

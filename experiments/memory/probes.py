@@ -77,7 +77,7 @@ PROBES: list[Probe] = [
                 "Did we hit the Q3 revenue target? Answer with the target, the actual, "
                 "and yes or no.",
                 kind="expect",
-                require_any=[["1.5"], ["2 million", "2.0", "2m", "$2"]],
+                require_any=[["1.5", "1,500,000"], ["2 million", "2.0", "2m", "$2", "2,000,000"]],
             ),
         ],
     ),
@@ -138,7 +138,9 @@ PROBES: list[Probe] = [
                         "don't actually know",
                     ]
                 ],
-                forbid=["biscuit"],  # the DOG's name must not be transplanted
+                # the DOG's name must not be transplanted onto the cat (merely
+                # mentioning "your dog is Biscuit" while abstaining is correct)
+                forbid=["cat's name is biscuit", "cat is named biscuit", "cat is biscuit"],
             ),
         ],
     ),

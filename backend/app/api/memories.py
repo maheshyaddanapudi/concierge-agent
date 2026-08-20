@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 
 from app.api.deps import SessionDep
 from app.memory import MemoryWriteError, hard_delete, recall, remember, supersede
@@ -198,6 +199,7 @@ async def purge_memories(session: SessionDep) -> None:
     """§8.7 Data purge, memory half: clears the semantic store and embeddings.
     Episodic tables (run_digests, rollups, exemplars) cascade with run purge."""
     await session.execute(sa_delete(MemoryEmbedding))
-    await session.execute(sa_delete(Memory).where(Memory.supersedes.isnot(None)))
+    # break the self-referential supersession FKs before deleting the rows
+    await session.execute(sa_update(Memory).values(supersedes=None, superseded_by=None))
     await session.execute(sa_delete(Memory))
     await session.commit()

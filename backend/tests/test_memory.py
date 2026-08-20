@@ -178,6 +178,20 @@ async def test_purge_endpoint_clears_store(client: AsyncClient) -> None:
     assert listing.json() == []
 
 
+async def test_purge_endpoint_clears_supersession_chains(client: AsyncClient) -> None:
+    # regression: self-referential supersedes/superseded_by FKs must not
+    # block the purge (found live — 500 left configs contaminated)
+    old = await remember(text="deploy branch is main", kind="fact", source="user_stated")
+    mid = await supersede(old.id, text="deploy branch is release-1", source="user_stated")
+    assert mid is not None
+    new = await supersede(mid.id, text="deploy branch is release-2026", source="user_stated")
+    assert new is not None
+    resp = await client.post("/api/v1/memories/purge")
+    assert resp.status_code == 204
+    status = (await client.get("/api/v1/memories/status")).json()
+    assert sum(status["counts"].values()) == 0
+
+
 # ── admission gate ───────────────────────────────────────────────────
 
 

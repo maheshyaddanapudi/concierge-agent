@@ -61,8 +61,8 @@ async def _ask(client: httpx.AsyncClient, message: str) -> list[str]:
 
 async def main() -> None:
     async with httpx.AsyncClient(timeout=360) as client:
-        await client.post(f"{BASE}/memories/purge")
-        await client.post(f"{BASE}/runs/purge")
+        (await client.post(f"{BASE}/memories/purge")).raise_for_status()
+        (await client.delete(f"{BASE}/runs")).raise_for_status()
         await client.patch(
             f"{BASE}/settings",
             json={
