@@ -1,20 +1,20 @@
 {
   "summary": {
     "config": "semantic",
-    "passed": 6,
+    "passed": 7,
     "total": 7,
     "by_ability": {
       "information_extraction": "2/2",
       "multi_session": "1/1",
       "knowledge_update": "1/1",
       "temporal": "1/1",
-      "abstention": "0/1",
+      "abstention": "1/1",
       "preference": "1/1"
     },
-    "question_input_tokens": 41039,
-    "question_output_tokens": 2940,
-    "setup_input_tokens": 75436,
-    "mean_question_latency_s": 10.0,
+    "question_input_tokens": 39851,
+    "question_output_tokens": 2187,
+    "setup_input_tokens": 33607,
+    "mean_question_latency_s": 7.1,
     "memories_active": 7
   },
   "detail": [
@@ -24,8 +24,8 @@
       "passed": true,
       "reason": "ok",
       "answer_head": "Your dog's name is Biscuit.",
-      "input_tokens": 5509,
-      "output_tokens": 168,
+      "input_tokens": 5352,
+      "output_tokens": 182,
       "latency_s": 5.1
     },
     {
@@ -33,9 +33,9 @@
       "ability": "information_extraction",
       "passed": true,
       "reason": "ok",
-      "answer_head": "Your favorite code editor is Neovim (preference 02d925b5).",
-      "input_tokens": 5541,
-      "output_tokens": 178,
+      "answer_head": "Your favorite code editor is Neovim (memory ae92ad97).",
+      "input_tokens": 5390,
+      "output_tokens": 182,
       "latency_s": 6.1
     },
     {
@@ -43,39 +43,39 @@
       "ability": "multi_session",
       "passed": true,
       "reason": "ok",
-      "answer_head": "Based on what's recorded: Target = $2 million (fact 08c617dc). Actual = $1.5 million (from a prior finance update, episode 16f0bed8). So, no \u2014 the Q3 revenue ta",
-      "input_tokens": 5913,
-      "output_tokens": 494,
-      "latency_s": 16.2
+      "answer_head": "Based on what's on record: Q3 revenue target was $2 million (fact 9f2c0b23), and actual Q3 revenue came in at $1.5 million (per a later correction logged in epi",
+      "input_tokens": 5626,
+      "output_tokens": 525,
+      "latency_s": 8.1
     },
     {
       "probe": "knowledge_update",
       "ability": "knowledge_update",
       "passed": true,
       "reason": "ok",
-      "answer_head": "release-2026 (fact bf6969ab)",
-      "input_tokens": 5939,
-      "output_tokens": 324,
-      "latency_s": 12.2
+      "answer_head": "release-2026",
+      "input_tokens": 5711,
+      "output_tokens": 255,
+      "latency_s": 6.1
     },
     {
       "probe": "temporal_before_after",
       "ability": "temporal",
       "passed": true,
       "reason": "ok",
-      "answer_head": "The previous deploy branch was \"main\" (per fact bf6969ab, which notes the branch was changed from 'main' to 'release-2026').",
-      "input_tokens": 6014,
-      "output_tokens": 294,
-      "latency_s": 10.1
+      "answer_head": "main",
+      "input_tokens": 5945,
+      "output_tokens": 198,
+      "latency_s": 8.1
     },
     {
       "probe": "abstention",
       "ability": "abstention",
-      "passed": false,
-      "reason": "forbidden 'biscuit' present",
-      "answer_head": "I don't have any record of your cat's name \u2014 I only have information about your dog, Biscuit (fact 1fe2fee5).",
-      "input_tokens": 5894,
-      "output_tokens": 246,
+      "passed": true,
+      "reason": "ok",
+      "answer_head": "I don't have any record of a cat's name \u2014 I only have your dog Biscuit (memory 711c0819) on file.",
+      "input_tokens": 5917,
+      "output_tokens": 231,
       "latency_s": 6.1
     },
     {
@@ -83,10 +83,10 @@
       "ability": "preference",
       "passed": true,
       "reason": "ok",
-      "answer_head": "Here are some solid tips for naming variables in Python: 1. **Use snake_case**: e.g., `user_name`, `total_count` \u2014 this is the PEP 8 convention for variables an",
-      "input_tokens": 6229,
-      "output_tokens": 1236,
-      "latency_s": 14.2
+      "answer_head": "Here are some quick tips for naming Python variables (formatted per your preference): - Use descriptive, lowercase snake_case names (e.g., `user_count`, not `uc",
+      "input_tokens": 5910,
+      "output_tokens": 614,
+      "latency_s": 10.1
     }
   ]
 }

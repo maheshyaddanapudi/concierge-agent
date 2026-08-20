@@ -16,6 +16,7 @@ verification + codebase grounding).
 | [04-substrate-postgres.md](04-substrate-postgres.md) | pgvector 0.8.6 operational guidance, hybrid RRF SQL, AsyncPostgresStore/LangMem verdicts (source-verified), bi-temporal SQL patterns, advisory-lock consolidation, embedding side-table strategy — 6 substrate decisions | how it fits in one Postgres, three services |
 | [05-architecture-proposal.md](05-architecture-proposal.md) | **The design**: L0–L4 layer map, schemas, gate→extract→reconcile write path, injection plane, procedural learning, consolidation scheduler, governance/UI, failure-mode table, settled decisions | what we propose to build |
 | [06-spec-amendment-and-milestones.md](06-spec-amendment-and-milestones.md) | Draft spec §16 text, touch-ups to §3.7/§7.5/§8/§12/§14, milestones **M13–M17**, settled decisions + open questions for sign-off | what merges into spec.md, and in what order |
+| [07-experiment-results.md](07-experiment-results.md) | **The measurements**: live layer-ablation matrix (off/episodic/semantic/full/tight) — accuracy, tokens, latency per layer; fallback-rate experiment; defects the experiment itself surfaced; recommended defaults | which layers earn their keep, with numbers |
 
 ## The design in one paragraph
 

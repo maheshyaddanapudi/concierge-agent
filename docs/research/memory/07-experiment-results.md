@@ -1,0 +1,171 @@
+# 07 — Experiment results: memory-layer ablation on the live stack
+
+**Date:** 2026-08-20 · **Branch:** `memory_xperiment` · **Harness:** `experiments/memory/`
+
+This is the measured comparison the branch was named for: the finished M13–M17
+memory subsystem, run layer-by-layer against the existing solution (memory
+dark), on the live stack, with real model calls and deterministic grading.
+
+## 1. Method
+
+- **Live stack, real runs.** Every probe turn is a real `POST /chat` against the
+  running compose stack (graph orchestrator, default model
+  `anthropic:claude-sonnet-4-6`). Conversation slots map to real conversations,
+  so cross-conversation recall is genuinely cross-conversation — nothing is
+  simulated or short-circuited.
+- **Probe suite** (`experiments/memory/probes.py`): 7 probes over the six
+  LongMemEval ability categories (research 03 §6) — information extraction ×2,
+  multi-session reasoning, knowledge update, temporal reasoning, abstention,
+  preference following. Grading is fully deterministic (required/forbidden
+  substrings, bullet counts) — no LLM judges, so reruns are comparable.
+- **Configs** (`experiments/memory/harness.py`): each config purges memories +
+  runs, resets settings, then runs the whole suite fresh:
+
+  | config | layers | settings delta |
+  |---|---|---|
+  | `off` | none — the existing solution | `memory_enabled=false` |
+  | `episodic` | L0/L1 digests + rollups | extraction off, procedural off |
+  | `semantic` | + L2 extraction/reconciliation | extraction on |
+  | `full` | + L3 procedural exemplars/stats | procedural on |
+  | `tight` | full, starved | injection budget 1200→250 tokens, score floor 0.35→0.6 |
+
+- **Embeddings:** the deterministic fake provider (`fake:scripted`, 64-dim
+  bag-of-tokens) drives the vector leg of hybrid recall, because the stack's
+  only configured key is Anthropic and Anthropic has no embeddings API. This
+  is a **conservative floor**: real embedding models separate paraphrases far
+  better than bag-of-tokens cosine, so vector-recall quality can only improve
+  in production.
+- **Metrics:** pass/fail per probe, input/output tokens on question runs
+  (`usage_metadata` totals from the runs ledger), setup-turn tokens separately,
+  wall-clock latency per question.
+
+## 2. Headline matrix
+
+| config | score | question input tok | question output tok | setup input tok | mean latency | active memories |
+|---|---|---|---|---|---|---|
+| **off** (existing solution) | 2/7 | 109,479 | 8,966 | 31,620 | 24.9 s | 0 |
+| **episodic** | 6/7 | 54,419 | 3,494 | 33,369 | 9.3 s | 0 |
+| **semantic** | **7/7** | **39,851** | **2,187** | 33,607 | **7.1 s** | 7 |
+| **full** | 7/7 | 56,664 | 3,135 | 49,318 | 9.0 s | 6 |
+| **tight** | 7/7 | 76,863 | 6,986 | 33,603 | 17.7 s | 6 |
+
+Per ability:
+
+| ability | off | episodic | semantic | full | tight |
+|---|---|---|---|---|---|
+| information extraction | 0/2 | 1/2 | 2/2 | 2/2 | 2/2 |
+| multi-session reasoning | 0/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| knowledge update | 0/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| temporal ("before the change") | 0/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| abstention | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| preference following | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+
+## 3. Findings
+
+### F1 — Memory improves accuracy *and* cost at the same time
+
+The baseline doesn't just fail 5/7 probes — it burns **2.7× the input tokens**
+(109k vs 40k) and **3.5× the latency** (24.9s vs 7.1s) failing them. Without
+memory, the orchestrator answers "what's my dog's name?" by searching the
+workspace, listing files, and trying tools before giving up; with memory the
+injected block answers it in one pass. Memory is not a tax on the run path —
+on this workload it is a *discount*.
+
+### F2 — Semantic (L1+L2) is the sweet spot
+
+`semantic` is the only config on the Pareto frontier for all three axes:
+perfect score, fewest tokens, lowest latency. Extraction distills setup turns
+into compact facts ("dog is named Biscuit", `entity_key=deploy_branch →
+release-2026`), which inject smaller and rank better than raw episodic
+digests. It also passed the temporal probe: the reconciliation pipeline's
+supersession chain kept the pre-correction value (`main`) answerable — the
+ability LongMemEval calls the field's weakest.
+
+### F3 — Episodic alone is strong but has a first-touch gap
+
+`episodic` (digests only, no extraction) scored 6/7 at half the baseline's
+cost. Its one failure was `single_fact_recall` — the *first* question of the
+suite, asked immediately after the facts were stated in another conversation.
+Digest-only recall lost the race/ranking on first touch, yet passed
+`second_fact_recall` over the same digest minutes later. Semantic extraction
+eliminates this gap (facts land as ranked, compact memories immediately).
+
+### F4 — Procedural learning is cost-neutral-to-negative on knowledge probes — as designed
+
+`full` kept the 7/7 score but spent ~42% more question tokens than `semantic`
+(56.7k vs 39.9k) and ~47% more setup tokens (exemplar harvesting runs after
+every setup turn). Plan exemplars target *routing* quality, and none of these
+probes exercise routing — so on this suite L3 is overhead. Its measured goal
+(fallback-rate reduction on indirect asks) is tested separately in §4.
+Tweaking conclusion: **enable L3 only if your workload routes to
+skills/sub-agents; leave it off for pure Q&A assistants.**
+
+### F5 — Starving the injection budget doesn't break accuracy, it moves the cost
+
+`tight` (budget 250 tokens, floor 0.6) still scored 7/7 — but at ~2× the
+tokens and ~2.5× the latency of `semantic`. When injection is starved, the
+model compensates through the `memory.recall` tool and extra exploration:
+correctness survives (the tools are registry citizens precisely for this),
+but every compensating recall is a full round trip. Tweaking conclusion:
+**a generous injection budget is net cheaper than a starved one** — the
+1200-token default beats 250 on every axis; cutting budget is a false economy.
+
+### F6 — Abstention held at every layer (with one grader lesson)
+
+No config transplanted the dog's name onto the cat — the data-fenced block
+plus the abstention line ("If the memories don't cover it, say so") held even
+with 7 active memories injected. An earlier grader draft forbade the substring
+"biscuit" outright and flagged the correct answer "I only have information
+about your dog, Biscuit" — the forbid rule now targets actual transplantation
+("cat's name is biscuit"), which is the honest failure mode.
+
+## 4. M16 measured goal — fallback rate with procedural learning
+
+<!-- FALLBACK_RESULTS -->
+
+## 5. Defects found *by* the experiment (fixed on this branch)
+
+The experiment loop earned its keep beyond the matrix — three real defects
+surfaced only under live measurement:
+
+1. **`websearch_to_tsquery` AND-semantics vetoed recall** (`or_tsquery` fix,
+   `f2a15a2`). Question boilerplate ("One short sentence") ANDed into the
+   lexical query, so a stored fact matching only the content words scored
+   zero — and the failed question's *own* digest outranked the truth on the
+   next attempt. Lexical legs now build an OR-joined sanitized tsquery.
+   Episodic went 3/7 → 6/7 on this fix alone.
+2. **Memory purge 500ed on supersession chains** (`ed03297`). The
+   self-referential `supersedes`/`superseded_by` FKs blocked the purge's
+   two-pass delete the moment any fact had been corrected. Purge now nulls
+   both link columns first; regression test covers a three-link chain.
+3. **Silent purge failures contaminated configs** (`ed03297`). The harness
+   POSTed to a route that didn't accept POST (405) and ignored response
+   codes, so each config inherited the previous config's memories. A
+   contaminated `full` run scored 4/7 — a leftover `main` fact from the
+   prior phase survived reconciliation and beat the correction. Resets now
+   raise on any non-2xx and verify the store is empty; the clean rerun
+   scored 7/7. (Kept as a cautionary note: **cross-config contamination
+   reads as "the new layer made things worse" when it's actually stale
+   state.**)
+
+## 6. Caveats
+
+- **Fake embeddings floor.** All memory-on numbers used 64-dim bag-of-tokens
+  vectors. Real embeddings should improve paraphrase recall (and could only
+  have helped `episodic`'s one failure).
+- **Preference probe is non-discriminative.** The baseline also passed it —
+  bullet-formatted answers are common unprompted. It stays in the suite for
+  regression value, not as evidence of memory benefit.
+- **Small N.** 7 probes × 5 configs is an ablation smoke test, not a
+  benchmark. Directional conclusions (F1–F5) rest on large effect sizes;
+  fine-grained ranking between 7/7 configs rests on cost, not score.
+- **One model.** All runs on `claude-sonnet-4-6`. The §15 eval roadmap
+  (spreadsheet-driven, LangSmith-published) is the vehicle for multi-model
+  sweeps.
+
+## 7. Recommended default configuration
+
+Based on the matrix: **`semantic` shape** — memory on, extraction on,
+procedural off (until the workload routes), injection budget 1200, floor
+0.35, top-k 6, `fake:scripted` replaced by a real embedding model in
+production. This is the configuration that dominated every axis measured.
