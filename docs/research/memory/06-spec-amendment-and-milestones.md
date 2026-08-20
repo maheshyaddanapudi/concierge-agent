@@ -21,10 +21,11 @@
 - **Visible store**: every memory row is user-inspectable, editable (edit =
   superseding row), pinnable, deletable. Provenance (`run_id`/`step_id`) is
   mandatory on machine-written rows.
-- **No new infrastructure** (§2 unchanged): Postgres tables, JSONB embeddings
-  via the §2.1 embeddings port (pgvector remains the documented swap), asyncio
-  consolidation with `pg_try_advisory_lock`, NOTIFY invalidation (§7.3
-  discipline).
+- **No new infrastructure** (§2 unchanged in service count): Postgres tables,
+  embeddings via the §2.1 port, asyncio consolidation with
+  `pg_try_advisory_lock`, NOTIFY invalidation (§7.3 discipline). One image pin
+  change is proposed (below): `postgres:16` → `pgvector/pgvector:0.8.6-pg16` —
+  the official image plus the extension, same three services.
 - **Middleware precedence unchanged** (§7.0): memory injection happens at
   prompt assembly (planner/aggregator builders, concierge system prompt), not
   via new custom middleware. The sanctioned-custom list stays exactly three.
@@ -35,26 +36,40 @@ Tables (Alembic migration each): `memories`, `memory_entities`,
 `memory_entity_links`, `run_digests`, `conversation_rollups`,
 `plan_exemplars`, `routing_stats`.
 
-`memories` columns (summary; full DDL in research 05 §4.1): scope
+Tables: `memories`, `memory_embeddings` (side-table: `memory_id`, `model_key`,
+untyped `vector` — one partial expression HNSW index per active model; the
+provider-agnostic dimension strategy, research 04 §6), `memory_entities`,
+`memory_entity_links`, `run_digests`, `conversation_rollups`,
+`plan_exemplars`, `routing_stats`.
+
+`memories` columns (summary; DDL in research 04 §4 / 05 §4.1): scope
 (`global|conversation`), kind (`fact|preference|entity|relation|instruction`),
-text, payload jsonb, importance, confidence, source
+text, payload jsonb, `entity_key`, importance (1–10), confidence, source
 (`extracted|user_stated|user_edited|hitl_note|inferred`), status
 (`active|quarantined|superseded|expired|rejected`), bi-temporal columns
-(`valid_from/valid_to` event time; `created_at/superseded_at` ingestion time),
-`supersedes_id` chain, provenance FKs, `embedding jsonb` + `embedding_hash`,
-access bookkeeping, `pinned`, `half_life_days`.
+(`valid_from/valid_to` event time; `recorded_at/superseded_at` ingestion time),
+`supersedes/superseded_by` chain, provenance FKs (mandatory on machine writes),
+access bookkeeping (`last_accessed_at`, `access_count`), `pinned` (= always
+injected + decay-immune), `half_life_days`, generated `fts` tsvector.
 
 Invariants: the pipeline never hard-deletes (supersede/expire only; hard delete
 is user/purge action). `status='active'` rows form the current view (partial
-index). Registry ids remain immutable (§4 unchanged) — memory rows are not
-registry rows.
+indexes). Registry ids remain immutable (§4 unchanged) — memory rows are not
+registry rows. Postgres image: `pgvector/pgvector:0.8.6-pg16` (amends the §7.3
+"stock image" sentence; registries stay JSONB, untouched).
 
 ### 16.2 Lifecycle
 
-- **Post-run** (async, never blocking the answer): digest + rollup (L1), then
-  extraction (`prompts/memory_extract.md`) → per-candidate reconciliation
-  (`prompts/memory_reconcile.md`) with verdicts `ADD|UPDATE|NOOP|CONTRADICT`;
-  UPDATE supersedes bi-temporally; CONTRADICT quarantines the loser.
+- **Post-run** (async, debounced until the conversation goes quiet, never
+  blocking the answer): digest + rollup (L1), then extraction
+  (`prompts/memory_extract.md`) → **deterministic admission gate** (confidence
+  floor, near-duplicate drop, topics allowlist — write policy alone swings
+  downstream accuracy 3×, research 03 §5) → per-candidate reconciliation:
+  the LLM (`prompts/memory_reconcile.md`) answers only *same fact / related /
+  unrelated* against hybrid-nearest neighbors; **deterministic code resolves
+  the winner** (newer event time supersedes bi-temporally; ambiguous timing
+  quarantines) — LLM-resolved freshness measures 7–28% vs 78–94.8% for this
+  split (research 03 §7). Never a DB transaction across an LLM call.
 - **Instruction quarantine**: extracted or inferred `instruction` memories are
   always `quarantined` until approved in the review queue. Only explicit
   user-stated instructions (`memory.remember` invoked on the user's ask)
@@ -68,10 +83,13 @@ registry rows.
 
 ### 16.3 Retrieval & injection
 
-- Scoring: RRF (BM25 + cosine, existing `retrieval.py` primitives) composed
-  with recency and importance weights; per-surface token budgets; score floor
-  below which nothing injects; retrieved rows get batched access-bookkeeping
-  updates.
+- Scoring: two-CTE RRF in SQL (lexical `ts_rank_cd` + HNSW cosine, research
+  04 §2) re-scored by `w_rel·similarity + w_imp·importance/10 +
+  w_rec·exp-decay(last_accessed)`; per-surface token budgets; score floor
+  below which nothing injects; **pinned rows always inject** under their own
+  small budget; **time-aware retrieval** (temporal phrases expand into
+  `valid_from/valid_to` filters); retrieved rows get batched
+  access-bookkeeping updates.
 - Surfaces: planner prompt and aggregator prompt (graph), concierge system
   prompt (agentic) — each gains a budgeted "remembered context" block
   (memories + episodic digests + optional exemplars) with a fixed abstention
@@ -131,11 +149,14 @@ tokens, recall latency), and the standard label set on every op. No memory
   math, quarantine rules, budget enforcement, score-floor abstention.
 - Contract: memory tools through the adapter/tooling suites; purge covers all
   memory tables; `memory_enabled=false` ⇒ existing suites pass byte-identical.
-- Probe suite (§14 addition): multi-session recall; preference application;
-  knowledge update (supersession honored, old fact not resurrected);
-  temporal question answered from validity intervals; abstention when memory
-  is absent; instruction-quarantine (extracted instruction does NOT change
-  behavior until approved).
+- Probe suite (§14 addition, LongMemEval's five abilities + poisoning):
+  multi-session recall; preference application; knowledge update (supersession
+  honored, old fact not resurrected); temporal question answered from validity
+  intervals; abstention when memory is absent; instruction-quarantine
+  (extracted instruction does NOT change behavior until approved). **Every
+  probe also records injected tokens and latency deltas** — the honest case
+  for memory over long-context is precision plus cost, and both get numbers
+  (research 03 §6).
 
 ### 16.10 Acceptance (§14 additions)
 
@@ -158,7 +179,7 @@ stage: full pre-§16 acceptance top-to-bottom with `memory_enabled=false`.
 
 | M | Scope | Definition of done |
 |---|---|---|
-| **M13 — substrate** | migrations for all §16.1 tables; memory service (CRUD + hybrid rank via `retrieval.py` primitives + composite scoring); memory native tools + `memory-keeper` skill (seeded, hidden); §16.7 settings; purge extension; obs labels | suites green; `memory_enabled=false` byte-identity proven; tools visible in registry UI (hidden); acceptance stage: create/recall/forget through the tool surface in chat |
+| **M13 — substrate** | pgvector image pin + `CREATE EXTENSION` migration; migrations for all §16.1 tables (incl. the `memory_embeddings` side-table + partial HNSW); memory service (CRUD + two-CTE RRF + composite scoring + admission gate + deterministic supersession); memory native tools + `memory-keeper` skill (seeded, hidden); §16.7 settings; purge extension; obs labels | suites green; `memory_enabled=false` byte-identity proven; tools visible in registry UI (hidden); acceptance stage: create/recall/forget through the tool surface in chat |
 | **M14 — episodic** | post-run digest + rollup jobs; scheduler skeleton (advisory locks, idle detector); planner/aggregator/agentic injection blocks (budgeted, flag-gated); `include_memories` for direct runs | cross-conversation recall demo: fact from conversation A retrieved in conversation B via digests; budgets visible in trace; stage evidence |
 | **M15 — semantic** | extraction + reconciliation pipelines; bi-temporal supersession; instruction quarantine; Memory UI page incl. review queue; abstention line + score floor | probe subset passes (recall, update-supersession, abstention, quarantine); UI evidence of edit-as-supersede + provenance links |
 | **M16 — procedural** | routing_stats + exemplar harvest; planner few-shot block; fallback mining → `.skill.md` proposals through doclint + overlap judge + review queue | **measured**: stage-30 prompt suite re-run; fallback-rate delta reported; one mined skill proposal approved end-to-end in UI |
@@ -169,16 +190,34 @@ the first user-visible value with the least model-judgment risk (digests are
 mechanical), M15 is the core semantic layer, M16 attacks the measured stage-30
 routing defect, M17 closes the loop with decay/reflection and the eval harness.
 
-## D. Open questions for review (decide before M13)
+## D. Decisions settled by the research (no longer open)
 
-1. **Store substrate**: native tables (proposed) vs LangGraph
-   `AsyncPostgresStore`+LangMem — final call pending research 04's verdict;
-   the schema above assumes native. Flip cost is contained to M13.
+1. **Store substrate → native Alembic-managed tables.** Research 04 verified in
+   source that `AsyncPostgresStore`'s semantic search sequential-scans (does
+   not use the HNSW index it builds) and that its flat schema cannot express
+   supersession/bi-temporality/importance; `AsyncPostgresSaver` stays for
+   checkpoints. `langmem` is not taken as a dependency (0.0.30, ten months
+   stale, hard-depends on `langchain-anthropic`+`langchain-openai` — a §2.1
+   provider-isolation violation); its patterns are reimplemented.
+2. **Reconciliation = LLM matches, deterministic code resolves** (7–28% vs
+   78–94.8%, research 03 §7).
+3. **Strict admission gate on every machine write** (3× downstream accuracy
+   swing; the mitigation class that survives poisoning — research 03 §5/§7).
+4. **Retrieval units**: run-level digests + atomic facts primary; rollups for
+   global questions only (fact-level beat summary retrieval 41.4 vs 29.9 F1).
+
+## E. Open questions for review (decide before M13)
+
+1. **pgvector image pin** (`postgres:16` → `pgvector/pgvector:0.8.6-pg16`):
+   recommended in 04/05 — same three services, official image + extension —
+   but it amends spec §7.3's "stock image keeps working" sentence, so it needs
+   an explicit sign-off. Fallback: registry-style JSONB embeddings +
+   in-process ranking for the first weeks, at the cost of a rework later.
 2. **Scope model**: is `project` scope needed pre-multi-user, or does
    `global|conversation` suffice for the POC? (Proposal: defer `project`.)
 3. **Aggregator injection**: inject memories into aggregation, or only
    planning surfaces? (Proposal: planner + agentic first; aggregator in M15
-   behind its own budget after we see traces.)
+   behind its own budget after traces are seen.)
 4. **`include_memories` default for direct runs** once `memory_enabled=true`:
    stay opt-in per run (proposed) or follow a per-agent setting?
 5. **Digest model**: default model at effort `low` (proposed) vs a dedicated
