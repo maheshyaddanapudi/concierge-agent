@@ -178,7 +178,9 @@ async def recall_digests(
     query = " ".join(query.split())
     if not query:
         return []
-    params: dict[str, Any] = {"q": query, "n": _LEG_LIMIT, "excl": exclude_conversation_id}
+    from app.memory.rank import or_tsquery
+
+    params: dict[str, Any] = {"q": or_tsquery(query), "n": _LEG_LIMIT, "excl": exclude_conversation_id}
     excl = "AND (CAST(:excl AS uuid) IS NULL OR d.conversation_id != CAST(:excl AS uuid))"
 
     async with get_session_factory()() as session:
@@ -187,7 +189,7 @@ async def recall_digests(
                 sql_text(
                     f"""
                     SELECT d.id FROM run_digests d,
-                           websearch_to_tsquery('english', :q) tsq
+                           to_tsquery('english', :q) tsq
                     WHERE d.fts @@ tsq {excl}
                     ORDER BY ts_rank_cd(d.fts, tsq) DESC
                     LIMIT :n

@@ -25,24 +25,28 @@ CONFIGS: dict[str, dict[str, Any]] = {
     # L0/L1 only: digests + episodic injection, no semantic extraction
     "episodic": {
         "memory_enabled": True,
+        "embedding_model": "fake:scripted",
         "memory_extraction_enabled": False,
         "procedural_learning_enabled": False,
     },
     # + L2 semantic extraction (the core layer)
     "semantic": {
         "memory_enabled": True,
+        "embedding_model": "fake:scripted",
         "memory_extraction_enabled": True,
         "procedural_learning_enabled": False,
     },
     # + L3 procedural learning (exemplars + routing stats)
     "full": {
         "memory_enabled": True,
+        "embedding_model": "fake:scripted",
         "memory_extraction_enabled": True,
         "procedural_learning_enabled": True,
     },
     # distraction control: full layers under a starved budget + high floor
     "tight": {
         "memory_enabled": True,
+        "embedding_model": "fake:scripted",
         "memory_extraction_enabled": True,
         "procedural_learning_enabled": True,
         "memory_injection_budget_tokens": 250,
@@ -51,6 +55,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
 }
 _RESET_KEYS = {
     "memory_enabled": False,
+    "embedding_model": None,
     "memory_extraction_enabled": True,
     "procedural_learning_enabled": False,
     "memory_injection_budget_tokens": 1200,
@@ -112,15 +117,16 @@ async def _wait_run(client: httpx.AsyncClient, run_id: str, timeout_s: float = 3
     raise TimeoutError(f"run {run_id} did not settle")
 
 
-async def _settle_consolidation(client: httpx.AsyncClient, seconds: float = 14.0) -> None:
-    """Post-run digest/extraction are debounced background work — give them a
-    bounded window, polling the store so fast configs don't overpay."""
+async def _settle_consolidation(client: httpx.AsyncClient, seconds: float = 18.0) -> None:
+    """Post-run digest/extraction are debounced background work. The memories
+    count only moves when extraction is on, so the early-exit needs a floor
+    long enough for the digest LLM call (~1s debounce + one model call)."""
     start = time.monotonic()
     last = -1
     while time.monotonic() - start < seconds:
         status = (await client.get(f"{BASE}/memories/status")).json()
         total = sum(status["counts"].values())
-        if total == last and time.monotonic() - start > 4:
+        if total == last and time.monotonic() - start > 10:
             return
         last = total
         await asyncio.sleep(2.0)

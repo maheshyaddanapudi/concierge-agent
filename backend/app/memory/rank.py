@@ -91,7 +91,7 @@ async def recall(
         return []
 
     params: dict[str, Any] = {
-        "q": query,
+        "q": or_tsquery(query),
         "n": _CANDIDATES_PER_LEG,
         "scopes": scopes,
         "kinds": kinds,
@@ -102,7 +102,7 @@ async def recall(
 
     lexical_sql = sql_text(
         f"""
-        SELECT m.id FROM memories m, websearch_to_tsquery('english', :q) tsq
+        SELECT m.id FROM memories m, to_tsquery('english', :q) tsq
         WHERE m.fts @@ tsq AND {where}
         ORDER BY ts_rank_cd(m.fts, tsq) DESC
         LIMIT :n
@@ -216,3 +216,17 @@ async def pinned_memories(conversation_id: UUID | None = None) -> list[Memory]:
         )
         rows = list((await session.execute(stmt)).scalars())
     return [m for m in rows if m.scope != "conversation" or m.conversation_id == conversation_id]
+
+
+def or_tsquery(query: str) -> str:
+    """OR-joined tsquery source: recall ranks by ts_rank_cd over ANY matching
+    term — websearch_to_tsquery's AND semantics let question boilerplate
+    ("one short sentence") veto the real match (experiment finding, M17)."""
+    import re as _re
+
+    tokens = _re.findall(r"[a-z0-9]+", query.lower())
+    seen: list[str] = []
+    for tok in tokens:
+        if tok not in seen:
+            seen.append(tok)
+    return " | ".join(seen[:24]) or "x_no_terms"

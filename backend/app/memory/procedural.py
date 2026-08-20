@@ -27,6 +27,12 @@ _MIN_CLUSTER = 3  # fallback-mining threshold: recurring means ≥ this many run
 PROPOSAL_PREFIX = "[proposed from fallback mining] "
 
 
+def _or_q(task: str) -> str:
+    from app.memory.rank import or_tsquery
+
+    return or_tsquery(task)
+
+
 async def _enabled() -> bool:
     from app.registry_cache import get_cache
 
@@ -225,13 +231,13 @@ async def recall_exemplars(task: str, *, k: int = 2) -> list[PlanExemplar]:
                     sql_text(
                         """
                         SELECT e.id FROM plan_exemplars e,
-                               websearch_to_tsquery('english', :q) tsq
+                               to_tsquery('english', :q) tsq
                         WHERE e.fts @@ tsq AND e.status = 'active'
                         ORDER BY ts_rank_cd(e.fts, tsq) DESC
                         LIMIT :n
                         """
                     ),
-                    {"q": task, "n": _EXEMPLAR_LEG_LIMIT},
+                    {"q": _or_q(task), "n": _EXEMPLAR_LEG_LIMIT},
                 )
             ).all()
         ]
@@ -255,7 +261,7 @@ async def recall_exemplars(task: str, *, k: int = 2) -> list[PlanExemplar]:
                             """
                         ),
                         {
-                            "q": task,
+                            "q": _or_q(task),
                             "n": _EXEMPLAR_LEG_LIMIT,
                             "qvec": str(list(qvec)),
                             "model_key": model_key,
