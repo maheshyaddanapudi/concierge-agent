@@ -54,6 +54,12 @@ TOOL_CALLS_TOTAL = Counter(
 )
 ERRORS_TOTAL = Counter("concierge_errors_total", "Errors", ["tier", "kind", "source"])
 RUN_DURATION = Histogram("concierge_run_duration_seconds", "Run duration", ["mode", "status"])
+# memory layers (spec §16.6)
+MEMORY_OPS = Counter("concierge_memory_ops_total", "Memory operations", ["kind", "status"])
+MEMORY_INJECTED_TOKENS = Histogram(
+    "concierge_memory_injected_tokens", "Tokens injected from memory", ["surface"]
+)
+MEMORY_RECALL_SECONDS = Histogram("concierge_memory_recall_seconds", "Memory recall latency")
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

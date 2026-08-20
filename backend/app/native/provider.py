@@ -135,4 +135,5 @@ def clear_registrations() -> None:
 def scan_native() -> None:
     """Import modules under app/native so decorators run (idempotent)."""
     import app.native.agents  # noqa: F401
+    import app.native.memory_tools  # noqa: F401
     import app.native.tools  # noqa: F401

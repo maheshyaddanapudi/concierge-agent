@@ -33,6 +33,8 @@ async def _database() -> AsyncIterator[None]:
     reset_db_state()
     engine = get_engine()
     async with engine.begin() as conn:
+        # memory tables use pgvector (spec §16.1); the test image ships it
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield

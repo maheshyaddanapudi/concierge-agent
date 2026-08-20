@@ -93,6 +93,7 @@ class RunContext:
     run_id: UUID
     mode: str
     recorder: Any  # RunRecorder — Any avoids a circular import
+    conversation_id: UUID | None = None  # provenance for memory writes (spec §16)
     flags: RunFlags = field(default_factory=RunFlags)
     settings: dict[str, Any] = field(default_factory=dict)
     callbacks: list[Any] = field(default_factory=list)

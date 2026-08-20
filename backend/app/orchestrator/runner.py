@@ -88,6 +88,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         run_id=run_id,
         mode=mode,
         recorder=recorder,
+        conversation_id=conversation_id,
         settings=settings,
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
         query_text=task_text,

@@ -1,0 +1,218 @@
+"""Memory retrieval (spec §16.3).
+
+Hybrid candidates in SQL (lexical GIN + pgvector cosine over the active
+model_key), composite scoring in Python over the fused candidate set:
+
+    score = (w_rel·relevance + w_rec·recency + w_imp·importance/10) / Σw
+
+- relevance: normalized RRF of the two rank lists (rank positions, so the
+  lexical leg's lack of IDF is blunted — research 04 §2)
+- recency:   exp(−ln2 · hours_since_last_ACCESS / half_life) — rehearsal
+  refreshes memories (Generative Agents; research 03 §2)
+- importance: the write-time 1–10 score
+
+Score floor: below it nothing is returned — an empty block beats a
+distracting one (research 03 §6). Pinned rows bypass the floor (they are the
+always-injected profile, spec §16.3). `as_of` switches to bi-temporal
+point-in-time predicates. No embedding model ⇒ lexical-only, silently.
+"""
+
+import math
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+import structlog
+from sqlalchemy import bindparam, update
+from sqlalchemy import text as sql_text
+
+from app.db import get_session_factory
+from app.models import Memory
+
+logger = structlog.get_logger("memory")
+
+_RRF_K = 60
+_CANDIDATES_PER_LEG = 40
+W_REL, W_REC, W_IMP = 1.0, 0.8, 0.6
+DEFAULT_HALF_LIFE_HOURS = 30.0 * 24
+
+
+@dataclass
+class RecallHit:
+    memory: Memory
+    score: float
+    relevance: float
+    recency: float
+    importance: float
+
+
+def _temporal_predicate(as_of: datetime | None) -> str:
+    if as_of is None:
+        return "m.status = 'active'"
+    # what was believed at T about facts valid at T (research 04 §4);
+    # rows that never activated (quarantined/rejected) are excluded
+    return (
+        "m.status NOT IN ('quarantined', 'rejected') "
+        "AND m.recorded_at <= :as_of "
+        "AND (m.superseded_at IS NULL OR m.superseded_at > :as_of) "
+        "AND m.valid_from <= :as_of "
+        "AND (m.valid_to IS NULL OR m.valid_to > :as_of)"
+    )
+
+
+def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
+    parts = []
+    if scopes:
+        parts.append("m.scope = ANY(:scopes)")
+    if kinds:
+        parts.append("m.kind = ANY(:kinds)")
+    parts.append("(m.scope != 'conversation' OR m.conversation_id = :conversation_id)")
+    return (" AND " + " AND ".join(parts)) if parts else ""
+
+
+async def recall(
+    query: str,
+    *,
+    scopes: list[str] | None = None,
+    kinds: list[str] | None = None,
+    conversation_id: UUID | None = None,
+    k: int = 6,
+    floor: float = 0.35,
+    as_of: datetime | None = None,
+    bump_access: bool = True,
+) -> list[RecallHit]:
+    """Top-k memories for a query under the composite score, floor-gated."""
+    from app.memory.store import active_model_key
+    from app.retrieval import _query_vector
+
+    query = " ".join(query.split())
+    if not query:
+        return []
+
+    params: dict[str, Any] = {
+        "q": query,
+        "n": _CANDIDATES_PER_LEG,
+        "scopes": scopes,
+        "kinds": kinds,
+        "conversation_id": conversation_id,
+        "as_of": as_of,
+    }
+    where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)
+
+    lexical_sql = sql_text(
+        f"""
+        SELECT m.id FROM memories m, websearch_to_tsquery('english', :q) tsq
+        WHERE m.fts @@ tsq AND {where}
+        ORDER BY ts_rank_cd(m.fts, tsq) DESC
+        LIMIT :n
+        """
+    )
+    qvec = await _query_vector(query)
+    model_key = await active_model_key() if qvec is not None else None
+
+    async with get_session_factory()() as session:
+        lex_ids = [r[0] for r in (await session.execute(lexical_sql, params)).all()]
+        vec_ids: list[UUID] = []
+        if qvec is not None and model_key is not None:
+            vector_sql = sql_text(
+                f"""
+                SELECT m.id, 1 - (e.embedding <=> CAST(:qvec AS vector)) AS sim
+                FROM memories m
+                JOIN memory_embeddings e
+                  ON e.ref_id = m.id AND e.table_ref = 'memories'
+                 AND e.model_key = :model_key
+                WHERE {where}
+                ORDER BY e.embedding <=> CAST(:qvec AS vector)
+                LIMIT :n
+                """
+            ).bindparams(bindparam("qvec"), bindparam("model_key"))
+            vec_rows = (
+                await session.execute(
+                    vector_sql,
+                    {**params, "qvec": str(list(qvec)), "model_key": model_key},
+                )
+            ).all()
+            vec_ids = [r[0] for r in vec_rows]
+
+        # reciprocal-rank fusion over whichever legs exist
+        rrf: dict[UUID, float] = {}
+        for ranking in ([lex_ids] if lex_ids else []) + ([vec_ids] if vec_ids else []):
+            for i, mid in enumerate(ranking):
+                rrf[mid] = rrf.get(mid, 0.0) + 1.0 / (_RRF_K + i + 1)
+        if not rrf:
+            return []
+        max_rrf = max(rrf.values())
+
+        rows = (
+            (
+                await session.execute(
+                    sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
+                        *Memory.__table__.c
+                    ),
+                    {"ids": list(rrf.keys())},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        now = datetime.now(UTC)
+        hits: list[RecallHit] = []
+        for row in rows:
+            mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+            relevance = rrf[mem.id] / max_rrf
+            half_life_h = (
+                float(mem.half_life_days) * 24 if mem.half_life_days else DEFAULT_HALF_LIFE_HOURS
+            )
+            anchor = mem.last_accessed_at or mem.recorded_at
+            age_h = max((now - anchor).total_seconds() / 3600.0, 0.0)
+            recency = math.exp(-math.log(2) / half_life_h * age_h)
+            importance = mem.importance / 10.0
+            score = (W_REL * relevance + W_REC * recency + W_IMP * importance) / (
+                W_REL + W_REC + W_IMP
+            )
+            if mem.pinned or score >= floor:
+                hits.append(
+                    RecallHit(
+                        memory=mem,
+                        score=round(score, 4),
+                        relevance=round(relevance, 4),
+                        recency=round(recency, 4),
+                        importance=importance,
+                    )
+                )
+        hits.sort(key=lambda h: h.score, reverse=True)
+        hits = hits[:k]
+
+        if bump_access and hits and as_of is None:
+            await session.execute(
+                update(Memory)
+                .where(Memory.id.in_([h.memory.id for h in hits]))
+                .values(last_accessed_at=now, access_count=Memory.access_count + 1)
+            )
+            await session.commit()
+
+    logger.info(
+        "memory_recall",
+        tier="memory",
+        kind="recall",
+        query_len=len(query),
+        candidates=len(rrf),
+        returned=len(hits),
+        vector_leg=bool(vec_ids),
+    )
+    return hits
+
+
+async def pinned_memories(conversation_id: UUID | None = None) -> list[Memory]:
+    """The always-injected profile rows (spec §16.3), newest first."""
+    from sqlalchemy import select
+
+    async with get_session_factory()() as session:
+        stmt = (
+            select(Memory)
+            .where(Memory.pinned.is_(True), Memory.status == "active")
+            .order_by(Memory.recorded_at.desc())
+        )
+        rows = list((await session.execute(stmt)).scalars())
+    return [m for m in rows if m.scope != "conversation" or m.conversation_id == conversation_id]
