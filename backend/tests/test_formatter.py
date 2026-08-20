@@ -85,7 +85,10 @@ class TestFormatterPayload:
             "fake:scripted", "t", "120 then 135.", [], presentation="a2ui_first"
         )
         assert payload is not None
-        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b) for b in payload["blocks"]]
+        kinds = [
+            next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b)
+            for b in payload["blocks"]
+        ]
         assert kinds == ["a2ui", "chart", "a2ui"]
         assert payload["blocks"][1]["chart"]["kind"] == "bar"
         assert payload["charts"], "parallel charts array stays for legacy/history consumers"
@@ -117,7 +120,10 @@ class TestFormatterPayload:
             "fake:scripted", "t", "answer", [], presentation="a2ui_first", tool_charts=tool_charts
         )
         assert payload is not None
-        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b) for b in payload["blocks"]]
+        kinds = [
+            next(k for k in ("a2ui", "chart", "tool_chart_ref") if k in b)
+            for b in payload["blocks"]
+        ]
         assert kinds == ["a2ui", "tool_chart_ref", "a2ui"]
         assert payload["blocks"][1]["tool_chart_ref"] == 0
         assert "charts" not in payload  # refs alone add no formatter charts
@@ -199,17 +205,26 @@ class TestFormatterPayload:
             ]
         )
         fake_llm.push_message(
-            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": no_refs.model_dump(), "id": "r1"}])
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": no_refs.model_dump(), "id": "r1"}],
+            )
         )
         fake_llm.push_message(
-            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": with_ref.model_dump(), "id": "r2"}])
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": with_ref.model_dump(), "id": "r2"}],
+            )
         )
         tool_charts = [{"kind": "line", "title": "W", "labels": ["a"], "series": []}]
         payload, _usage = await generate_answer_ui(
             "fake:scripted", "t", "answer", [], tool_charts=tool_charts
         )
         assert payload is not None
-        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b) for b in payload["blocks"]]
+        kinds = [
+            next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b)
+            for b in payload["blocks"]
+        ]
         assert kinds == ["a2ui", "tool_chart_ref", "a2ui"], "repair result must be used"
 
     async def test_chart_ask_without_charts_triggers_repair(self) -> None:
@@ -230,10 +245,16 @@ class TestFormatterPayload:
             ]
         )
         fake_llm.push_message(
-            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": text_only.model_dump(), "id": "c1"}])
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": text_only.model_dump(), "id": "c1"}],
+            )
         )
         fake_llm.push_message(
-            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": with_chart.model_dump(), "id": "c2"}])
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": with_chart.model_dump(), "id": "c2"}],
+            )
         )
         payload, _usage = await generate_answer_ui(
             "fake:scripted", "please chart the values", "Values: 1, 2, 3.", []
@@ -270,7 +291,9 @@ class TestFormatterPayload:
             fake_llm.push_message(
                 AIMessage(
                     content="",
-                    tool_calls=[{"name": "AnswerUi", "args": chartless.model_dump(), "id": f"s{i}"}],
+                    tool_calls=[
+                        {"name": "AnswerUi", "args": chartless.model_dump(), "id": f"s{i}"}
+                    ],
                 )
             )
         tool_charts = [{"kind": "line", "title": "Weekly Trend", "labels": ["w1"], "series": []}]
@@ -278,7 +301,10 @@ class TestFormatterPayload:
             "fake:scripted", "t", "answer", [], tool_charts=tool_charts
         )
         assert payload is not None
-        kinds = [next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b) for b in payload["blocks"]]
+        kinds = [
+            next(k for k in ("a2ui", "chart", "tool_chart_ref", "table") if k in b)
+            for b in payload["blocks"]
+        ]
         assert "tool_chart_ref" in kinds, f"forced ref placement missing: {kinds}"
 
     async def test_compliant_document_needs_no_repair(self) -> None:
@@ -288,7 +314,9 @@ class TestFormatterPayload:
 
         ui = AnswerUi(components=[UiComponent(type="text", markdown="No charts requested.")])
         fake_llm.push_message(
-            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "n1"}])
+            AIMessage(
+                content="", tool_calls=[{"name": "AnswerUi", "args": ui.model_dump(), "id": "n1"}]
+            )
         )
         payload, _usage = await generate_answer_ui("fake:scripted", "summarize this", "text", [])
         assert payload is not None  # single invocation, no repair consumed

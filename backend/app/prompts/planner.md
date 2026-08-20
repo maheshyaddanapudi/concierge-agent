@@ -25,6 +25,7 @@ Rules:
   it instead.
 - Entries with no dependency run in parallel.
 
+{memory_block}
 Conversation so far:
 
 {history}

@@ -60,9 +60,7 @@ def parse_agent_document(text: str, filename: str = "") -> AgentDoc:
         if not isinstance(node, dict) or not node.get("id"):
             raise AgentDocError("every workflow node needs an 'id'")
         if node.get("type") == "skill" and not (node.get("skill") or node.get("skill_id")):
-            raise AgentDocError(
-                f"skill node {node.get('id')!r} needs 'skill' (name) or 'skill_id'"
-            )
+            raise AgentDocError(f"skill node {node.get('id')!r} needs 'skill' (name) or 'skill_id'")
     params = meta.get("model_params")
     if params is not None and not isinstance(params, dict):
         raise AgentDocError("'model_params' must be a mapping")

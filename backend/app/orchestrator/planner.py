@@ -136,6 +136,7 @@ def build_planner_prompt(
     history: str,
     summaries: dict[str, Any],
     max_plan_steps: int,
+    memory_block: str = "",
 ) -> str:
     def fmt_cards(cards: list[dict[str, Any]]) -> str:
         if not cards:
@@ -163,6 +164,7 @@ def build_planner_prompt(
         sub_agent_cards=fmt_cards(summaries["sub_agent_cards"]),
         direct_capabilities=direct_section,
         max_plan_steps=max_plan_steps,
+        memory_block=memory_block,
     )
 
 
@@ -183,7 +185,17 @@ async def run_planner(
     """Plan → validate → one repair retry → fail (spec §7.1). Returns the
     validated plan, raw outputs (for debugging storage), and token usage."""
     summaries = await registry_summaries(session)
-    prompt = build_planner_prompt(task, history, summaries, max_plan_steps)
+    # spec §16.3: budgeted remembered-context block, fail-open, "" when off
+    from app.memory.inject import build_memory_block
+    from app.orchestrator.context import get_run_context
+
+    ctx = get_run_context()
+    memory_block, _ = await build_memory_block(
+        task,
+        conversation_id=ctx.conversation_id if ctx else None,
+        surface="planner",
+    )
+    prompt = build_planner_prompt(task, history, summaries, max_plan_steps, memory_block)
     structured = model.with_structured_output(PlannerOutput, include_raw=True)
     raw_outputs: list[Any] = []
     usage = {"input_tokens": 0, "output_tokens": 0}

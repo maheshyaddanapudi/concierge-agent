@@ -86,10 +86,22 @@ async def build_agentic_agent() -> Any:
 
     stack = build_middleware_stack(AgenticLoopContext(model=model, max_tool_iterations=max_iter))
     checkpointer = await get_checkpointer()
+    # spec §16.3: the concierge system prompt carries the remembered-context
+    # block for this run's task — fail-open, empty when memory is off
+    from app.memory.inject import build_memory_block
+    from app.orchestrator.context import get_run_context
+
+    run_ctx = get_run_context()
+    memory_block, _ = await build_memory_block(
+        run_ctx.query_text if run_ctx else "",
+        conversation_id=run_ctx.conversation_id if run_ctx else None,
+        surface="agentic",
+    )
+    system_prompt = load_prompt("concierge") + (f"\n\n{memory_block}" if memory_block else "")
     return create_agent(
         model,
         tools=[_spin_worker_tool(), _use_full_catalog_tool()],
-        system_prompt=load_prompt("concierge"),
+        system_prompt=system_prompt,
         middleware=stack,
         checkpointer=checkpointer,
     )

@@ -101,9 +101,7 @@ class TestSeededReporter:
             f"{API}/sub-agents/{rep['id']}", json={"direct_exposure": False}
         )
         assert resp.status_code == 200
-        await seeded_client.patch(
-            f"{API}/sub-agents/{rep['id']}", json={"direct_exposure": True}
-        )
+        await seeded_client.patch(f"{API}/sub-agents/{rep['id']}", json={"direct_exposure": True})
 
     async def test_direct_invoke_through_form_gate(self, seeded_client: AsyncClient) -> None:
         async with get_session_factory()() as session:

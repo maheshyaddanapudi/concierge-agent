@@ -19,10 +19,21 @@ from app.factory.dag import validate_workflow
 from app.skilldoc import SkillDocError, parse_skill_document, validate_mentions
 
 _KNOWN_SKILL_KEYS = {
-    "name", "description", "persona", "tools", "direct_exposure", "max_tool_iterations",
+    "name",
+    "description",
+    "persona",
+    "tools",
+    "direct_exposure",
+    "max_tool_iterations",
 }
 _KNOWN_AGENT_KEYS = {
-    "name", "description", "persona", "model", "model_params", "direct_exposure", "workflow",
+    "name",
+    "description",
+    "persona",
+    "model",
+    "model_params",
+    "direct_exposure",
+    "workflow",
 }
 _MODEL_REF_RE = re.compile(r"^[a-z][a-z0-9_]*:[A-Za-z0-9._\-]+$")
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---", re.DOTALL)
@@ -77,7 +88,7 @@ def _prose_errors(filename: str, raw: dict[str, object]) -> list[str]:
     if exposure is not None and not isinstance(exposure, bool):
         out.append(
             f"{filename}: 'direct_exposure' must be a YAML boolean, not "
-            f"{type(exposure).__name__} — quoted \"false\" would seed as exposed"
+            f'{type(exposure).__name__} — quoted "false" would seed as exposed'
         )
     return out
 
@@ -99,9 +110,7 @@ def lint_skills(directory: Path) -> tuple[list[str], list[str], set[str]]:
         errors.extend(_name_errors(path.name, doc.name))
         errors.extend(_prose_errors(path.name, _frontmatter(text)))
         if doc.max_tool_iterations is not None and doc.max_tool_iterations > _INT32_MAX:
-            errors.append(
-                f"{path.name}: max_tool_iterations exceeds the registry INTEGER column"
-            )
+            errors.append(f"{path.name}: max_tool_iterations exceeds the registry INTEGER column")
         for err in validate_mentions(doc.instructions, doc.tools):
             errors.append(f"{path.name}: {err}")
         for key in doc.tools:
@@ -156,9 +165,7 @@ def lint_agents(directory: Path, skill_names: set[str]) -> tuple[list[str], list
             errors.append(f"{path.name}: duplicate agent name {doc.name!r}")
         seen.add(doc.name)
         if doc.model is not None and not _MODEL_REF_RE.match(doc.model):
-            errors.append(
-                f"{path.name}: model {doc.model!r} is not a provider:model reference"
-            )
+            errors.append(f"{path.name}: model {doc.model!r} is not a provider:model reference")
         if doc.model_params is not None:
             # validate against the REAL runtime contract (extra='forbid', so
             # typos and bad effort values fail here instead of at first run)

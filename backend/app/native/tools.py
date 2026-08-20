@@ -139,8 +139,10 @@ _ALIGNED_KINDS = {
     "candlestick",
     "boxplot",
 }
-_NAMED_SERIES_KINDS = {"candlestick": ["open", "high", "low", "close"],
-                       "boxplot": ["min", "q1", "median", "q3", "max"]}
+_NAMED_SERIES_KINDS = {
+    "candlestick": ["open", "high", "low", "close"],
+    "boxplot": ["min", "q1", "median", "q3", "max"],
+}
 
 
 class _ChartSpec(BaseModel):
@@ -158,7 +160,9 @@ class _ChartSpec(BaseModel):
         if self.kind in {"scatter", "bubble"}:
             need = 3 if self.kind == "bubble" else 2
             if not self.series or not all(s.points for s in self.series):
-                raise ValueError(f"{self.kind} needs points ([x, y{', size' if need == 3 else ''}]) on every series")
+                raise ValueError(
+                    f"{self.kind} needs points ([x, y{', size' if need == 3 else ''}]) on every series"
+                )
             for s in self.series:
                 for p in s.points or []:
                     if len(p) < need:
@@ -184,7 +188,10 @@ class _ChartSpec(BaseModel):
             names = sorted(s.name.lower() for s in self.series)
             if names != sorted(expected):
                 raise ValueError(f"{self.kind} needs exactly these series: {', '.join(expected)}")
-        if self.kind in {"funnel", "waterfall", "pie", "donut", "histogram"} and len(self.series) > 1:
+        if (
+            self.kind in {"funnel", "waterfall", "pie", "donut", "histogram"}
+            and len(self.series) > 1
+        ):
             # single-series kinds: extra series are almost always a mistake
             raise ValueError(f"{self.kind} takes exactly one series")
         if self.kind in _ALIGNED_KINDS:
@@ -207,7 +214,7 @@ class _ChartSpec(BaseModel):
     "yourself), funnel (ordered stages, one series), waterfall (signed deltas, "
     "one series), lollipop, gauge (one series [value, max]), sparkline (tiny "
     "trend), scatter / bubble (per-series points [x,y] / [x,y,size]), "
-    'candlestick (four series named open/high/low/close), boxplot (five series '
+    "candlestick (four series named open/high/low/close), boxplot (five series "
     "named min/q1/median/q3/max — pre-computed only), gantt (ranges: "
     '[startISO, endISO] per label), combo (per-series render: "bar"|"line"). '
     'Default shape: {"name": str, "values": [numbers]} aligned 1:1 with labels. '
