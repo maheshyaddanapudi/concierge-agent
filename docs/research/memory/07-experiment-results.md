@@ -9,8 +9,11 @@ dark), on the live stack, with real model calls and deterministic grading.
 ## 1. Method
 
 - **Live stack, real runs.** Every probe turn is a real `POST /chat` against the
-  running compose stack (graph orchestrator, default model
-  `anthropic:claude-sonnet-4-6`). Conversation slots map to real conversations,
+  running compose stack (graph orchestrator; default model
+  `anthropic:claude-sonnet-4-6`, planner role overridden to
+  `anthropic:claude-sonnet-5` at high effort — a stage-20 setting that was
+  identical across all five configs, and the planner's `direct_answer` is what
+  answers these probes). Conversation slots map to real conversations,
   so cross-conversation recall is genuinely cross-conversation — nothing is
   simulated or short-circuited.
 - **Probe suite** (`experiments/memory/probes.py`): 7 probes over the six
@@ -135,7 +138,7 @@ to isolate the L3 effect.
 | 1 | indirect, some capability words ("site notes", "workspace") | 0/3 | 0/3 |
 | 2 | oblique, zero capability words ("line 3 walkthrough", "field visit") | 0/3 | 0/3 |
 
-- **Round 1:** the router never failed. `claude-sonnet-4-6` over the seeded
+- **Round 1:** the router never failed. The `claude-sonnet-5` planner over the seeded
   registry descriptions routed every indirect paraphrase to the right sub
   agent without exemplar help. The stage-30 fallback finding did not
   reproduce under these conditions — the control arm has nothing for L3 to
@@ -196,7 +199,7 @@ surfaced only under live measurement:
 - **Small N.** 7 probes × 5 configs is an ablation smoke test, not a
   benchmark. Directional conclusions (F1–F5) rest on large effect sizes;
   fine-grained ranking between 7/7 configs rests on cost, not score.
-- **One model.** All runs on `claude-sonnet-4-6`. The §15 eval roadmap
+- **One model pairing.** All runs on `claude-sonnet-5` (planner) over `claude-sonnet-4-6` (other roles). The §15 eval roadmap
   (spreadsheet-driven, LangSmith-published) is the vehicle for multi-model
   sweeps.
 
