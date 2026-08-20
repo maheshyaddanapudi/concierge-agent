@@ -23,10 +23,12 @@ WARMUPS = [
 ]
 
 # indirect paraphrases — no capability named (the stage-30 shape that fell back)
+# round 2: obliquer still — content words only, zero overlap with skill or
+# sub-agent names/descriptions (round 1 never induced a fallback in either arm)
 TEST_ASKS = [
-    "What's the quick gist of the site notes file?",
-    "Anything worth knowing from those production line notes?",
-    "How does our workspace look right now — roughly what's in there?",
+    "Anything worrying come out of the line 3 walkthrough?",
+    "Quick pulse check: what did the field visit turn up?",
+    "Rough picture of what we've got lying around in the shared area?",
 ]
 
 
@@ -70,6 +72,9 @@ async def main() -> None:
                 "memory_extraction_enabled": False,  # isolate the L3 effect
                 "procedural_learning_enabled": True,
                 "orchestrator_mode": "graph",
+                "embedding_model": "fake:scripted",
+                "memory_injection_budget_tokens": 1200,
+                "memory_score_floor": 0.35,
             },
         )
         print("— warm-up (procedural ON so exemplars harvest) —", flush=True)
