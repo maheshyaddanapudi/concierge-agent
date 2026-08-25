@@ -63,6 +63,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     memory_stop = asyncio.Event()
     memory_loop_task = asyncio.create_task(run_periodic_loop(memory_stop))
+    # native poll sources + state probes (spec §18.3) — registered every
+    # boot so the tick and the watch compiler see the live registries
+    from app.ambient.sources import register_native_sources
+
+    register_native_sources()
     # ambient drain loop (spec §17.2) — cheap ticks while ambient is dark
     from app.ambient.drain import run_ambient_loop
 

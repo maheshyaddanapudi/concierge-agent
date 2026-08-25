@@ -21,27 +21,35 @@ from app.models import Routine, StandingIntent
 
 logger = structlog.get_logger("ambient")
 
-# poll source contract: (watermark) -> (new_items, new_watermark)
-PollSource = Callable[[str | None], Awaitable[tuple[list[dict[str, Any]], str | None]]]
+# poll source contract (§18.3): (watermark, config) -> (new_items, new_watermark)
+PollSource = Callable[
+    [str | None, dict[str, Any]], Awaitable[tuple[list[dict[str, Any]], str | None]]
+]
 _POLL_SOURCES: dict[str, PollSource] = {}
+_POLL_SHAPES: dict[str, str] = {}
 
-# state probe contract: () -> float (current value of the observed quantity)
-StateProbe = Callable[[], Awaitable[float]]
+# state probe contract (§18.3): (config) -> float (current value of the quantity)
+StateProbe = Callable[[dict[str, Any]], Awaitable[float]]
 _STATE_PROBES: dict[str, StateProbe] = {}
+_PROBE_SHAPES: dict[str, str] = {}
 
 
-def register_poll_source(name: str, fn: PollSource | None) -> None:
+def register_poll_source(name: str, fn: PollSource | None, config_shape: str = "") -> None:
     if fn is None:
         _POLL_SOURCES.pop(name, None)
+        _POLL_SHAPES.pop(name, None)
     else:
         _POLL_SOURCES[name] = fn
+        _POLL_SHAPES[name] = config_shape
 
 
-def register_state_probe(name: str, fn: StateProbe | None) -> None:
+def register_state_probe(name: str, fn: StateProbe | None, config_shape: str = "") -> None:
     if fn is None:
         _STATE_PROBES.pop(name, None)
+        _PROBE_SHAPES.pop(name, None)
     else:
         _STATE_PROBES[name] = fn
+        _PROBE_SHAPES[name] = config_shape
 
 
 def registered_poll_sources() -> set[str]:
@@ -50,6 +58,15 @@ def registered_poll_sources() -> set[str]:
 
 def registered_state_probes() -> set[str]:
     return set(_STATE_PROBES)
+
+
+def poll_source_specs() -> dict[str, str]:
+    """name → config shape, for the watch compiler's prompt (§18.3)."""
+    return dict(_POLL_SHAPES)
+
+
+def state_probe_specs() -> dict[str, str]:
+    return dict(_PROBE_SHAPES)
 
 
 # ── schedules (spec §17.2: cron / interval / once, UTC + stagger) ─────
@@ -88,9 +105,7 @@ async def evaluate_schedules(now: datetime | None = None) -> int:
     fired = 0
     async with get_session_factory()() as session:
         routines = list(
-            (
-                await session.execute(select(Routine).where(Routine.status == "active"))
-            ).scalars()
+            (await session.execute(select(Routine).where(Routine.status == "active"))).scalars()
         )
     for routine in routines:
         for i, trig in enumerate(routine.triggers or []):
@@ -168,8 +183,9 @@ async def poll_due_intents(now: datetime | None = None) -> int:
         last = intent.last_checked_at
         if last is not None and (now - last).total_seconds() < effective_interval:
             continue
+        poll_config = dict((compiled.get("poll") or {}).get("config") or {})
         try:
-            items, new_watermark = await _POLL_SOURCES[source_name](intent.watermark)
+            items, new_watermark = await _POLL_SOURCES[source_name](intent.watermark, poll_config)
         except Exception as exc:  # noqa: BLE001 — a broken source never kills the tick
             logger.warning("ambient_poll_failed", intent=str(intent.id), error=str(exc))
             continue
@@ -226,7 +242,7 @@ async def evaluate_state_conditions(now: datetime | None = None) -> int:
         if not probe_name or probe_name not in _STATE_PROBES:
             continue
         try:
-            value = await _STATE_PROBES[probe_name]()
+            value = await _STATE_PROBES[probe_name](dict(compiled.get("config") or {}))
         except Exception as exc:  # noqa: BLE001
             logger.warning("ambient_probe_failed", intent=str(intent.id), error=str(exc))
             continue

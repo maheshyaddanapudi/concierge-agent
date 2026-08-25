@@ -86,7 +86,9 @@ async def sim() -> dict[str, Any]:
     burst_lo = start + timedelta(days=1, hours=12)
     burst_hi = burst_lo + timedelta(hours=1)
 
-    async def feed(watermark: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    async def feed(
+        watermark: str | None, config: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str | None]:
         if burst_lo <= sim_now < burst_hi:
             return ([{"item": f"burst-{sim_now.isoformat()}"}], sim_now.isoformat())
         return ([], watermark)

@@ -136,7 +136,9 @@ async def test_near_due_intent_polls_at_base_interval() -> None:
     now = datetime.now(UTC)
     polled: list[str] = []
 
-    async def source(watermark: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    async def source(
+        watermark: str | None, config: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str | None]:
         polled.append("hit")
         return [], watermark
 

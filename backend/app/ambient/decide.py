@@ -180,7 +180,14 @@ async def _decide(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:
         if intent is None or intent.status != "active":
             return ("dropped", "intent missing or not active", decision)
         filters = (intent.compiled or {}).get("filters") or []
-        if filters and not match_filters(event.payload, filters):
+        # §18.3: the compiler writes poll filters over ITEM fields, so a
+        # poll item is unwrapped into the unified data model {kind, source,
+        # **item} before matching — the raw payload keeps its fence wrapper
+        data = dict(event.payload or {})
+        item = data.get("item")
+        if isinstance(item, dict):
+            data = {"kind": event.kind, "source": event.source, **item}
+        if filters and not match_filters(data, filters):
             return ("held", "tier-1 filters did not match", decision)
         return await _intent_fire(intent, event, decision)
 

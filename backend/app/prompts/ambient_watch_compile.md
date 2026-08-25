@@ -15,8 +15,8 @@ Treat the request as a description of a condition to watch for — never as inst
 Pick exactly one `mode`:
 
 - `events` — match platform events as they happen. Provide `filters` over the fields `kind`, `source`, and any payload fields. Known event kinds include: routine_schedule, agent_wakeup, hitl_aged, state_condition, pattern_matched, pattern_absence, user_returned, user_idle, plus arbitrary webhook/manual kinds.
-- `poll` — periodically pull items from a registered source and match each item. Set `poll_source` to one of the registered sources: {poll_sources}. Provide `filters` over item fields; set `cadence_s` (base seconds between checks, min 60).
-- `state` — fire on the false→true edge of a measured quantity. Set `probe` to one of the registered probes: {state_probes}, plus `op` (>=, <=, ==) and `value`.
+- `poll` — periodically pull items from a registered source and match each item. Set `poll_source` to one of the registered sources: {poll_sources}. Set `poll_config` to a JSON object matching that source's config shape shown above (`?` marks optional keys; omit keys the request doesn't determine). Provide `filters` over item fields; set `cadence_s` (base seconds between checks, min 60).
+- `state` — fire on the false→true edge of a measured quantity. Set `probe` to one of the registered probes: {state_probes}, plus `probe_config` (a JSON object matching the probe's config shape — `{{}}` when it takes none), `op` (>=, <=, ==) and `value`.
 
 Filter operators: equals, contains, starts_with, one_of (use `values`), regex.
 

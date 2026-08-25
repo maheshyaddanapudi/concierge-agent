@@ -29,7 +29,9 @@ class WatchCompile(BaseModel):
     mode: Literal["events", "poll", "state"]
     filters: list[WatchFilter] = Field(default_factory=list)
     poll_source: str | None = None
+    poll_config: dict[str, Any] = Field(default_factory=dict)
     probe: str | None = None
+    probe_config: dict[str, Any] = Field(default_factory=dict)
     op: Literal[">=", "<=", "=="] = ">="
     value: float = 0.0
     semantic_predicate: str | None = None
@@ -136,7 +138,12 @@ async def ambient_cancel_wakeup(wakeup_id: str) -> dict[str, Any]:
     "confirms it via ambient.confirm_watch. Never activates silently.",
 )
 async def ambient_watch(text: str) -> dict[str, Any]:
-    from app.ambient.triggers import registered_poll_sources, registered_state_probes
+    from app.ambient.triggers import (
+        poll_source_specs,
+        registered_poll_sources,
+        registered_state_probes,
+        state_probe_specs,
+    )
     from app.db import get_session_factory
     from app.llm import ModelParams, get_model
     from app.models import StandingIntent
@@ -148,10 +155,21 @@ async def ambient_watch(text: str) -> dict[str, Any]:
     cache = get_cache()
     ref = await cache.setting("memory_extraction_model") or await cache.setting("default_model")
     model = get_model(str(ref), ModelParams(effort="low"))
+
+    def _registry_lines(specs: dict[str, str]) -> str:
+        # §18.3: the compiler prompt lists each live entry WITH its config shape
+        return (
+            ", ".join(
+                f"{name} (config: {shape})" if shape else name
+                for name, shape in sorted(specs.items())
+            )
+            or "(none registered)"
+        )
+
     prompt = load_prompt("ambient_watch_compile").format(
         text=text[:2000],
-        poll_sources=", ".join(sorted(registered_poll_sources())) or "(none registered)",
-        state_probes=", ".join(sorted(registered_state_probes())) or "(none registered)",
+        poll_sources=_registry_lines(poll_source_specs()),
+        state_probes=_registry_lines(state_probe_specs()),
     )
     try:
         out = await model.with_structured_output(WatchCompile).ainvoke(prompt)
@@ -164,13 +182,18 @@ async def ambient_watch(text: str) -> dict[str, Any]:
         if not out.probe or out.probe not in registered_state_probes():
             return {"status": "rejected", "error": f"unknown state probe: {out.probe!r}"}
         condition_type = "state"
-        compiled = {"probe": out.probe, "op": out.op, "value": out.value}
+        compiled = {
+            "probe": out.probe,
+            "config": out.probe_config,
+            "op": out.op,
+            "value": out.value,
+        }
     elif out.mode == "poll":
         if not out.poll_source or out.poll_source not in registered_poll_sources():
             return {"status": "rejected", "error": f"unknown poll source: {out.poll_source!r}"}
         condition_type = "event"
         compiled = {
-            "poll": {"source": out.poll_source},
+            "poll": {"source": out.poll_source, "config": out.poll_config},
             "filters": [f.model_dump() for f in out.filters],
         }
     else:

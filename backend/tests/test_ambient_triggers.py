@@ -113,7 +113,9 @@ async def test_poller_aimd_backoff_and_reset() -> None:
     feed: list[list[dict[str, Any]]] = [[], [], [{"id": "a1", "text": "fresh item"}]]
     calls = {"n": 0}
 
-    async def source(watermark: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    async def source(
+        watermark: str | None, config: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str | None]:
         items = feed[min(calls["n"], len(feed) - 1)]
         calls["n"] += 1
         return items, "a1" if items else watermark
@@ -149,7 +151,7 @@ async def test_poller_aimd_backoff_and_reset() -> None:
 async def test_poller_expires_intent() -> None:
     await _enable()
 
-    async def source(w: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    async def source(w: str | None, config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
         return [], w
 
     register_poll_source("exp-feed", source)
@@ -173,7 +175,7 @@ async def test_state_condition_fires_on_edge_only() -> None:
     await _enable()
     value = {"v": 0.0}
 
-    async def probe() -> float:
+    async def probe(config: dict[str, Any]) -> float:
         return value["v"]
 
     register_state_probe("test-gauge", probe)
