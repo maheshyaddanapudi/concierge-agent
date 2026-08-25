@@ -62,6 +62,10 @@ MEMORY_INJECTED_TOKENS = Histogram(
 MEMORY_RECALL_SECONDS = Histogram("concierge_memory_recall_seconds", "Memory recall latency")
 # ambient mode (spec §17.6)
 AMBIENT_OPS = Counter("concierge_ambient_ops_total", "Ambient operations", ["kind", "status"])
+# §18.1: real token cost of tier-2 significance judgments
+AMBIENT_JUDGE_TOKENS = Counter(
+    "concierge_ambient_judge_tokens_total", "Ambient judge token usage", ["direction"]
+)
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

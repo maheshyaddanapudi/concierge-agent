@@ -109,6 +109,10 @@ async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> Si
     if not isinstance(parsed, SignificanceOutput):
         raise ValueError(f"judge parse failed: {out.get('parsing_error')}")
     usage = dict(getattr(out.get("raw"), "usage_metadata", None) or {})
+    from app import obs
+
+    obs.AMBIENT_JUDGE_TOKENS.labels(direction="input").inc(int(usage.get("input_tokens", 0)))
+    obs.AMBIENT_JUDGE_TOKENS.labels(direction="output").inc(int(usage.get("output_tokens", 0)))
     if _judge_usage_hook is not None:
         try:
             _judge_usage_hook(usage)
