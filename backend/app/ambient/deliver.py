@@ -197,6 +197,7 @@ async def _digest_flush(now: datetime) -> int:
     escalation_budget = int(await get_cache().setting("ambient_escalation_budget_per_day"))
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     flushed = 0
+    delivered_rows: list[Delivery] = []
     async with get_session_factory()() as session:
         approvals_today = int(
             (
@@ -218,7 +219,12 @@ async def _digest_flush(now: datetime) -> int:
             row.delivered_at = now
             row.channel = "digest"
             flushed += 1
+            delivered_rows.append(row)
         await session.commit()
+    if delivered_rows:
+        from app.ambient.channels import dispatch_delivered
+
+        await dispatch_delivered("digest", delivered_rows)
     if flushed:
         from app import obs
 
@@ -232,6 +238,7 @@ async def _flush_tier1(now: datetime, *, quiet: bool, force: bool = False) -> in
     bounded deferral (spec §17.5, Horvitz) delivers past the deadline even
     with nobody present."""
     delivered = 0
+    delivered_rows: list[Delivery] = []
     present = force or await _presence_active()
     async with get_session_factory()() as session:
         for row in await _pending(session, 1):
@@ -246,7 +253,12 @@ async def _flush_tier1(now: datetime, *, quiet: bool, force: bool = False) -> in
             row.delivered_at = now
             row.channel = "notify"
             delivered += 1
+            delivered_rows.append(row)
         await session.commit()
+    if delivered_rows:
+        from app.ambient.channels import dispatch_delivered
+
+        await dispatch_delivered("notify", delivered_rows)
     return delivered
 
 
@@ -263,6 +275,7 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
     quiet = in_quiet_hours(now, quiet_ranges)
     out = {"interrupt": 0, "notify": 0, "digest": 0, "demoted": 0}
 
+    interrupt_rows: list[Delivery] = []
     async with get_session_factory()() as session:
         used = await _interrupts_delivered_today(session, now)
         for row in await _pending(session, 0):
@@ -281,7 +294,12 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
             row.channel = "interrupt"
             used += 1
             out["interrupt"] += 1
+            interrupt_rows.append(row)
         await session.commit()
+    if interrupt_rows:
+        from app.ambient.channels import dispatch_delivered
+
+        await dispatch_delivered("interrupt", interrupt_rows)
 
     out["notify"] = await _flush_tier1(now, quiet=quiet)
 

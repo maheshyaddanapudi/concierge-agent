@@ -75,6 +75,9 @@ DEFAULTS: dict[str, Any] = {
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
     "ambient_learning_mode": "off",
+    # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
+    # empty ⇒ in-app only, byte-identical to M23–M25
+    "ambient_channels": {},
 }
 
 _MODEL_KEYS = {
@@ -223,6 +226,30 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("memory_score_floor must be a number between 0 and 1")
         elif key == "ambient_learning_mode" and value not in {"off", "auto", "propose"}:
             errors.append("ambient_learning_mode must be one of: off, auto, propose")
+        elif key == "ambient_channels":
+            from app.ambient.channels import DELIVERY_MODES, registered_channels
+
+            if not isinstance(value, dict):
+                errors.append("ambient_channels must be an object of mode → channel list")
+            else:
+                known = registered_channels()
+                for mode, chans in value.items():
+                    if mode not in DELIVERY_MODES:
+                        errors.append(
+                            f"ambient_channels: unknown mode {mode!r} "
+                            f"(expected one of {sorted(DELIVERY_MODES)})"
+                        )
+                    elif not isinstance(chans, list) or not all(
+                        isinstance(c, str) for c in chans
+                    ):
+                        errors.append(f"ambient_channels[{mode!r}] must be a list of strings")
+                    else:
+                        unknown = set(chans) - known
+                        if unknown:
+                            errors.append(
+                                f"ambient_channels[{mode!r}]: unknown channel(s) "
+                                f"{sorted(unknown)} — registered: {sorted(known)}"
+                            )
         elif key in {"ambient_digest_times", "ambient_quiet_hours"}:
             import re as _re
 

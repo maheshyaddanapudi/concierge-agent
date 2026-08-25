@@ -39,6 +39,7 @@ def _delivery_out(d: Delivery) -> dict[str, Any]:
         "superseded_by": str(d.superseded_by) if d.superseded_by else None,
         "feedback": d.feedback,
         "reward": d.reward,
+        "external": d.external,  # §18.4 per-channel send ledger
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
@@ -149,6 +150,49 @@ async def patch_watch(intent_id: UUID, body: WatchPatch, session: SessionDep) ->
     await session.commit()
     await session.refresh(row)
     return _watch_out(row)
+
+
+@ledger_router.get("/stream")
+async def ambient_stream() -> Any:
+    """Global delivery-event SSE (spec §18.4): exists only while ambient is
+    on — 409 when dark, mirroring the fire endpoint. The UI subscribes only
+    when the settings snapshot says ambient is on; dark ⇒ no stream, no
+    subscription, no toast."""
+    import asyncio
+
+    from fastapi.responses import StreamingResponse
+
+    from app.ambient import channels
+    from app.registry_cache import get_cache
+
+    if not bool(await get_cache().setting("ambient_enabled")):
+        raise HTTPException(409, "ambient mode is disabled (ambient_enabled=false)")
+
+    async def gen() -> Any:
+        sub_id, queue = channels.subscribe_stream()
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=channels.STREAM_KEEPALIVE_S
+                    )
+                except TimeoutError:
+                    # keepalive doubles as the dark check: the stream exists
+                    # only while ambient is on
+                    if not bool(await get_cache().setting("ambient_enabled")):
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                yield channels.sse_line(event)
+        finally:
+            channels.unsubscribe_stream(sub_id)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @ledger_router.get("/ledger")

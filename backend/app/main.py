@@ -68,6 +68,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.ambient.sources import register_native_sources
 
     register_native_sources()
+    # delivery channel adapters (spec §18.4) — in_app is the outbox itself
+    from app.ambient.channels import register_native_channels
+
+    register_native_channels()
     # ambient drain loop (spec §17.2) — cheap ticks while ambient is dark
     from app.ambient.drain import run_ambient_loop
 

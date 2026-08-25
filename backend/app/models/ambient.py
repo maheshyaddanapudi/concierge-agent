@@ -218,6 +218,8 @@ class Delivery(Base):
     # supersede-collapse key (spec §17.5): pending items sharing it are
     # superseded by the newest arrival
     skey: Mapped[str | None] = mapped_column(String(255), default=None)
+    # §18.4 per-channel send ledger: {channel: {ok, error, at}}
+    external: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     feedback: Mapped[str | None] = mapped_column(String(16), default=None)
     reward: Mapped[float | None] = mapped_column(Float, default=None)  # §17.7 substrate
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

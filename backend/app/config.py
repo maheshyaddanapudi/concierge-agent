@@ -23,6 +23,14 @@ class AppConfig(BaseSettings):
     redis_url: str | None = None  # optional registry-cache backend (spec §7.3)
     otel_exporter_otlp_endpoint: str | None = None
     workspace_dir: str = "/workspace"
+    # ambient delivery channels (spec §18.4) — env-only, like all secrets
+    smtp_host: str | None = None
+    smtp_port: int = 25
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_to: str | None = None
+    ambient_webhook_url: str | None = None
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

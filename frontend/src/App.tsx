@@ -10,6 +10,7 @@ import { MemoryPage } from './pages/MemoryPage'
 import { RunsPage } from './pages/RunsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { useSettings } from './api/hooks'
+import { AmbientToaster } from './components/AmbientToaster'
 import { cx } from './components/ui'
 
 const queryClient = new QueryClient({
@@ -105,6 +106,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>
+          <AmbientToaster />
         </div>
       </HashRouter>
     </QueryClientProvider>
