@@ -247,7 +247,9 @@ class OpenRouterProvider(ModelProviderBase):
             ModelInfo("z-ai/glm-5.2", "GLM 5.2 (Z.ai)"),
             ModelInfo("deepseek/deepseek-v4-pro-0813", "DeepSeek V4 Pro"),
             ModelInfo("qwen/qwen3.8-max", "Qwen 3.8 Max"),
+            ModelInfo("qwen/qwen3.6-plus", "Qwen 3.6 Plus"),
             ModelInfo("moonshotai/kimi-k3", "Kimi K3"),
+            ModelInfo("stealth/ox-alpha", "Ox Alpha (stealth preview)"),
         ]
 
     def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:
