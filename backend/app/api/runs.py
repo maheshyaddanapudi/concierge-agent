@@ -67,6 +67,8 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
         "target_sub_agent_id": str(run.target_sub_agent_id) if run.target_sub_agent_id else None,
         "include_history_summary": run.include_history_summary,
         "include_memories": run.include_memories,
+        # §17.4 ambient provenance — None for interactive runs
+        "trigger": run.trigger,
         "plan": run.plan,
         "snapshot": run.snapshot,
         "final_answer": run.final_answer,

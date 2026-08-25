@@ -60,14 +60,17 @@ async def advance_patterns(event: AmbientEvent) -> int:
                 )
             ).scalars()
         )
+    # filters see the same data model everywhere in the decision plane:
+    # kind, source, and the payload fields (what the watch compiler promises)
+    data = {"kind": event.kind, "source": event.source, **(event.payload or {})}
     for intent in intents:
         spec = (intent.compiled or {}).get("pattern")
         if not spec:
             continue
         rule_key = f"intent:{intent.id}"
         kind = spec.get("kind")
-        a_match = match_filters(event.payload, spec.get("a", {}).get("filters", []))
-        b_match = match_filters(event.payload, spec.get("b", {}).get("filters", []))
+        a_match = match_filters(data, spec.get("a", {}).get("filters", []))
+        b_match = match_filters(data, spec.get("b", {}).get("filters", []))
         window = timedelta(seconds=int(spec.get("window_s", 3600)))
         partition = _partition(event, spec)
 
@@ -120,8 +123,13 @@ async def advance_patterns(event: AmbientEvent) -> int:
                     continue
                 if armed is not None and (a_match or b_match) and armed.a_event_id != event.id:
                     first = await session.get(AmbientEvent, armed.a_event_id)
+                    first_data = (
+                        {"kind": first.kind, "source": first.source, **(first.payload or {})}
+                        if first is not None
+                        else {}
+                    )
                     first_was_a = first is not None and match_filters(
-                        first.payload, spec.get("a", {}).get("filters", [])
+                        first_data, spec.get("a", {}).get("filters", [])
                     )
                     completes = (first_was_a and b_match) or (not first_was_a and a_match)
                     if completes:

@@ -318,6 +318,29 @@ def _pattern_intent_spec(kind: str, window_s: int = 3600) -> dict[str, Any]:
     }
 
 
+async def test_pattern_filters_see_kind_and_source() -> None:
+    """Filters share one data model across the decision plane: kind, source,
+    payload fields (M24 harness regression — patterns saw payload only)."""
+    await _enable()
+    await _intent(
+        compiled={
+            "pattern": {
+                "kind": "sequence",
+                "a": {"filters": [{"field": "kind", "op": "equals", "value": "deploy_done"}]},
+                "b": {"filters": [{"field": "kind", "op": "equals", "value": "alert_raised"}]},
+                "window_s": 300,
+                "cooldown_s": 0,
+            }
+        }
+    )
+    a = await emit_event(kind="deploy_done", source="internal", payload={"rev": "2ea11"})
+    assert a is not None
+    await advance_patterns(a)
+    b = await emit_event(kind="alert_raised", source="internal")
+    assert b is not None
+    assert await advance_patterns(b) == 1
+
+
 async def test_sequence_pattern_matches_within_window() -> None:
     await _enable()
     intent = await _intent(compiled=_pattern_intent_spec("sequence"))
