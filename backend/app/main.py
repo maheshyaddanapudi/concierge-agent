@@ -63,7 +63,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     memory_stop = asyncio.Event()
     memory_loop_task = asyncio.create_task(run_periodic_loop(memory_stop))
+    # ambient drain loop (spec §17.2) — cheap ticks while ambient is dark
+    from app.ambient.drain import run_ambient_loop
+
+    ambient_stop = asyncio.Event()
+    ambient_loop_task = asyncio.create_task(run_ambient_loop(ambient_stop))
     yield
+    ambient_stop.set()
+    ambient_loop_task.cancel()
     memory_stop.set()
     memory_loop_task.cancel()
     from app.memory.scheduler import shutdown as memory_shutdown

@@ -41,6 +41,12 @@ class Run(Base):
     include_history_summary: Mapped[bool] = mapped_column(default=False)
     # §16.3 opt-in: inject the remembered-context block into a direct run
     include_memories: Mapped[bool] = mapped_column(default=False)
+    # §17.4 ambient provenance: {routine_id, event_id, source} — NULL for chat runs
+    trigger: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # §17.4 liveness (heartbeat sense H3): refreshed by the runner each tick
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
     # the formatter's structured artifact (spec §7.1 answer_ui) — carries its
     # own presentation + coverage so history renders by run-time facts

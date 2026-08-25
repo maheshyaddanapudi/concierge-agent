@@ -60,6 +60,8 @@ MEMORY_INJECTED_TOKENS = Histogram(
     "concierge_memory_injected_tokens", "Tokens injected from memory", ["surface"]
 )
 MEMORY_RECALL_SECONDS = Histogram("concierge_memory_recall_seconds", "Memory recall latency")
+# ambient mode (spec §17.6)
+AMBIENT_OPS = Counter("concierge_ambient_ops_total", "Ambient operations", ["kind", "status"])
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )
