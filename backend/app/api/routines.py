@@ -78,6 +78,18 @@ async def _ambient_on(session: SessionDep) -> None:
         raise HTTPException(409, "ambient mode is disabled (ambient_enabled=false)")
 
 
+def _validate_model_ref(ref: str | None) -> None:
+    """§18.1: a routine's model override is validated at save time, exactly
+    like the settings model refs."""
+    if not ref:
+        return
+    from app.llm.registry import validate_model_selection
+
+    errors = validate_model_selection(ref)
+    if errors:
+        raise HTTPException(422, f"model_ref: {'; '.join(errors)}")
+
+
 @router.get("")
 async def list_routines(session: SessionDep) -> list[dict[str, Any]]:
     rows = list((await session.execute(select(Routine).order_by(Routine.name))).scalars())
@@ -91,6 +103,7 @@ async def create_routine(body: RoutineBody, session: SessionDep) -> dict[str, An
 
     if body.autonomy not in ROUTINE_AUTONOMY:
         raise HTTPException(422, f"autonomy must be one of {sorted(ROUTINE_AUTONOMY)}")
+    _validate_model_ref(body.model_ref)
     cap = int(await get_cache().setting("ambient_max_routines"))
     count = (await session.execute(select(func.count()).select_from(Routine))).scalar_one()
     if count >= cap:
@@ -140,6 +153,8 @@ async def patch_routine(
             raise HTTPException(409, f"static routine: only status may change (got {sorted(illegal)})")
     if "autonomy" in changes and changes["autonomy"] not in ROUTINE_AUTONOMY:
         raise HTTPException(422, f"autonomy must be one of {sorted(ROUTINE_AUTONOMY)}")
+    if "model_ref" in changes:
+        _validate_model_ref(changes["model_ref"])
     if "status" in changes and changes["status"] not in {"active", "paused"}:
         raise HTTPException(422, "status must be 'active' or 'paused'")
     for key, value in changes.items():

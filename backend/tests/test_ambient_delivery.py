@@ -368,12 +368,12 @@ async def test_anticipation_runs_with_fake_model(seeded_client: Any) -> None:
         ],
     )
     created = await run_anticipation()
-    assert created is not None
+    assert created is not None and len(created) == 1
     async with get_session_factory()() as session:
-        row = await session.get(Delivery, created)
+        row = await session.get(Delivery, created[0])
         assert row is not None
         assert row.category == "anticipation" and row.tier == 2
-        assert "HNSW" in (row.body or "")
+        assert "ef_construction" in (row.body or "")
     # the same idle window never produces a second briefing
     assert await run_anticipation() is None
 

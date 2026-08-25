@@ -255,6 +255,17 @@ async def run_config(config: str) -> dict[str, Any]:
     from app.settings_store import update_settings
 
     with_predicates = config in {"judge_fake", "judge_live"}
+    # §18.1: real token accounting — every judge call reports usage_metadata
+    from app.ambient.decide import register_judge_usage_hook
+
+    judge_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+    def _on_judge_usage(usage: dict) -> None:
+        judge_usage["calls"] += 1
+        judge_usage["input_tokens"] += int(usage.get("input_tokens", 0) or 0)
+        judge_usage["output_tokens"] += int(usage.get("output_tokens", 0) or 0)
+
+    register_judge_usage_hook(_on_judge_usage)
 
     engine = get_engine()
     results: list[dict[str, Any]] = []
@@ -370,6 +381,7 @@ async def run_config(config: str) -> dict[str, Any]:
         print(f"  {scenario.name:20s} tp={tp} fp={fp} fn={fn} fired={sorted(norm_fired)}")
 
     register_processor(None)
+    register_judge_usage_hook(None)
     precision = totals["tp"] / (totals["tp"] + totals["fp"]) if totals["tp"] + totals["fp"] else 1.0
     recall = totals["tp"] / (totals["tp"] + totals["fn"]) if totals["tp"] + totals["fn"] else 1.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
@@ -384,6 +396,7 @@ async def run_config(config: str) -> dict[str, Any]:
         "false_alarms": totals["fp"],
         "reaction_ticks": reaction_ticks,
         "max_reaction_ticks": max(reaction_ticks) if reaction_ticks else 0,
+        "judge_usage": judge_usage,  # real usage_metadata totals (§18.1)
         "wall_s": round(time.monotonic() - t0, 1),
         "scenarios": results,
     }

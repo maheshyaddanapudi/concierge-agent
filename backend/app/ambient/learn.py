@@ -242,27 +242,38 @@ async def _learn_digest_times(mode: str) -> int:
                 )
             ).scalars()
         )
-    if len(accepted) < PROMOTE_MIN_SAMPLE:
+    if len(accepted) < LEARN_MIN_SAMPLE:
         return 0
     anchor = await _digest_anchor(current)
     if len(anchor) != len(current):
         anchor = list(current)
-    accepted_minutes = [
-        d.delivered_at.hour * 60 + d.delivered_at.minute for d in accepted if d.delivered_at
-    ]
-    mean_minute = int(sum(accepted_minutes) / len(accepted_minutes))
-    # move only the configured time nearest to the acceptance window
-    nearest = min(range(len(current)), key=lambda i: abs(_parse_hhmm(current[i]) - mean_minute))
-    lo = _parse_hhmm(anchor[nearest]) - DIGEST_SHIFT_CLAMP_H * 60
-    hi = _parse_hhmm(anchor[nearest]) + DIGEST_SHIFT_CLAMP_H * 60
-    target = max(lo, min(hi, mean_minute))
-    if _fmt_hhmm(target) == current[nearest]:
-        return 0
+    # §18.1 multi-time shifting: each accepted delivery votes for its
+    # NEAREST configured time; every slot with enough votes shifts toward
+    # its own cluster mean, each under its own ±2h anchor clamp
+    votes: dict[int, list[int]] = {}
+    for d in accepted:
+        if d.delivered_at is None:
+            continue
+        minute = d.delivered_at.hour * 60 + d.delivered_at.minute
+        idx = min(range(len(current)), key=lambda i: abs(_parse_hhmm(current[i]) - minute))
+        votes.setdefault(idx, []).append(minute)
     proposed = list(current)
-    proposed[nearest] = _fmt_hhmm(target)
+    shifts: list[str] = []
+    for idx, minutes in votes.items():
+        if len(minutes) < LEARN_MIN_SAMPLE:
+            continue
+        mean_minute = int(sum(minutes) / len(minutes))
+        lo = _parse_hhmm(anchor[idx]) - DIGEST_SHIFT_CLAMP_H * 60
+        hi = _parse_hhmm(anchor[idx]) + DIGEST_SHIFT_CLAMP_H * 60
+        target = max(lo, min(hi, mean_minute))
+        if _fmt_hhmm(target) != current[idx]:
+            proposed[idx] = _fmt_hhmm(target)
+            shifts.append(f"{current[idx]}→{proposed[idx]}")
+    if not shifts:
+        return 0
     reason = (
-        f"accepted digests cluster at {_fmt_hhmm(mean_minute)} — shifting "
-        f"{current[nearest]}→{proposed[nearest]} (anchor {anchor[nearest]}, clamp ±2h)"
+        f"accepted digests cluster per-slot — shifting {', '.join(shifts)} "
+        f"(anchors {','.join(anchor)}, clamp ±2h each)"
     )
     if mode == "auto":
         async with get_session_factory()() as session:
@@ -313,7 +324,9 @@ async def _apply_special(category: str, reason: str) -> None:
 
 async def _learn_intent_thresholds(mode: str) -> int:
     """A watch whose fires are chronically dismissed gets a higher judge
-    bar: budget.min_urgency +1 (cap 5). decide holds fires below it."""
+    bar: budget.min_urgency +1 (cap 5); decide holds fires below it. A
+    watch earning its keep again RECOVERS: −1 per pass, never below the
+    default of 2 (spec §18.1 — thresholds are a dial, not a ratchet)."""
     changed = 0
     async with get_session_factory()() as session:
         intent_ids = list(
@@ -346,15 +359,20 @@ async def _learn_intent_thresholds(mode: str) -> int:
         if intent is None or len(rows) < LEARN_MIN_SAMPLE:
             continue
         mean = _mean_reward(rows)
-        if mean is None or mean > DEMOTE_BELOW:
+        if mean is None:
             continue
         current = int((intent.budget or {}).get("min_urgency", 2))
-        if current >= MIN_URGENCY_CAP:
+        if mean <= DEMOTE_BELOW and current < MIN_URGENCY_CAP:
+            target = current + 1
+            verb = "raising"
+        elif mean >= PROMOTE_ABOVE and len(rows) >= PROMOTE_MIN_SAMPLE and current > 2:
+            target = current - 1  # recovery — floor at the default of 2
+            verb = "lowering"
+        else:
             continue
-        target = current + 1
         reason = (
             f"watch '{intent.text[:60]}' mean reward {mean:+.2f} over {len(rows)} — "
-            f"raising judge bar min_urgency={target}"
+            f"{verb} judge bar min_urgency={target}"
         )
         category = f"intent:{intent_id}:min_urgency"
         if mode == "auto":

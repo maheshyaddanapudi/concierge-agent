@@ -96,7 +96,9 @@ async def summarize_history(conversation_id: Any) -> str | None:
     history = await build_history(conversation_id)
     if not history.strip():
         return None
-    ref = str(await get_cache().setting("default_model"))
+    from app.orchestrator.context import ambient_default_override
+
+    ref = str(ambient_default_override() or await get_cache().setting("default_model"))
     step_id = await ctx.recorder.start_step(
         "summary", tier="orchestrator", model=ref, input={"chars": len(history)}
     )

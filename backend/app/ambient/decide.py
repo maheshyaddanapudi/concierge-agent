@@ -66,17 +66,26 @@ async def _runs_today_cap_reached() -> bool:
     async with get_session_factory()() as session:
         count = (
             await session.execute(
-                select(func.count()).where(
-                    Run.trigger.isnot(None), Run.started_at >= midnight
-                )
+                select(func.count()).where(Run.trigger.isnot(None), Run.started_at >= midnight)
             )
         ).scalar_one()
     return count >= cap
 
 
+# §18.1 judge cost accounting: a single registerable hook receives each
+# judge call's usage_metadata — the M24 harness and tests install one
+_judge_usage_hook: Any | None = None
+
+
+def register_judge_usage_hook(fn: Any | None) -> None:
+    global _judge_usage_hook
+    _judge_usage_hook = fn
+
+
 async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> SignificanceOutput:
     """Tier 2: ONE structured call, extraction role unless the intent
-    overrides. Any failure means held — silence is the default."""
+    overrides. Any failure means held — silence is the default. Runs with
+    include_raw so real token usage feeds the cost accounting (§18.1)."""
     from app.llm import ModelParams, get_model
     from app.prompts import load_prompt
     from app.registry_cache import get_cache
@@ -88,15 +97,31 @@ async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> Si
         or await cache.setting("default_model")
     )
     model = get_model(str(ref), ModelParams(effort="low"))
-    structured = model.with_structured_output(SignificanceOutput)
+    structured = model.with_structured_output(SignificanceOutput, include_raw=True)
     prompt = load_prompt("ambient_significance").format(
         watch=intent.text,
         predicate=intent.semantic_predicate or "(none)",
         event=str(event.payload)[:2000],
     )
     out = await structured.ainvoke(prompt)
-    assert isinstance(out, SignificanceOutput)
-    return out
+    assert isinstance(out, dict)
+    parsed = out.get("parsed")
+    if not isinstance(parsed, SignificanceOutput):
+        raise ValueError(f"judge parse failed: {out.get('parsing_error')}")
+    usage = dict(getattr(out.get("raw"), "usage_metadata", None) or {})
+    if _judge_usage_hook is not None:
+        try:
+            _judge_usage_hook(usage)
+        except Exception:  # noqa: BLE001 — a broken hook never breaks the judge
+            logger.warning("judge_usage_hook_failed")
+    logger.info(
+        "ambient_judge_usage",
+        tier="ambient",
+        kind="judge",
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+    )
+    return parsed
 
 
 async def process_event(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:

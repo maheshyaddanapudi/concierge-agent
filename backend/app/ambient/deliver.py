@@ -183,21 +183,48 @@ async def _digest_due(session: Any, now: datetime, digest_times: list[str]) -> b
     return last_flush is None or last_flush < latest_occurrence
 
 
+APPROVAL_CATEGORIES = {"hitl", "learning"}
+
+
 async def _digest_flush(now: datetime) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
-    (demoted interrupts lead — they kept urgency 5)."""
+    (demoted interrupts lead — they kept urgency 5). Approval items
+    (spec §18.1) flush ranked by urgency under
+    `ambient_escalation_budget_per_day`; the overflow waits for the next
+    digest."""
+    from app.registry_cache import get_cache
+
+    escalation_budget = int(await get_cache().setting("ambient_escalation_budget_per_day"))
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    flushed = 0
     async with get_session_factory()() as session:
-        rows = await _pending(session, 2)
+        approvals_today = int(
+            (
+                await session.execute(
+                    select(func.count()).where(
+                        Delivery.category.in_(APPROVAL_CATEGORIES),
+                        Delivery.delivered_at >= midnight,
+                    )
+                )
+            ).scalar_one()
+        )
+        allowed = max(escalation_budget - approvals_today, 0)
+        rows = await _pending(session, 2)  # already urgency-desc ordered
         for row in rows:
+            if row.category in APPROVAL_CATEGORIES:
+                if allowed <= 0:
+                    continue  # over the escalation budget — next digest
+                allowed -= 1
             row.delivered_at = now
             row.channel = "digest"
+            flushed += 1
         await session.commit()
-    if rows:
+    if flushed:
         from app import obs
 
         obs.AMBIENT_OPS.labels(kind="digest", status="flushed").inc()
-        logger.info("ambient_digest", tier="ambient", kind="digest", items=len(rows))
-    return len(rows)
+        logger.info("ambient_digest", tier="ambient", kind="digest", items=flushed)
+    return flushed
 
 
 async def _flush_tier1(now: datetime, *, quiet: bool, force: bool = False) -> int:

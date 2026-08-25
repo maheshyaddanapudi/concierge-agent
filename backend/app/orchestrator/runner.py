@@ -96,6 +96,9 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             if routine is not None:
                 ambient_allowlist = routine.allowlist
     settings = await load_settings_snapshot()
+    # §18.1: the routine's model_ref overlays default_model for this run only
+    if trigger and trigger.get("model_ref"):
+        settings = {**settings, "default_model": str(trigger["model_ref"])}
     recorder = RunRecorder(run_id)
     ctx = RunContext(
         run_id=run_id,
@@ -106,6 +109,9 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
         query_text=task_text,
         ambient_allowlist=ambient_allowlist,
+        ambient_model_ref=(
+            str(trigger["model_ref"]) if trigger and trigger.get("model_ref") else None
+        ),
     )
     set_run_context(ctx)
     if resume is None:

@@ -110,6 +110,8 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
             "source": event.source,
             "kind": event.kind,
             "urgency": decision.get("urgency", 2),
+            # §18.1: the routine's model override, honored by the runner
+            "model_ref": routine.model_ref if routine else None,
         }
         row.last_heartbeat_at = datetime.now(UTC)
         await session.commit()

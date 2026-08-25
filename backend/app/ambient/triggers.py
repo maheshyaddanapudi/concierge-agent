@@ -157,8 +157,16 @@ async def poll_due_intents(now: datetime | None = None) -> int:
                     row.status = "expired"
                     await session.commit()
             continue
+        # near-due tightening (spec §18.1): a deadline inside 2× the adaptive
+        # interval polls at base cadence — AIMD never causes a missed deadline
+        effective_interval = intent.current_interval_s
+        if (
+            intent.expires_at is not None
+            and (intent.expires_at - now).total_seconds() <= 2 * intent.current_interval_s
+        ):
+            effective_interval = min(effective_interval, intent.base_interval_s)
         last = intent.last_checked_at
-        if last is not None and (now - last).total_seconds() < intent.current_interval_s:
+        if last is not None and (now - last).total_seconds() < effective_interval:
             continue
         try:
             items, new_watermark = await _POLL_SOURCES[source_name](intent.watermark)

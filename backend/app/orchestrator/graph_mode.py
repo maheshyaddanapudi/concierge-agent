@@ -51,9 +51,13 @@ class OrchestratorState(TypedDict, total=False):
 
 
 async def _planner_model() -> Any:
+    from app.orchestrator.context import ambient_default_override
+
     async with get_session_factory()() as session:
-        ref = await get_setting(session, "planner_model") or await get_setting(
-            session, "default_model"
+        ref = (
+            await get_setting(session, "planner_model")
+            or ambient_default_override()
+            or await get_setting(session, "default_model")
         )
         raw = await get_setting(session, "planner_model_params") or await get_setting(
             session, "default_model_params"
@@ -64,9 +68,13 @@ async def _planner_model() -> Any:
 
 
 async def _aggregator_model() -> tuple[str, Any]:
+    from app.orchestrator.context import ambient_default_override
+
     async with get_session_factory()() as session:
-        ref = await get_setting(session, "aggregator_model") or await get_setting(
-            session, "default_model"
+        ref = (
+            await get_setting(session, "aggregator_model")
+            or ambient_default_override()
+            or await get_setting(session, "default_model")
         )
         raw = await get_setting(session, "aggregator_model_params") or await get_setting(
             session, "default_model_params"

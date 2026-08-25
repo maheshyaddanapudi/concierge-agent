@@ -56,10 +56,11 @@ async def hit_rate_allows() -> bool:
     return rows.count("accepted") / len(rows) >= HIT_RATE_FLOOR
 
 
-async def run_anticipation(now: datetime | None = None) -> UUID | None:
-    """One briefing per idle window (deduped by skey). Returns the created
-    delivery id, or None when gated. The caller (the ambient tick) is
-    responsible for the platform-idle check."""
+async def run_anticipation(now: datetime | None = None) -> list[UUID] | None:
+    """One briefing per idle window (deduped by skey prefix), one delivery
+    PER PREDICTED ITEM (spec §18.1) so used/unused feedback and the hit-rate
+    floor operate per item. Returns the created delivery ids, or None when
+    gated. The caller (the ambient tick) owns the platform-idle check."""
     from app.ambient.deliver import add_delivery
     from app.llm import ModelParams, get_model
     from app.prompts import load_prompt
@@ -69,7 +70,11 @@ async def run_anticipation(now: datetime | None = None) -> UUID | None:
     window_key = f"anticipation:{now.strftime('%Y%m%d%H')}"
     async with get_session_factory()() as session:
         existing = (
-            (await session.execute(select(Delivery.id).where(Delivery.skey == window_key).limit(1)))
+            (
+                await session.execute(
+                    select(Delivery.id).where(Delivery.skey.like(f"{window_key}%")).limit(1)
+                )
+            )
             .scalars()
             .first()
         )
@@ -120,14 +125,16 @@ async def run_anticipation(now: datetime | None = None) -> UUID | None:
     items = out.items[:MAX_ITEMS]
     if not items:
         return None
-    body = "\n".join(f"• {i.title}: {i.note}" for i in items)
-    delivery = await add_delivery(
-        category="anticipation",
-        tier=2,
-        urgency=2,
-        title=f"Briefing: {len(items)} likely next ask(s)",
-        body=body,
-        skey=window_key,
-    )
-    logger.info("ambient_anticipation", tier="ambient", kind="deliver", items=len(items))
-    return delivery.id
+    created: list[UUID] = []
+    for i, item in enumerate(items):
+        delivery = await add_delivery(
+            category="anticipation",
+            tier=2,
+            urgency=2,
+            title=f"Anticipated: {item.title}"[:250],
+            body=item.note,
+            skey=f"{window_key}:{i}",
+        )
+        created.append(delivery.id)
+    logger.info("ambient_anticipation", tier="ambient", kind="deliver", items=len(created))
+    return created
