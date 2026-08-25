@@ -13,6 +13,7 @@ Rules enforced here, not in prompts:
   near-duplicate drop) — write policy is the security boundary (research 03 §5)
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -341,6 +342,21 @@ async def hard_delete(memory_id: UUID) -> bool:
     return True
 
 
+_CITATION_RE = re.compile(
+    r"\s*[\(\[](?:episode|memory|fact|entity|preference|instruction)s?\s+"
+    r"[0-9a-f]{8}(?:[,;\s]+[0-9a-f]{8})*[\)\]]",
+    re.IGNORECASE,
+)
+
+
+def scrub_citation_ids(text: str) -> str:
+    """Strip citation-id parentheticals the extractor may parrot from answers
+    — "(episode 1fcf6bb1)", "[fact deadbeef]" — so injected-block ids never
+    become memory content (M18 experiment finding: a leaked id in the active
+    fact made the planner distrust it and re-verify via fallback)."""
+    return _CITATION_RE.sub("", text).strip()
+
+
 async def gate_candidates(
     candidates: list[Candidate],
 ) -> tuple[list[Candidate], list[tuple[Candidate, str]]]:
@@ -352,7 +368,8 @@ async def gate_candidates(
 
     seen_texts: set[str] = set()
     for cand in candidates:
-        text = " ".join(cand.text.split())
+        text = scrub_citation_ids(" ".join(cand.text.split()))
+        cand.text = text
         norm = text.lower()
         if cand.kind not in KINDS or cand.scope not in SCOPES:
             dropped.append((cand, "invalid kind/scope"))

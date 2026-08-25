@@ -308,3 +308,26 @@ async def test_memory_recall_tool_supports_as_of() -> None:
     texts = [m["text"] for m in then["memories"]]
     assert any("main" in t for t in texts)
     assert not any("release-2026" in t for t in texts)
+
+
+# ── citation-id scrub in the admission gate (§16.7 follow-up) ────────
+
+
+async def test_gate_scrubs_citation_ids_from_candidate_text() -> None:
+    from app.memory.store import Candidate, gate_candidates, scrub_citation_ids
+
+    assert (
+        scrub_citation_ids("The deploy branch is `release-2026` (episode 1fcf6bb1).")
+        == "The deploy branch is `release-2026`."
+    )
+    assert scrub_citation_ids("Target missed [fact ab12cd34, ef56ab78] by 25%.").count("[") == 0
+    assert scrub_citation_ids("plain fact with no markers") == "plain fact with no markers"
+    # a legitimate parenthetical survives
+    assert scrub_citation_ids("Vibration fell to 2.1 mm/s (down from 5.8).").endswith("(down from 5.8).")
+
+    await _enable()
+    accepted, dropped = await gate_candidates(
+        [Candidate(text="The deploy branch is release-2026 (memory deadbeef).", kind="fact")]
+    )
+    assert dropped == []
+    assert accepted[0].text == "The deploy branch is release-2026."

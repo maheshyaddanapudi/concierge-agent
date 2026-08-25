@@ -18,6 +18,12 @@ this one. Also list 0–3 `entities` — the proper names the memory is about
 (people, pets, systems, projects, e.g. "Biscuit", "aurora") — so related
 memories can be linked; leave the list empty when none apply.
 
+Phrase every memory as the CURRENT state, never as a change event: write
+"the deploy branch is release-2026", not "the deploy branch was changed from
+main to release-2026" — supersession history is tracked by the store, not by
+the sentence. Never copy citation markers like "(episode 1fcf6bb1)" or
+"[fact ab12cd34]" from the exchange into memory text.
+
 Return an empty list when nothing durable was said — most exchanges store
 nothing. Quality over quantity: a wrong or noisy memory is worse than none.
 
