@@ -8,6 +8,7 @@ the fire/hold ledger. Silence is the default: anything unmatched holds.
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from uuid import UUID
 
 import structlog
 from pydantic import BaseModel, Field
@@ -138,6 +139,11 @@ async def _decide(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:
         decision["fired_for"] = "routine"
         return ("fired", "routine trigger matched", decision)
 
+    # HITL aging (spec §17.4/§17.5): the question rides the digest; the
+    # paused checkpoint stays resumable — no run, just an outbox row
+    if event.source == "internal" and event.kind == "hitl_aged":
+        return await _queue_hitl_delivery(event, decision)
+
     # intent-addressed events (poll items, state conditions, patterns)
     if event.intent_id is not None:
         async with get_session_factory()() as session:
@@ -147,25 +153,99 @@ async def _decide(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:
         filters = (intent.compiled or {}).get("filters") or []
         if filters and not match_filters(event.payload, filters):
             return ("held", "tier-1 filters did not match", decision)
-        if intent.semantic_predicate:
-            decision["tier"] = 2
-            try:
-                judged = await _judge_significance(intent, event)
-            except Exception as exc:  # noqa: BLE001 — judge failure ⇒ silence
-                return ("held", f"significance judge failed: {exc}", decision)
-            decision["urgency"] = judged.urgency
-            decision["judge_reason"] = judged.reason
-            if not judged.significant:
-                return ("held", "judged not significant", decision)
-        if await _runs_today_cap_reached():
-            return ("dropped", "ambient_runs_per_day cap reached", decision)
-        decision["fired_for"] = "intent"
-        return ("fired", "intent condition met", decision)
+        return await _intent_fire(intent, event, decision)
 
-    # presence + unaddressed internal events: bookkeeping, not runs
+    # unaddressed events: standing watches compiled to event filters may
+    # still claim them (spec §17.3 tier 1 → tier 2 on match)
+    matched = await _match_event_intents(event, decision)
+    if matched is not None:
+        return matched
     if event.source in {"presence", "internal"}:
         return ("held", "informational event (no routine/intent addressee)", decision)
     return ("held", "no addressee", decision)
+
+
+async def _intent_fire(
+    intent: StandingIntent, event: AmbientEvent, decision: dict[str, Any]
+) -> tuple[str, str, dict[str, Any]]:
+    """Shared tier-2 → tier-3 tail for intent fires: judge (if the intent
+    has a semantic predicate), then the daily cap, then the fired verdict."""
+    if intent.semantic_predicate:
+        decision["tier"] = 2
+        try:
+            judged = await _judge_significance(intent, event)
+        except Exception as exc:  # noqa: BLE001 — judge failure ⇒ silence
+            return ("held", f"significance judge failed: {exc}", decision)
+        decision["urgency"] = judged.urgency
+        decision["judge_reason"] = judged.reason
+        if not judged.significant:
+            return ("held", "judged not significant", decision)
+    if await _runs_today_cap_reached():
+        return ("dropped", "ambient_runs_per_day cap reached", decision)
+    decision["fired_for"] = "intent"
+    decision["intent_id"] = str(intent.id)
+    return ("fired", "intent condition met", decision)
+
+
+async def _match_event_intents(
+    event: AmbientEvent, decision: dict[str, Any]
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Standing watches compiled as event filters (ambient.watch mode
+    'events') evaluated against an unaddressed event. Filters see `kind`,
+    `source`, and the payload fields. First match wins; None = no claim."""
+    async with get_session_factory()() as session:
+        intents = list(
+            (
+                await session.execute(
+                    select(StandingIntent).where(
+                        StandingIntent.status == "active",
+                        StandingIntent.condition_type == "event",
+                    )
+                )
+            ).scalars()
+        )
+    data = {"kind": event.kind, "source": event.source, **(event.payload or {})}
+    for intent in intents:
+        compiled = intent.compiled or {}
+        if compiled.get("match") != "events":
+            continue
+        filters = compiled.get("filters") or []
+        if not filters or not match_filters(data, filters):
+            continue
+        outcome = await _intent_fire(intent, event, dict(decision))
+        if outcome[0] == "fired":
+            outcome[2]["matched_watch"] = intent.text[:120]
+        return outcome
+    return None
+
+
+async def _queue_hitl_delivery(
+    event: AmbientEvent, decision: dict[str, Any]
+) -> tuple[str, str, dict[str, Any]]:
+    from app.models import Delivery
+    from app.registry_cache import get_cache
+
+    run_id_raw = (event.payload or {}).get("run_id")
+    if not run_id_raw:
+        return ("dropped", "hitl_aged event without run_id", decision)
+    timeout_h = int(await get_cache().setting("ambient_hitl_timeout_h"))
+    async with get_session_factory()() as session:
+        session.add(
+            Delivery(
+                run_id=UUID(str(run_id_raw)),
+                category="hitl",
+                tier=2,
+                urgency=3,
+                title="[ambient] a run is waiting on your input",
+                body=(
+                    f"Run {run_id_raw} has been paused on a human-input gate for over "
+                    f"{timeout_h}h. It stays resumable from the run history."
+                ),
+            )
+        )
+        await session.commit()
+    decision.update({"action": "delivery", "delivery_tier": 2})
+    return ("fired", "HITL question queued to the digest", decision)
 
 
 async def sweep_hitl_aging(now: datetime | None = None) -> int:
@@ -182,7 +262,13 @@ async def sweep_hitl_aging(now: datetime | None = None) -> int:
         stale = list(
             (
                 await session.execute(
-                    select(Run).where(Run.status == "paused_hitl", Run.started_at <= cutoff)
+                    select(Run).where(
+                        Run.status == "paused_hitl",
+                        Run.started_at <= cutoff,
+                        # ambient timeout applies to ambient runs only —
+                        # interactive HITL keeps its own semantics (§7)
+                        Run.trigger.isnot(None),
+                    )
                 )
             ).scalars()
         )

@@ -85,6 +85,16 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         target_sub_agent_id = run.target_sub_agent_id
         include_history_summary = run.include_history_summary
         include_memories = run.include_memories
+        trigger = run.trigger
+    # §17.4: an ambient run carries its routine's narrowed registry projection
+    ambient_allowlist: dict[str, Any] | None = None
+    if trigger and trigger.get("routine_id"):
+        from app.models import Routine
+
+        async with get_session_factory()() as session:
+            routine = await session.get(Routine, UUID(str(trigger["routine_id"])))
+            if routine is not None:
+                ambient_allowlist = routine.allowlist
     settings = await load_settings_snapshot()
     recorder = RunRecorder(run_id)
     ctx = RunContext(
@@ -95,6 +105,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         settings=settings,
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
         query_text=task_text,
+        ambient_allowlist=ambient_allowlist,
     )
     set_run_context(ctx)
     if resume is None:

@@ -428,7 +428,12 @@ async def test_hitl_aging_sweep_emits_once() -> None:
         await session.execute(
             update(Run)
             .where(Run.id == run.id)
-            .values(status="paused_hitl", started_at=datetime.now(UTC) - timedelta(hours=2))
+            .values(
+                status="paused_hitl",
+                started_at=datetime.now(UTC) - timedelta(hours=2),
+                # M22: the ambient timeout applies to ambient runs only
+                trigger={"routine_id": None, "source": "manual"},
+            )
         )
         await session.commit()
     assert await sweep_hitl_aging() == 1

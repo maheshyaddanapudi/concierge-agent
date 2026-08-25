@@ -105,6 +105,9 @@ class RunContext:
     used_exemplar_ids: list[Any] = field(default_factory=list)
     # §16.7: memory ids injected into any surface this run (citation feedback)
     injected_memory_ids: list[str] = field(default_factory=list)
+    # §17.4: the owning routine's narrowed registry projection — None for
+    # interactive runs and for routines without an allowlist
+    ambient_allowlist: dict[str, Any] | None = None
 
     def next_worker_callsign(self) -> str:
         n = self.worker_count

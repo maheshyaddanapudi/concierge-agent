@@ -32,6 +32,7 @@ class Run(Base):
     plan: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
+    # | 'stalled' (§17.4 — reaped ambient run whose heartbeat went silent)
     status: Mapped[str] = mapped_column(String(16), default="running")
     # 'graph' | 'agentic' | 'direct' (spec §7.5)
     orchestrator_mode: Mapped[str] = mapped_column(String(16), default="graph")

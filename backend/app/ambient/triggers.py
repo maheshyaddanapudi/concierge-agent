@@ -44,6 +44,14 @@ def register_state_probe(name: str, fn: StateProbe | None) -> None:
         _STATE_PROBES[name] = fn
 
 
+def registered_poll_sources() -> set[str]:
+    return set(_POLL_SOURCES)
+
+
+def registered_state_probes() -> set[str]:
+    return set(_STATE_PROBES)
+
+
 # ── schedules (spec §17.2: cron / interval / once, UTC + stagger) ─────
 
 

@@ -8,8 +8,9 @@ no-op while `ambient_enabled` is false (byte-identity when dark).
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 from sqlalchemy import text as sql_text
@@ -27,11 +28,24 @@ ProcessorResult = tuple[str, str] | tuple[str, str, dict[str, "object"]] | None
 Processor = Callable[[AmbientEvent], Awaitable[ProcessorResult]]
 _processor: Processor | None = None
 
+# executor contract (spec §17.4): called AFTER the drain commits a 'fired'
+# verdict whose decision names an addressee — fire-and-forget, own session,
+# never while event rows are held FOR UPDATE.
+Executor = Callable[..., Coroutine[Any, Any, object]]
+_executor: Executor | None = None
+_EXEC_TASKS: set[asyncio.Task[object]] = set()
+
 
 def register_processor(fn: Processor | None) -> None:
     """The loop installs the decision plane here; tests install fakes."""
     global _processor
     _processor = fn
+
+
+def register_executor(fn: Executor | None) -> None:
+    """The loop installs the execution plane here; tests install fakes."""
+    global _executor
+    _executor = fn
 
 
 async def default_processor(event: AmbientEvent) -> ProcessorResult:
@@ -47,6 +61,7 @@ async def default_processor(event: AmbientEvent) -> ProcessorResult:
 async def drain_once(limit: int = 20) -> int:
     """Claim and process pending events. Returns events handled."""
     handled = 0
+    to_execute: list[Any] = []
     async with get_session_factory()() as session:
         rows = (
             (
@@ -83,7 +98,20 @@ async def drain_once(limit: int = 20) -> int:
                     event.decision = outcome[2]
                 event.processed_at = datetime.now(UTC)
                 handled += 1
+                if (
+                    outcome[0] == "fired"
+                    and len(outcome) == 3
+                    and dict(outcome[2]).get("fired_for")
+                ):
+                    to_execute.append(event.id)
         await session.commit()
+    # tier 3 — the run (spec §17.4): launched only after the rows are
+    # committed and released, never while the drain holds them FOR UPDATE
+    if _executor is not None:
+        for event_id in to_execute:
+            task: asyncio.Task[object] = asyncio.create_task(_executor(event_id))
+            _EXEC_TASKS.add(task)
+            task.add_done_callback(_EXEC_TASKS.discard)
     if handled:
         from app import obs
 
@@ -122,20 +150,28 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
                     listener_task = asyncio.create_task(_listen())
                 if _processor is None:
                     register_processor(default_processor)
+                if _executor is None:
+                    from app.ambient.execute import execute_fired_event
+
+                    register_executor(execute_fired_event)
                 # trigger evaluators (spec §17.2) then the drain
                 from app.ambient.decide import sweep_hitl_aging
+                from app.ambient.execute import reap_stalled_runs
                 from app.ambient.patterns import expire_pattern_deadlines
                 from app.ambient.triggers import (
                     evaluate_schedules,
                     evaluate_state_conditions,
                     poll_due_intents,
                 )
+                from app.ambient.wakeups import fire_due_wakeups
 
                 await evaluate_schedules()
                 await poll_due_intents()
                 await evaluate_state_conditions()
                 await expire_pattern_deadlines()
+                await fire_due_wakeups()
                 await sweep_hitl_aging()
+                await reap_stalled_runs()
                 await drain_once()
                 idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
                 from app.ambient.presence import evaluate_presence
