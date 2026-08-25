@@ -75,8 +75,9 @@ LOCKED`; the 60s tick sweeps missed pings.
 Three tiers strictly ordered by cost: (1) typed matchers — field operators
 (equals/contains/starts_with/one_of/regex), event-vs-state semantics, dedupe,
 rate caps (per-routine hourly; excess **dropped and counted**, never queued);
-(2) significance judge — one structured-output call on the extraction-model
-role, only for events passing tier 1 with a semantic predicate; returns
+(2) significance judge — one structured-output call, defaulting to the
+extraction-model role with a per-intent model override for high-stakes
+watches; returns
 `{significant, urgency 1-5, reason}`; failure ⇒ **held** (silence default);
 (3) the run. Every decision writes a fire/hold record `{value, urgency,
 attention_state, decision, reason}`. **No LLM call per raw event, ever**
@@ -166,6 +167,25 @@ simulated-clock scripted-event harness (`experiments/ambient/`) scoring
 fire/hold Set-F1 with false-alarm accounting, reaction time, and token cost
 per configuration, plus a live multi-day soak.
 
+### 17.7 Adaptive policy learning (M25)
+
+The delivery feedback substrate (accepted/dismissed/ignored per item, doc 05
+FR-V4) feeds a bandit-style learner that proposes policy adjustments:
+shifting `ambient_digest_times` toward observed acceptance windows,
+re-tiering categories (a chronically dismissed interrupt category down; a
+consistently accepted digest category up), and tuning per-intent judge
+thresholds. Governed by `ambient_learning_mode`: `off` (default — collect
+only), `propose` (each adjustment lands in the review queue as a quarantined
+proposal, activating only on approval — the §16.2 instruction-quarantine
+pattern), `auto` (adjustments apply immediately within hard clamps — digest
+times move ≤ 2h from configured, tiers move one step at a time, never into
+tier 0 — and every change is ledgered and one-click revertible). The reward
+is a blend: acceptance + downstream usefulness (the delivered item's run/
+memory was later referenced) − explicit-dismissal penalty, with a
+repetition-decay term (recovering-bandit shape); pure acceptance optimization
+is forbidden by construction. Learner runs as a consolidation-class job;
+byte-identical when `off`.
+
 ---
 
 ## §3.7 settings additions
@@ -177,7 +197,7 @@ per configuration, plus a live multi-day soak.
 local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours
 (["22:00","07:00"])`, `ambient_interrupt_threshold (4 — urgency ≥ this may
 use tier 0/1)`, `ambient_wakeups_per_routine_per_day (100)`,
-`ambient_escalation_budget_per_day (10)`.
+`ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'propose'|'auto', default 'off', §17.7)`.
 
 ## §8.9 Ambient page (UI)
 
@@ -209,6 +229,10 @@ the interactive surface when dark.
 26. Urgency 5 event during quiet hours vs outside; verify budget debit,
     quiet-hour suppression to digest-lead.
 27. `ambient_enabled=false`: byte-identity regression suite passes.
+28. (M25) With `ambient_learning_mode='propose'`, dismiss a category three
+    times; verify a re-tier proposal appears in the review queue and applies
+    only on approval; with `'auto'`, verify the clamped change + ledger entry
+    + revert control.
 
 ## Milestones (proposed)
 
@@ -218,7 +242,8 @@ the interactive surface when dark.
 | M21 | Trigger + decision planes: schedules with stagger, adaptive pollers, state conditions, internal events, three-tier gate + fire/hold ledger, caps/drops/auto-pause, **CEP-lite (sequence/conjunction/absence) with all four chaining guards** | scripted-event harness: tier precision, absence-timer slop, cascade guards |
 | M22 | Execution plane: routines end-to-end (both orchestrators, narrowed projection, budgets, abstain, progress monitor), standing intents (compile-echo-confirm → evaluate → fire), **agent wakeups with clamps/caps/done-guard**, watchdog + orphan rescue, HITL timeout semantics | §14c-20..25 |
 | M23 | Delivery plane + §8.9 UI: outbox tiers, digest builder + return-flush + supersede-collapse, budgets/quiet hours, approval batching, feedback capture, precision auto-downgrade; anticipation job with hit-rate metric | §14c-26 + stage-3x UI evidence campaign |
-| M24 | Ambient evals: simulated-clock event harness (fire/hold Set-F1 + false alarms, reaction time, cost) across gate ablations and delivery policies; multi-day live soak; experiment report | 07-style results doc |
+| M24 | Ambient evals: simulated-clock event harness (fire/hold Set-F1 + false alarms, reaction time, cost) across gate ablations and delivery policies incl. cascade stress; multi-day live soak; experiment report | 07-style results doc |
+| M25 | Adaptive policy learning (§17.7): bandit learner over delivery feedback with propose/auto modes, clamps, ledgered revertible changes; measured against static policy on the M24 harness | learning on ≥ static policy, zero tier-0 escalations by learner |
 
 ## Settled decisions (from docs 02–05b) and open questions
 
@@ -230,10 +255,17 @@ four delivery tiers with digest default, bounded deferral, and
 justify-to-interrupt; auto-pause + run-status honesty; dark-by-default
 byte-identity.
 
-**Open for sign-off**: (1) email/push channels — proposed post-M24 (outbox
-`channel` field reserves the seam); (2) routine→routine chaining beyond
-capped self-wakeups — proposed to remain forbidden until M24's harness can
-measure cascade behavior; (3) whether the significance judge may use the
-planner-role model instead of the extraction role for high-stakes intents —
-proposed as a per-intent override, default extraction role; (4) learned
-(bandit) timing policies over the feedback substrate — post-M24.
+**Decided at sign-off (2026-08-25)**: (1) **in-app channels only** for
+M20–M24 — the outbox `channel` field reserves the email/push seam, no new
+infra; (2) **routine→routine chaining allowed from M21**, with all four
+cascade guards mandatory from day one (depth ≤ 4, no-self-trigger via the
+causation chain, 50 fires/rule/hour kill switch, 300s cooldowns) — guards
+unit-tested in M21, stress-proven on the M24 harness; (3) significance judge
+defaults to the **extraction role with a per-intent model override**;
+(4) **learned timing policies get their own milestone M25**: a bandit-style
+learner over delivery feedback (digest timing shifts, category re-tiering)
+with `ambient_learning_mode` ∈ {'off' (default), 'propose' (adjustments land
+in the review queue for approval — the memory-quarantine pattern), 'auto'
+(applies within clamps, every change logged and revertible)}. The reward
+blends acceptance with downstream usefulness and dismissal penalties —
+acceptance-only rewards are the documented trap (doc 03 rule 14).
