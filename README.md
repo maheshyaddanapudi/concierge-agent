@@ -120,6 +120,7 @@ The **[docs/ index](./docs/README.md)** covers the whole suite. Highlights:
 | M15 | Semantic layer (spec §16.4: extraction pipeline, LLM-match/code-resolve reconciliation, instruction quarantine, memory tools + Memory UI) | ✅ complete |
 | M16 | Procedural layer (spec §16.5: plan exemplars with vote lifecycle, routing stats, fallback mining → inactive skill proposals) | ✅ complete |
 | M17 | Consolidation (spec §16.6: decay sweep, generative reflection with evidence citations, contradiction sweep, advisory-locked jobs) + experiment harness | ✅ complete |
+| M18 | Closed-loop refinement (spec §16.7: citation feedback — only cited memories reinforce; digest compaction — episodic store stays O(conversations); entity-hop recall; 90-day time-warp simulation) | ✅ complete |
 
 **Direct sub-agent invocation (spec §7.5)** — a sub agent with `direct_exposure=true` (toggle on its detail drawer; static seeds ship exposed) can be invoked without the planner: pin it in the chat composer's target picker (or the "Invoke →" row action on the Sub Agents page), or call `POST /api/v1/sub-agents/{id}/invoke` with `{message}`. The pin replaces only the routing decision — direct runs keep the shared lifecycle: SSE streaming, HITL pause/resume, run/step trace with a pinned `route` step, metrics under `mode='direct'`, and the formatter treatment (on = structured `answer_ui`, off = raw markdown) identical to routed runs.
 

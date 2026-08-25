@@ -203,7 +203,47 @@ surfaced only under live measurement:
   (spreadsheet-driven, LangSmith-published) is the vehicle for multi-model
   sweeps.
 
-## 7. Recommended default configuration
+## 7. M18 — closed-loop refinement (implemented and measured)
+
+The post-M17 enhancement review was implemented as spec §16.7 (commit `b2f0852`),
+sharpening the winning layers rather than adding new ones:
+
+- **Citation feedback (used beats retrieved).** Injection no longer bumps
+  access bookkeeping; a post-run job matches injected memory-id prefixes
+  against the final answer and reinforces only cited memories (+1 importance,
+  capped; access bump). Uncited injections cool toward decay. Explicit
+  `memory.recall` tool calls still count as use.
+- **Digest compaction.** Run-digests older than 14 days (setting) fold into
+  one period digest per conversation; raw rows and embeddings are deleted.
+  The episodic store — the one unbounded table in the M17 design — becomes
+  O(conversations).
+- **Entity-hop recall.** Extraction names 0–3 entities per memory; writes
+  maintain `memory_entities`/`memory_entity_links`; recall appends up to two
+  floor-exempt linked memories at a discount of the weakest direct hit
+  (skipped for kind-filtered and point-in-time recalls). One bounded join —
+  no graph database.
+- **Two "free" items verified rather than built**: OpenAI/Google embedding
+  adapters already implement the provider port (production = set a key +
+  `embedding_model`), and `memory.recall` already exposed `as_of` — both now
+  covered by tests.
+
+**Long-horizon time-warp simulation** (`experiments/memory/longhorizon.py`,
+deterministic, no LLM): a 90-day backdated store — four memory cohorts, 8
+conversations × 11 runs of digests, a seeded entity_key contradiction — run
+through decay, contradiction, and compaction. All six equilibrium checks pass:
+
+| check | result |
+|---|---|
+| E1 untouched low-importance memories expire | ✅ 10/10 expired |
+| E2 rehearsed low-importance memories survive | ✅ 10/10 active |
+| E3 pinned rows immune regardless of age | ✅ 3/3 active |
+| E4 high-importance rows outlive same-age peers | ✅ 10/10 active |
+| E5 episodic store compacts to O(conversations) | ✅ 88 digests → 7 period + 11 recent |
+| E6 duplicate active entity_keys quarantined, oldest-validity wins | ✅ |
+
+<!-- M18_REGRESSION -->
+
+## 8. Recommended default configuration
 
 Based on the matrix: **`semantic` shape** — memory on, extraction on,
 procedural off (until the workload routes), injection budget 1200, floor
