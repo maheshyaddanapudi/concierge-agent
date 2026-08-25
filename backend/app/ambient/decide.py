@@ -180,6 +180,14 @@ async def _intent_fire(
         decision["judge_reason"] = judged.reason
         if not judged.significant:
             return ("held", "judged not significant", decision)
+        # §17.7: a learner-raised judge bar for this watch
+        floor = int((intent.budget or {}).get("min_urgency", 0))
+        if judged.urgency < floor:
+            return (
+                "held",
+                f"urgency {judged.urgency} below intent min_urgency {floor}",
+                decision,
+            )
     if await _runs_today_cap_reached():
         return ("dropped", "ambient_runs_per_day cap reached", decision)
     decision["fired_for"] = "intent"

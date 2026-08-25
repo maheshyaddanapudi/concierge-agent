@@ -45,13 +45,17 @@ def in_quiet_hours(now: datetime, ranges: list[str]) -> bool:
 
 
 async def current_tier_override(category: str) -> int | None:
-    """Latest policy-ledger row wins (spec §17.6)."""
+    """Latest APPLIED policy-ledger row wins (spec §17.6). Queued
+    learner_proposal rows are inert until approved (§17.7 propose mode)."""
     async with get_session_factory()() as session:
         row = (
             (
                 await session.execute(
                     select(AmbientPolicy)
-                    .where(AmbientPolicy.category == category)
+                    .where(
+                        AmbientPolicy.category == category,
+                        AmbientPolicy.source != "learner_proposal",
+                    )
                     .order_by(AmbientPolicy.created_at.desc())
                     .limit(1)
                 )
@@ -332,7 +336,12 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
     from app import obs
 
     obs.AMBIENT_OPS.labels(kind="deliver", status=f"feedback_{feedback}").inc()
-    await apply_precision_rule(row.category)
+    # the rule is the STATIC policy: once learning is on (auto|propose) the
+    # §17.7 learner owns re-tiering — reward-weighted, both directions
+    from app.registry_cache import get_cache
+
+    if str(await get_cache().setting("ambient_learning_mode")) == "off":
+        await apply_precision_rule(row.category)
     return row
 
 

@@ -189,11 +189,17 @@ async def precision(session: SessionDep) -> dict[str, Any]:
     categories = list((await session.execute(select(Delivery.category).distinct())).scalars())
     policies: dict[str, AmbientPolicy] = {}
     for p in (
-        (await session.execute(select(AmbientPolicy).order_by(AmbientPolicy.created_at)))
+        (
+            await session.execute(
+                select(AmbientPolicy)
+                .where(AmbientPolicy.source != "learner_proposal")  # inert until approved
+                .order_by(AmbientPolicy.created_at)
+            )
+        )
         .scalars()
         .all()
     ):
-        policies[p.category] = p  # latest wins
+        policies[p.category] = p  # latest applied wins
     out = []
     for cat in sorted(categories):
         prec, n = await category_precision(cat)
@@ -242,6 +248,22 @@ class PolicyRevertBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     category: str
+
+
+@ledger_router.post("/policies/{policy_id}/approve")
+async def approve_policy(policy_id: UUID) -> dict[str, Any]:
+    """Approve a queued learner proposal (spec §17.7 propose mode)."""
+    from app.ambient.learn import approve_proposal
+
+    row = await approve_proposal(policy_id)
+    if row is None:
+        raise HTTPException(404, "no learner proposal with that id")
+    return {
+        "id": str(row.id),
+        "category": row.category,
+        "tier_override": row.tier_override,
+        "status": "applied",
+    }
 
 
 @ledger_router.post("/policies/revert")

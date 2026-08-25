@@ -505,6 +505,15 @@ function InboxTab() {
   )
 }
 
+interface PolicyRow {
+  id: string
+  category: string
+  tier_override: number | null
+  reason: string
+  source: string
+  created_at: string | null
+}
+
 function LedgerTab() {
   const invalidate = useInvalidate()
   const [verdict, setVerdict] = useState('all')
@@ -518,14 +527,43 @@ function LedgerTab() {
     queryFn: () => api.get<{ items: PrecisionRow[] }>('/ambient/precision'),
     refetchInterval: 15000,
   })
+  const { data: policies } = useQuery({
+    queryKey: ['ambient-policies'],
+    queryFn: () => api.get<{ items: PolicyRow[] }>('/ambient/policies'),
+    refetchInterval: 15000,
+  })
+  const proposals = (policies?.items ?? []).filter((p) => p.source === 'learner_proposal')
 
   const revert = async (category: string) => {
     await api.post('/ambient/policies/revert', { category })
-    invalidate('ambient-precision')
+    invalidate('ambient-precision', 'ambient-policies')
+  }
+  const approve = async (id: string) => {
+    await api.post(`/ambient/policies/${id}/approve`)
+    invalidate('ambient-precision', 'ambient-policies')
   }
 
   return (
     <div className="space-y-6">
+      {proposals.length > 0 && (
+        <div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-amber-400">
+            learning proposals — nothing applies until you approve
+          </div>
+          <div className="space-y-2">
+            {proposals.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2"
+              >
+                <Chip>{p.category}</Chip>
+                <span className="flex-1 text-xs text-slate-300">{p.reason}</span>
+                <Button onClick={() => void approve(p.id)}>Approve</Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div>
         <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-slate-500">
           intervention precision per category — low precision auto-downgrades one tier

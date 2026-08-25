@@ -108,3 +108,32 @@ plainly rather than claimed otherwise.
   "learning-on ≥ static policy on intervention precision; zero
   learner-caused tier-0 escalations", evaluated on this battery plus the
   delivery-policy scoring.
+
+## 6. M25 — learning vs static policy (`result_learning_eval.json`)
+
+Deterministic 30-round feedback simulation over the real substrate: a tier-1
+category dismissed 80% of the time ("ops-alerts") and a tier-2 category
+accepted 80% of the time ("digest-reports").
+
+| condition | interventions (tier ≤ 1) | intervention precision | learner tier-0 escalations | final tiers |
+|---|---|---|---|---|
+| static (`off` — M23 rule only) | 5 | 0.20 | 0 | ops-alerts → 3, digest-reports → 2 |
+| learning (`auto`) | 30 | **0.70** | **0** | ops-alerts → 3, digest-reports → **1** |
+
+**Gate: passed.** Learning-on beats the static policy on intervention
+precision (0.70 ≥ 0.20) with zero learner-caused tier-0 escalations. The
+asymmetry is structural: the static rule can only demote noise (it did,
+after 5 judged items); the learner demotes it earlier (3) AND promotes the
+consistently valuable category into the notify tier — every promotion
+clamped one step at a time with a hard tier-1 floor.
+
+Live §14c-28 (real stack, tick-driven learner, qwen3.8-max as the stack's
+model): in `auto`, three dismissals in a category produced the clamped
+re-tier 1→2 with NO approval step (ledger row `source=learner`, reason
+"mean reward −1.00 over 3 judged items"), and the one-click revert cleared
+it (`reverted by user`). In `propose`, the same three-dismissal signal
+produced a queued `learner_proposal` that left the live tier untouched
+until `POST /ambient/policies/{id}/approve` applied it — the proposal
+visible in the Ambient Ledger tab with its Approve control
+(`docs/acceptance/ambient_m25/`). Both modes are fully implemented; auto is
+not gated behind propose.

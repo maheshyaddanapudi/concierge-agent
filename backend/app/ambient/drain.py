@@ -183,6 +183,11 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
                     from app.ambient.anticipate import run_anticipation
 
                     await run_anticipation()
+                # §17.7 learner — consolidation-class, throttled internally,
+                # a no-op unless ambient_learning_mode is auto|propose
+                from app.ambient.learn import run_learner
+
+                await run_learner()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
             logger.warning("ambient_tick_failed", error=str(exc))
         wake.clear()
