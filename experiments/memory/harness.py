@@ -103,7 +103,7 @@ class ConfigResult:
         }
 
 
-async def _wait_run(client: httpx.AsyncClient, run_id: str, timeout_s: float = 300) -> dict[str, Any]:
+async def _wait_run(client: httpx.AsyncClient, run_id: str, timeout_s: float = 600) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         run = (await client.get(f"{BASE}/runs/{run_id}")).json()

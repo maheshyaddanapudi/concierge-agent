@@ -6,14 +6,14 @@
       [],
       [],
       [
-        "native_sub_agent"
+        "custom_sub_agent"
       ]
     ],
     "on": [
       [],
       [],
       [
-        "native_sub_agent"
+        "custom_sub_agent"
       ]
     ]
   }
