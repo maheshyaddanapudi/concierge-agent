@@ -86,8 +86,12 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_runs(session: SessionDep) -> list[dict[str, Any]]:
-    runs = list((await session.execute(select(Run).order_by(Run.started_at.desc()))).scalars())
+async def list_runs(session: SessionDep, routine_id: UUID | None = None) -> list[dict[str, Any]]:
+    query = select(Run).order_by(Run.started_at.desc())
+    if routine_id is not None:
+        # §18.5: the routine drawer's run history — trigger provenance match
+        query = query.where(Run.trigger["routine_id"].astext == str(routine_id))
+    runs = list((await session.execute(query)).scalars())
     return [_run_out(r) for r in runs]
 
 

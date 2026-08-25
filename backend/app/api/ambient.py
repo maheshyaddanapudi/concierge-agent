@@ -137,6 +137,78 @@ class WatchPatch(BaseModel):
     status: str
 
 
+class WatchCompileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+
+
+class WatchFilterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    op: str = "equals"
+    value: str = ""
+    values: list[str] = []
+
+
+class WatchCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    filters: list[WatchFilterBody] = []
+    semantic_predicate: str | None = None
+    cadence_s: int = 300
+
+
+async def _require_ambient_on() -> None:
+    from app.registry_cache import get_cache
+
+    if not bool(await get_cache().setting("ambient_enabled")):
+        raise HTTPException(409, "ambient mode is disabled (ambient_enabled=false)")
+
+
+@watches_router.post("/compile")
+async def compile_watch(body: WatchCompileBody) -> dict[str, Any]:
+    """§18.5 page authoring: NL → typed rule via the SAME compiler the
+    `ambient.watch` tool uses; the row stays 'proposed' until the user
+    confirms (PATCH status=active)."""
+    from app.ambient.watch_compile import compile_and_propose
+
+    await _require_ambient_on()
+    out = await compile_and_propose(body.text)
+    if out["status"] == "rejected":
+        raise HTTPException(422, str(out.get("error")))
+    return out
+
+
+@watches_router.post("", status_code=201)
+async def create_watch(body: WatchCreateBody, session: SessionDep) -> dict[str, Any]:
+    """§18.5: a typed event-filter watch built directly from filter rows —
+    no compiler involved; still lands 'proposed' for an explicit confirm."""
+    from app.ambient.watch_compile import VALID_FILTER_OPS
+
+    await _require_ambient_on()
+    if not body.filters:
+        raise HTTPException(422, "an events watch needs at least one filter")
+    for f in body.filters:
+        if f.op not in VALID_FILTER_OPS:
+            raise HTTPException(422, f"unknown filter op {f.op!r} — use {sorted(VALID_FILTER_OPS)}")
+    row = StandingIntent(
+        text=body.text[:2000],
+        condition_type="event",
+        compiled={"match": "events", "filters": [f.model_dump() for f in body.filters]},
+        semantic_predicate=body.semantic_predicate,
+        base_interval_s=max(body.cadence_s, 60),
+        current_interval_s=max(body.cadence_s, 60),
+        status="proposed",
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _watch_out(row)
+
+
 @watches_router.patch("/{intent_id}")
 async def patch_watch(intent_id: UUID, body: WatchPatch, session: SessionDep) -> dict[str, Any]:
     if body.status not in {"active", "paused", "retired"}:
@@ -174,9 +246,7 @@ async def ambient_stream() -> Any:
             yield ": connected\n\n"
             while True:
                 try:
-                    event = await asyncio.wait_for(
-                        queue.get(), timeout=channels.STREAM_KEEPALIVE_S
-                    )
+                    event = await asyncio.wait_for(queue.get(), timeout=channels.STREAM_KEEPALIVE_S)
                 except TimeoutError:
                     # keepalive doubles as the dark check: the stream exists
                     # only while ambient is on
@@ -196,12 +266,27 @@ async def ambient_stream() -> Any:
 
 
 @ledger_router.get("/ledger")
-async def ledger(session: SessionDep, limit: int = 100, verdict: str = "all") -> dict[str, Any]:
-    query = select(AmbientEvent).order_by(AmbientEvent.received_at.desc()).limit(min(limit, 500))
-    if verdict in {"fired", "held", "dropped", "expired"}:
-        query = query.where(AmbientEvent.verdict == verdict)
-    elif verdict == "pending":
-        query = query.where(AmbientEvent.verdict.is_(None))
+async def ledger(
+    session: SessionDep,
+    limit: int = 100,
+    verdict: str = "all",
+    correlation_id: UUID | None = None,
+) -> dict[str, Any]:
+    if correlation_id is not None:
+        # §18.5 correlation-chain view: the whole chain, cause → effect
+        query = (
+            select(AmbientEvent)
+            .where(AmbientEvent.correlation_id == correlation_id)
+            .order_by(AmbientEvent.depth, AmbientEvent.occurred_at)
+        )
+    else:
+        query = (
+            select(AmbientEvent).order_by(AmbientEvent.received_at.desc()).limit(min(limit, 500))
+        )
+        if verdict in {"fired", "held", "dropped", "expired"}:
+            query = query.where(AmbientEvent.verdict == verdict)
+        elif verdict == "pending":
+            query = query.where(AmbientEvent.verdict.is_(None))
     rows = list((await session.execute(query)).scalars())
     return {
         "items": [
@@ -244,15 +329,33 @@ async def precision(session: SessionDep) -> dict[str, Any]:
         .all()
     ):
         policies[p.category] = p  # latest applied wins
+    from app.ambient.deliver import PRECISION_WINDOW
+
     out = []
     for cat in sorted(categories):
         prec, n = await category_precision(cat)
         policy = policies.get(cat)
+        # §18.5 sparkline: the judged window, chronological, accepted=1
+        judged_rows = list(
+            (
+                await session.execute(
+                    select(Delivery.feedback)
+                    .where(
+                        Delivery.category == cat,
+                        Delivery.feedback.in_(["accepted", "dismissed"]),
+                    )
+                    .order_by(Delivery.created_at.desc())
+                    .limit(PRECISION_WINDOW)
+                )
+            ).scalars()
+        )
+        series = [1 if f == "accepted" else 0 for f in reversed(judged_rows)]
         out.append(
             {
                 "category": cat,
                 "precision": prec,
                 "judged": n,
+                "series": series,
                 "tier_override": policy.tier_override if policy else None,
                 "override_reason": policy.reason if policy else None,
                 "override_source": policy.source if policy else None,

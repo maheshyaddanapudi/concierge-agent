@@ -92,9 +92,188 @@ interface PrecisionRow {
   category: string
   precision: number | null
   judged: number
+  series: number[]
   tier_override: number | null
   override_reason: string | null
   override_source: string | null
+}
+
+// ── §18.5 shared editors ──────────────────────────────────────────────
+
+const FILTER_OPS = ['equals', 'contains', 'starts_with', 'one_of', 'regex'] as const
+
+interface FilterDraft {
+  field: string
+  op: string
+  value: string
+}
+
+export function FilterRowsEditor({
+  rows,
+  onChange,
+}: {
+  rows: FilterDraft[]
+  onChange: (rows: FilterDraft[]) => void
+}) {
+  const update = (i: number, patch: Partial<FilterDraft>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  return (
+    <div className="space-y-1.5" data-testid="filter-rows">
+      {rows.map((row, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <TextInput
+            placeholder="field (e.g. sev or payload.repo)"
+            value={row.field}
+            onChange={(e) => update(i, { field: e.target.value })}
+            className="flex-1"
+          />
+          <Select value={row.op} onChange={(e) => update(i, { op: e.target.value })} className="w-32">
+            {FILTER_OPS.map((op) => (
+              <option key={op} value={op}>
+                {op}
+              </option>
+            ))}
+          </Select>
+          <TextInput
+            placeholder={row.op === 'one_of' ? 'a, b, c' : 'value'}
+            value={row.value}
+            onChange={(e) => update(i, { value: e.target.value })}
+            className="flex-1"
+          />
+          <Button variant="ghost" onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+            ✕
+          </Button>
+        </div>
+      ))}
+      <Button variant="ghost" onClick={() => onChange([...rows, { field: '', op: 'equals', value: '' }])}>
+        + filter
+      </Button>
+    </div>
+  )
+}
+
+export function filterOut(row: FilterDraft): Record<string, unknown> {
+  if (row.op === 'one_of') {
+    return { field: row.field, op: row.op, value: '', values: row.value.split(',').map((v) => v.trim()).filter(Boolean) }
+  }
+  return { field: row.field, op: row.op, value: row.value }
+}
+
+interface TriggerDraft {
+  type: 'interval' | 'cron' | 'once' | 'webhook'
+  seconds: string
+  cron: string
+  at: string
+  filters: FilterDraft[]
+}
+
+const EMPTY_TRIGGER: TriggerDraft = { type: 'interval', seconds: '3600', cron: '0 9 * * *', at: '', filters: [] }
+
+export function triggerOut(t: TriggerDraft): Record<string, unknown> {
+  if (t.type === 'interval') return { type: 'interval', seconds: Number(t.seconds) || 3600 }
+  if (t.type === 'cron') return { type: 'cron', cron: t.cron }
+  if (t.type === 'once') return { type: 'once', at: t.at }
+  return { type: 'webhook', filters: t.filters.map(filterOut) }
+}
+
+export function TriggerBuilder({
+  rows,
+  onChange,
+}: {
+  rows: TriggerDraft[]
+  onChange: (rows: TriggerDraft[]) => void
+}) {
+  const update = (i: number, patch: Partial<TriggerDraft>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  return (
+    <div className="space-y-2" data-testid="trigger-builder">
+      {rows.map((t, i) => (
+        <div key={i} className="rounded-lg border border-slate-800 bg-void-950/40 p-2.5">
+          <div className="flex items-center gap-1.5">
+            <Select value={t.type} onChange={(e) => update(i, { type: e.target.value as TriggerDraft['type'] })} className="w-32">
+              {(['interval', 'cron', 'once', 'webhook'] as const).map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </Select>
+            {t.type === 'interval' && (
+              <>
+                <TextInput
+                  value={t.seconds}
+                  onChange={(e) => update(i, { seconds: e.target.value })}
+                  className="w-28"
+                />
+                <span className="text-xs text-slate-500">seconds between fires (min 60)</span>
+              </>
+            )}
+            {t.type === 'cron' && (
+              <>
+                <TextInput value={t.cron} onChange={(e) => update(i, { cron: e.target.value })} className="w-40" />
+                <span className="text-xs text-slate-500">UTC cron expression</span>
+              </>
+            )}
+            {t.type === 'once' && (
+              <>
+                <TextInput
+                  placeholder="2026-09-01T09:00:00Z"
+                  value={t.at}
+                  onChange={(e) => update(i, { at: e.target.value })}
+                  className="w-56"
+                />
+                <span className="text-xs text-slate-500">ISO timestamp, fires once</span>
+              </>
+            )}
+            {t.type === 'webhook' && (
+              <span className="text-xs text-slate-500">
+                fires via the token endpoint — filters below gate each fire
+              </span>
+            )}
+            <span className="ml-auto">
+              <Button variant="ghost" onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+                ✕
+              </Button>
+            </span>
+          </div>
+          {t.type === 'webhook' && (
+            <div className="mt-2">
+              <FilterRowsEditor rows={t.filters} onChange={(filters) => update(i, { filters })} />
+            </div>
+          )}
+        </div>
+      ))}
+      <Button variant="ghost" onClick={() => onChange([...rows, { ...EMPTY_TRIGGER }])}>
+        + trigger
+      </Button>
+    </div>
+  )
+}
+
+export function Sparkline({ series }: { series: number[] }) {
+  // §18.5: the judged window as accept(1)/dismiss(0) ticks, chronological
+  if (!series.length) return <span className="font-mono text-[10px] text-slate-600">no judged items</span>
+  const w = 4
+  return (
+    <svg
+      width={series.length * w}
+      height={14}
+      className="shrink-0"
+      role="img"
+      aria-label={`judged series: ${series.join('')}`}
+    >
+      {series.map((v, i) => (
+        <rect
+          key={i}
+          x={i * w}
+          y={v ? 1 : 8}
+          width={w - 1}
+          height={v ? 12 : 5}
+          rx={1}
+          className={v ? 'fill-emerald-400/80' : 'fill-rose-400/70'}
+        />
+      ))}
+    </svg>
+  )
 }
 
 const TIER_LABEL = ['interrupt', 'notify', 'digest', 'silent']
@@ -127,6 +306,9 @@ function RoutinesTab() {
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [autonomy, setAutonomy] = useState('propose')
+  // §18.5: typed trigger builder is the default; raw JSON stays as the escape hatch
+  const [triggerMode, setTriggerMode] = useState<'builder' | 'json'>('builder')
+  const [triggerRows, setTriggerRows] = useState<TriggerDraft[]>([{ ...EMPTY_TRIGGER }])
   const [triggers, setTriggers] = useState('[{"type": "interval", "seconds": 3600}]')
   const [token, setToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -143,7 +325,12 @@ function RoutinesTab() {
 
   const create = () =>
     act(async () => {
-      const parsed = triggers.trim() ? (JSON.parse(triggers) as unknown) : null
+      const parsed =
+        triggerMode === 'builder'
+          ? triggerRows.map(triggerOut)
+          : triggers.trim()
+            ? (JSON.parse(triggers) as unknown)
+            : null
       await api.post('/routines', { name, prompt, autonomy, triggers: parsed })
       setCreating(false)
       setName('')
@@ -212,8 +399,30 @@ function RoutinesTab() {
               <option value="act_reversible">act_reversible</option>
             </Select>
           </Field>
-          <Field label='triggers (JSON — schedule: {"type":"interval","seconds":N} | {"type":"cron","cron":"0 9 * * *"} | {"type":"once","at":"ISO"} | {"type":"webhook","filters":[{"field":"f","op":"equals","value":"v"}]})'>
-            <TextArea rows={3} value={triggers} onChange={(e) => setTriggers(e.target.value)} />
+          <Field label="triggers">
+            <div className="mb-1.5 flex gap-1.5">
+              <Button
+                variant={triggerMode === 'builder' ? 'primary' : 'ghost'}
+                onClick={() => setTriggerMode('builder')}
+              >
+                builder
+              </Button>
+              <Button
+                variant={triggerMode === 'json' ? 'primary' : 'ghost'}
+                onClick={() => {
+                  // hand the builder's current state to the escape hatch
+                  setTriggers(JSON.stringify(triggerRows.map(triggerOut), null, 1))
+                  setTriggerMode('json')
+                }}
+              >
+                JSON
+              </Button>
+            </div>
+            {triggerMode === 'builder' ? (
+              <TriggerBuilder rows={triggerRows} onChange={setTriggerRows} />
+            ) : (
+              <TextArea rows={5} value={triggers} onChange={(e) => setTriggers(e.target.value)} />
+            )}
           </Field>
           {error && <div className="text-xs text-rose-300">{error}</div>}
           <Button onClick={create} disabled={!name || !prompt}>
@@ -251,6 +460,7 @@ function RoutinesTab() {
                 <JsonBlock value={selected.allowlist} />
               </Field>
             )}
+            <RoutineRunHistory routineId={selected.id} />
             {token && (
               <Field label="fire token (shown once — store it now)">
                 <MaskedValue value={token} />
@@ -315,6 +525,48 @@ function RoutinesTab() {
   )
 }
 
+interface RunSummary {
+  id: string
+  status: string
+  chat_message: string
+  started_at: string | null
+  total_input_tokens: number
+  total_output_tokens: number
+}
+
+function RoutineRunHistory({ routineId }: { routineId: string }) {
+  // §18.5: the drawer shows the routine's fires as ordinary runs
+  const { data } = useQuery({
+    queryKey: ['routine-runs', routineId],
+    queryFn: () => api.get<RunSummary[]>(`/runs?routine_id=${routineId}`),
+    refetchInterval: 10000,
+  })
+  return (
+    <Field label={`run history (${data?.length ?? 0} fires)`}>
+      <div className="max-h-56 space-y-1 overflow-y-auto" data-testid="routine-run-history">
+        {(data ?? []).slice(0, 20).map((r) => (
+          <div
+            key={r.id}
+            className="flex items-center gap-2 rounded border border-slate-800/70 bg-void-950/50 px-2.5 py-1.5"
+          >
+            <StatusPill status={r.status} />
+            <span className="flex-1 truncate text-xs text-slate-300">
+              {r.chat_message.replace(/^#[^\n]*\n?/, '').slice(0, 90) || r.chat_message.slice(0, 90)}
+            </span>
+            <span className="font-mono text-[10px] text-slate-500">
+              {r.total_input_tokens}→{r.total_output_tokens}
+            </span>
+            <span className="font-mono text-[10px] text-slate-600">{timeAgo(r.started_at)}</span>
+          </div>
+        ))}
+        {(data ?? []).length === 0 && (
+          <div className="text-xs text-slate-600">no runs yet — this routine has never fired</div>
+        )}
+      </div>
+    </Field>
+  )
+}
+
 function WatchesTab() {
   const invalidate = useInvalidate()
   const { data } = useQuery({
@@ -336,6 +588,7 @@ function WatchesTab() {
         standing intents — compiled once from your words, evaluated by the scheduler, never
         remembered in model context
       </div>
+      <WatchAuthoring onDone={() => invalidate('watches')} />
       <div className="space-y-2">
         {(data?.items ?? []).map((w) => (
           <div
@@ -400,6 +653,135 @@ function WatchesTab() {
           </div>
         )}
       </Drawer>
+    </div>
+  )
+}
+
+interface CompileResult {
+  status: string
+  intent_id: string
+  interpretation: string
+  compiled: Record<string, unknown>
+}
+
+function WatchAuthoring({ onDone }: { onDone: () => void }) {
+  // §18.5: author from the page — NL through the SAME compiler as
+  // ambient.watch (echo → confirm), or a typed event-filter watch directly
+  const [mode, setMode] = useState<'describe' | 'typed'>('describe')
+  const [text, setText] = useState('')
+  const [filters, setFilters] = useState<FilterDraft[]>([{ field: '', op: 'equals', value: '' }])
+  const [predicate, setPredicate] = useState('')
+  const [proposal, setProposal] = useState<CompileResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const compile = () =>
+    run(async () => {
+      setProposal(await api.post<CompileResult>('/watches/compile', { text }))
+      onDone()
+    })
+  const createTyped = () =>
+    run(async () => {
+      const out = await api.post<{ id: string; text: string; compiled: Record<string, unknown> }>(
+        '/watches',
+        {
+          text,
+          filters: filters.filter((f) => f.field).map(filterOut),
+          semantic_predicate: predicate.trim() || null,
+        },
+      )
+      setProposal({
+        status: 'proposed',
+        intent_id: out.id,
+        interpretation: `Typed watch: ${out.text}`,
+        compiled: out.compiled,
+      })
+      onDone()
+    })
+  const decide = (status: 'active' | 'retired') =>
+    run(async () => {
+      if (proposal) await api.patch(`/watches/${proposal.intent_id}`, { status })
+      setProposal(null)
+      setText('')
+      onDone()
+    })
+
+  return (
+    <div className="mb-4 rounded-lg border border-slate-800 bg-void-950/40 p-3" data-testid="watch-authoring">
+      <div className="mb-2 flex items-center gap-1.5">
+        <span className="mr-1 font-mono text-[10px] uppercase tracking-widest text-slate-500">
+          new watch
+        </span>
+        <Button variant={mode === 'describe' ? 'primary' : 'ghost'} onClick={() => setMode('describe')}>
+          describe it
+        </Button>
+        <Button variant={mode === 'typed' ? 'primary' : 'ghost'} onClick={() => setMode('typed')}>
+          typed filters
+        </Button>
+      </div>
+      {mode === 'describe' ? (
+        <div className="flex items-start gap-2">
+          <TextArea
+            rows={2}
+            placeholder='"tell me when a high-severity alert appears in the ops feed…"'
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            className="flex-1"
+          />
+          <Button onClick={() => void compile()} disabled={busy || !text.trim()}>
+            {busy ? 'Compiling…' : 'Compile'}
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <TextInput
+            placeholder="what this watch is about (shown in the list)"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <FilterRowsEditor rows={filters} onChange={setFilters} />
+          <TextInput
+            placeholder="optional semantic predicate — a yes/no question judged per event"
+            value={predicate}
+            onChange={(e) => setPredicate(e.target.value)}
+          />
+          <Button onClick={() => void createTyped()} disabled={busy || !text.trim()}>
+            Create proposed watch
+          </Button>
+        </div>
+      )}
+      {error && <div className="mt-2 text-xs text-rose-300">{error}</div>}
+      {proposal && (
+        <div className="mt-3 rounded-lg border border-accent-400/40 bg-accent-500/5 p-3" data-testid="watch-proposal">
+          <div className="font-mono text-[10px] uppercase tracking-widest text-accent-300">
+            proposed — confirm the interpretation
+          </div>
+          <div className="mt-1 text-sm text-slate-200">{proposal.interpretation}</div>
+          <div className="mt-2">
+            <JsonBlock value={proposal.compiled} />
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button onClick={() => void decide('active')} disabled={busy}>
+              Confirm
+            </Button>
+            <Button variant="ghost" onClick={() => void decide('retired')} disabled={busy}>
+              Discard
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -514,9 +896,81 @@ interface PolicyRow {
   created_at: string | null
 }
 
+function ChainView({ correlationId }: { correlationId: string }) {
+  // §18.5: the whole causal chain, cause → effect, indented by depth
+  const { data } = useQuery({
+    queryKey: ['ambient-chain', correlationId],
+    queryFn: () => api.get<{ items: LedgerRow[] }>(`/ambient/ledger?correlation_id=${correlationId}`),
+  })
+  return (
+    <div className="space-y-1 bg-void-950/70 px-4 py-3" data-testid="chain-view">
+      <div className="font-mono text-[10px] uppercase tracking-widest text-slate-500">
+        correlation chain · {correlationId.slice(0, 8)}
+      </div>
+      {(data?.items ?? []).map((e, i) => (
+        <div
+          key={e.id}
+          className="flex items-center gap-2 text-xs"
+          style={{ paddingLeft: `${e.depth * 22}px` }}
+        >
+          <span className="font-mono text-slate-600">{i === 0 ? '●' : '↳'}</span>
+          <span className="font-mono text-slate-300">{e.kind}</span>
+          <Chip>{e.source}</Chip>
+          <StatusPill status={e.verdict ?? 'pending'} />
+          <span className="truncate text-slate-500">{e.verdict_reason ?? ''}</span>
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-600">
+            {timeAgo(e.received_at)}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function LedgerRowView({
+  row,
+  expanded,
+  onToggle,
+}: {
+  row: LedgerRow
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        className="cursor-pointer border-t border-slate-800/60 hover:bg-slate-900/50"
+        title="click to expand the correlation chain"
+      >
+        <td className="px-3 py-2 font-mono text-xs text-slate-300">{row.kind}</td>
+        <td className="px-3 py-2 text-slate-400">{row.source}</td>
+        <td className="px-3 py-2">
+          <StatusPill status={row.verdict ?? 'pending'} />
+        </td>
+        <td className="max-w-md truncate px-3 py-2 text-xs text-slate-400" title={row.verdict_reason ?? ''}>
+          {row.verdict_reason ?? '—'}
+        </td>
+        <td className="px-3 py-2 font-mono text-xs text-slate-500">
+          {row.depth > 0 ? `↳${row.depth}` : '·'}
+        </td>
+        <td className="px-3 py-2 text-xs text-slate-500">{timeAgo(row.received_at)}</td>
+      </tr>
+      {expanded && row.correlation_id && (
+        <tr className="border-t border-slate-800/40">
+          <td colSpan={6} className="p-0">
+            <ChainView correlationId={row.correlation_id} />
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 function LedgerTab() {
   const invalidate = useInvalidate()
   const [verdict, setVerdict] = useState('all')
+  const [expanded, setExpanded] = useState<string | null>(null)
   const { data } = useQuery({
     queryKey: ['ambient-ledger', verdict],
     queryFn: () => api.get<{ items: LedgerRow[] }>(`/ambient/ledger?verdict=${verdict}`),
@@ -578,6 +1032,7 @@ function LedgerTab() {
               <span className="font-mono text-xs text-slate-300">
                 {p.precision === null ? '—' : `${(p.precision * 100).toFixed(0)}%`}
               </span>
+              <Sparkline series={p.series ?? []} />
               <span className="font-mono text-[10px] text-slate-600">{p.judged} judged</span>
               {p.tier_override !== null && (
                 <>
@@ -623,20 +1078,12 @@ function LedgerTab() {
             </thead>
             <tbody>
               {(data?.items ?? []).map((e) => (
-                <tr key={e.id} className="border-t border-slate-800/60">
-                  <td className="px-3 py-2 font-mono text-xs text-slate-300">{e.kind}</td>
-                  <td className="px-3 py-2 text-slate-400">{e.source}</td>
-                  <td className="px-3 py-2">
-                    <StatusPill status={e.verdict ?? 'pending'} />
-                  </td>
-                  <td className="max-w-md truncate px-3 py-2 text-xs text-slate-400" title={e.verdict_reason ?? ''}>
-                    {e.verdict_reason ?? '—'}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-slate-500">
-                    {e.depth > 0 ? `↳${e.depth}` : '·'}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-slate-500">{timeAgo(e.received_at)}</td>
-                </tr>
+                <LedgerRowView
+                  key={e.id}
+                  row={e}
+                  expanded={expanded === e.id}
+                  onToggle={() => setExpanded(expanded === e.id ? null : e.id)}
+                />
               ))}
             </tbody>
           </table>

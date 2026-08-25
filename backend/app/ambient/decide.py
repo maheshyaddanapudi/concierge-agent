@@ -163,6 +163,20 @@ async def _decide(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:
         filters = trig.get("filters") or []
         if filters and not match_filters((event.payload or {}).get("payload"), filters):
             return ("held", "tier-1 filters did not match", decision)
+        # §18.5: webhook fires carry no embedded trigger, so they are matched
+        # against the ROUTINE's stored webhook-trigger filters — any matching
+        # webhook trigger admits the fire (an empty filter list matches all)
+        if not filters and event.source == "webhook":
+            webhook_trigs = [
+                t
+                for t in (routine.triggers or [])
+                if isinstance(t, dict) and t.get("type") == "webhook"
+            ]
+            if webhook_trigs and not any(
+                match_filters((event.payload or {}).get("payload"), t.get("filters") or [])
+                for t in webhook_trigs
+            ):
+                return ("held", "webhook trigger filters did not match", decision)
         if await _runs_today_cap_reached():
             return ("dropped", "ambient_runs_per_day cap reached", decision)
         decision["fired_for"] = "routine"
