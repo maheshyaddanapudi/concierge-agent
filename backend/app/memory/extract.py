@@ -31,6 +31,10 @@ class ExtractedMemory(BaseModel):
     entity_key: str | None = Field(
         default=None, description="single-valued key this memory is about, else null"
     )
+    entities: list[str] = Field(
+        default_factory=list,
+        description="0-3 named entities this memory is about (people, systems, projects)",
+    )
 
 
 class ExtractionOutput(BaseModel):
@@ -82,6 +86,7 @@ async def extract_candidates(run: Run, hitl_notes: list[str]) -> list[Candidate]
             importance=m.importance,
             confidence=m.confidence,
             entity_key=m.entity_key,
+            entities=m.entities,
         )
         for m in out.memories
     ]
@@ -199,6 +204,7 @@ async def reconcile_and_write(cand: Candidate, run_id: UUID) -> Memory | None:
         importance=cand.importance,
         confidence=cand.confidence,
         run_id=run_id,
+        entities=cand.entities,
     )
 
 

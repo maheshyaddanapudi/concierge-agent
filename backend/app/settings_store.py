@@ -60,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
     "memory_extraction_model_params": None,
     "memory_half_life_days": 30.0,
     "memory_idle_minutes": 10,
+    "memory_digest_compact_days": 14,
 }
 
 _MODEL_KEYS = {
@@ -88,6 +89,7 @@ _INT_KEYS = {
     "memory_pinned_budget_tokens",
     "memory_recall_top_k",
     "memory_idle_minutes",
+    "memory_digest_compact_days",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",

@@ -67,11 +67,15 @@ async def build_memory_block(
             [f"- [{m.kind} {str(m.id)[:8]}] {m.text}" for m in pinned], pinned_budget
         )
 
+        # §16.7 citation feedback: injection does NOT bump access — being
+        # retrieved is not evidence of being useful; the post-run citation
+        # job reinforces only memories the answer actually cited
         hits = await recall(
             query,
             conversation_id=conversation_id,
             k=top_k,
             floor=floor,
+            bump_access=False,
         )
         pinned_ids = {m.id for m in pinned}
         # approved standing instructions get their own labeled section: they
@@ -120,12 +124,26 @@ async def build_memory_block(
         stats.memories = len(mem_lines)
         stats.episodes = len(epi_lines)
         stats.tokens = max(len(block) // _CHARS_PER_TOKEN, 1)
-        stats.memory_ids = [str(h.memory.id) for h in hits]
+        stats.memory_ids = [str(h.memory.id) for h in hits] + [str(m.id) for m in pinned]
+        _record_injected(stats.memory_ids)
         _observe(stats)
         return block, stats
     except Exception as exc:  # noqa: BLE001 — memory never breaks a run
         logger.warning("memory_inject_failed", surface=surface, error=str(exc))
         return "", stats
+
+
+def _record_injected(memory_ids: list[str]) -> None:
+    """Note injected ids on the run context for §16.7 citation feedback."""
+    try:
+        from app.orchestrator.context import get_run_context
+
+        ctx = get_run_context()
+        if ctx is not None:
+            known = set(ctx.injected_memory_ids)
+            ctx.injected_memory_ids.extend(i for i in memory_ids if i not in known)
+    except Exception:  # noqa: BLE001, S110 - bookkeeping only
+        pass
 
 
 def _observe(stats: InjectionStats) -> None:

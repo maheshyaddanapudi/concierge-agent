@@ -8,16 +8,16 @@ a digest is never allowed to fail the pipeline.
 """
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import bindparam, select
+from sqlalchemy import bindparam, delete, select
 from sqlalchemy import text as sql_text
 
 from app.db import get_session_factory
-from app.models import ConversationRollup, Run, RunDigest, RunStep
+from app.models import ConversationRollup, MemoryEmbedding, Run, RunDigest, RunStep
 
 logger = structlog.get_logger("memory")
 
@@ -162,6 +162,87 @@ async def update_rollup(conversation_id: UUID) -> ConversationRollup:
         runs_covered=rollup.runs_covered,
     )
     return rollup
+
+
+async def compact_digests(now: datetime | None = None) -> int:
+    """§16.7 digest compaction: fold run-digests older than
+    `memory_digest_compact_days` into one `period` digest per conversation
+    (merging into the existing period row when one exists), then hard-delete
+    the folded rows and their embeddings. Keeps the episodic store
+    O(conversations), not O(runs). Returns the number of digests folded."""
+    from app.memory.store import _embed_ref
+    from app.registry_cache import get_cache
+
+    days = int(await get_cache().setting("memory_digest_compact_days"))
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
+    folded = 0
+    async with get_session_factory()() as session:
+        old = list(
+            (
+                await session.execute(
+                    select(RunDigest)
+                    .where(RunDigest.kind == "run", RunDigest.created_at < cutoff)
+                    .order_by(RunDigest.conversation_id, RunDigest.created_at)
+                )
+            ).scalars()
+        )
+        by_conv: dict[UUID, list[RunDigest]] = {}
+        for d in old:
+            by_conv.setdefault(d.conversation_id, []).append(d)
+        for conv_id, digests in by_conv.items():
+            period = (
+                await session.execute(
+                    select(RunDigest).where(
+                        RunDigest.conversation_id == conv_id, RunDigest.kind == "period"
+                    )
+                )
+            ).scalar_one_or_none()
+            pieces = ([period.text] if period is not None else []) + [d.text for d in digests]
+            text = " ".join(" ".join(p.split()) for p in pieces)[:2400]
+            prev = int((period.signals or {}).get("runs_folded", 0)) if period is not None else 0
+            runs_folded = len(digests) + prev
+            covers_from = min(
+                [d.created_at for d in digests]
+                + ([period.covers_from] if period is not None and period.covers_from else [])
+            )
+            covers_to = max(
+                [d.created_at for d in digests]
+                + ([period.covers_to] if period is not None and period.covers_to else [])
+            )
+            if period is None:
+                period = RunDigest(
+                    run_id=None,
+                    conversation_id=conv_id,
+                    kind="period",
+                    text=text,
+                    signals={"runs_folded": runs_folded},
+                    covers_from=covers_from,
+                    covers_to=covers_to,
+                )
+                session.add(period)
+                await session.flush()
+            else:
+                period.text = text
+                period.signals = {"runs_folded": runs_folded}
+                period.covers_from = covers_from
+                period.covers_to = covers_to
+            digest_ids = [d.id for d in digests]
+            await session.execute(
+                delete(MemoryEmbedding).where(
+                    MemoryEmbedding.table_ref == "run_digests",
+                    MemoryEmbedding.ref_id.in_(digest_ids),
+                )
+            )
+            await session.execute(delete(RunDigest).where(RunDigest.id.in_(digest_ids)))
+            await _embed_ref(session, period.id, "run_digests", period.text)
+            folded += len(digests)
+        if folded:
+            await session.commit()
+    from app import obs
+
+    obs.MEMORY_OPS.labels(kind="compact", status="ok").inc()
+    logger.info("memory_compact", tier="memory", kind="compact", folded=folded)
+    return folded
 
 
 async def recall_digests(

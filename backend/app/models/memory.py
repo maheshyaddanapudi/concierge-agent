@@ -132,19 +132,23 @@ class MemoryEntityLink(Base):
 
 
 class RunDigest(Base):
-    """L1 episodic retrieval unit (round-level, spec §16.2): one row per
-    completed run — digest text plus mechanically harvested outcome signals."""
+    """L1 episodic retrieval unit (spec §16.2/§16.7): one row per completed
+    run (kind='run'), or a synthetic per-conversation compaction of old
+    run-digests (kind='period', run_id NULL, covers_from..covers_to)."""
 
     __tablename__ = "run_digests"
     __table_args__ = (Index("run_digests_fts_idx", "fts", postgresql_using="gin"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("runs.id", ondelete="CASCADE"), unique=True
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), unique=True, default=None
     )
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")
     )
+    kind: Mapped[str] = mapped_column(String(16), default="run")  # 'run' | 'period'
+    covers_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    covers_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     text: Mapped[str] = mapped_column(Text)
     # {status, mode, rungs: [], hitl: [{status, note}], stopped, corrected,
     #  input_tokens, output_tokens, duration_ms}

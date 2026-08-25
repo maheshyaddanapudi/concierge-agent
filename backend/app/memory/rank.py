@@ -45,6 +45,7 @@ class RecallHit:
     relevance: float
     recency: float
     importance: float
+    linked: bool = False  # §16.7: reached via an entity hop, not similarity
 
 
 def _temporal_predicate(as_of: datetime | None) -> str:
@@ -183,6 +184,60 @@ async def recall(
                 )
         hits.sort(key=lambda h: h.score, reverse=True)
         hits = hits[:k]
+
+        # §16.7 entity hop: up to 2 extra active memories sharing an entity
+        # with a top hit — reached by structure, not similarity, so they are
+        # floor-exempt, scored at a fixed discount of the weakest direct hit,
+        # and skipped for filtered (kinds) or point-in-time (as_of) recalls
+        if hits and as_of is None and kinds is None:
+            hop_rows = (
+                await session.execute(
+                    sql_text(
+                        """
+                        SELECT DISTINCT m.id FROM memories m
+                        JOIN memory_entity_links l1 ON l1.memory_id = m.id
+                        JOIN memory_entity_links l2 ON l2.entity_id = l1.entity_id
+                        WHERE l2.memory_id = ANY(:hit_ids)
+                          AND m.id != ALL(:hit_ids)
+                          AND m.status = 'active'
+                          AND (m.scope != 'conversation'
+                               OR m.conversation_id = :conversation_id)
+                        LIMIT 2
+                        """
+                    ),
+                    {
+                        "hit_ids": [h.memory.id for h in hits],
+                        "conversation_id": conversation_id,
+                    },
+                )
+            ).all()
+            hop_ids = [r[0] for r in hop_rows]
+            if hop_ids:
+                hop_score = round(min(h.score for h in hits) * 0.8, 4)
+                hop_mem_rows = (
+                    (
+                        await session.execute(
+                            sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
+                                *Memory.__table__.c
+                            ),
+                            {"ids": hop_ids},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                for row in hop_mem_rows:
+                    mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+                    hits.append(
+                        RecallHit(
+                            memory=mem,
+                            score=hop_score,
+                            relevance=0.0,
+                            recency=0.0,
+                            importance=mem.importance / 10.0,
+                            linked=True,
+                        )
+                    )
 
         if bump_access and hits and as_of is None:
             await session.execute(

@@ -13,7 +13,7 @@ Rules enforced here, not in prompts:
   near-duplicate drop) — write policy is the security boundary (research 03 §5)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -58,6 +58,7 @@ class Candidate:
     importance: int = 5
     confidence: float = 0.7
     valid_from: datetime | None = None
+    entities: list[str] = field(default_factory=list)
 
 
 def _validate(kind: str, scope: str, source: str) -> None:
@@ -111,6 +112,36 @@ async def _embed_ref(session: AsyncSession, ref_id: UUID, table_ref: str, text: 
         logger.warning("memory_embed_failed", ref=str(ref_id), error=str(exc))
 
 
+async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) -> None:
+    """§16.7 entity-hop substrate: get-or-create entities by case-insensitive
+    name and link them to the memory. Best-effort — never fails the write."""
+    try:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from app.models import MemoryEntity, MemoryEntityLink
+
+        for raw in names[:3]:
+            name = " ".join(raw.split())
+            if len(name) < 2:
+                continue
+            entity = (
+                await sess.execute(
+                    sa_select(MemoryEntity).where(
+                        sa_func.lower(MemoryEntity.name) == name.lower()
+                    )
+                )
+            ).scalar_one_or_none()
+            if entity is None:
+                entity = MemoryEntity(name=name)
+                sess.add(entity)
+                await sess.flush()
+            sess.add(MemoryEntityLink(memory_id=memory_id, entity_id=entity.id))
+        await sess.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory_entity_link_failed", memory_id=str(memory_id), error=str(exc))
+
+
 async def remember(
     *,
     text: str,
@@ -127,6 +158,7 @@ async def remember(
     step_id: UUID | None = None,
     supersedes: UUID | None = None,
     via_tool: bool = False,
+    entities: list[str] | None = None,
     session: AsyncSession | None = None,
 ) -> Memory:
     """Insert one memory row under the §16.2 rules. Raises MemoryWriteError."""
@@ -168,6 +200,7 @@ async def remember(
         sess.add(row)
         await sess.flush()
         await _embed_ref(sess, row.id, "memories", row.text)
+        await _link_entities(sess, row.id, entities or [])
         await sess.commit()
         await sess.refresh(row)
         return row

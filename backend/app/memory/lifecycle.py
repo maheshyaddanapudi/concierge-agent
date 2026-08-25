@@ -25,6 +25,7 @@ JOB_DECAY = 1
 JOB_REFLECT = 2
 JOB_CONTRADICT = 3
 JOB_MINE = 4
+JOB_COMPACT = 5
 
 # GA-style reflection trigger: summed importance of unreflected memories
 REFLECTION_IMPORTANCE_TRIGGER = 150
@@ -38,6 +39,7 @@ _INTERVALS_S = {
     JOB_REFLECT: 3600,
     JOB_CONTRADICT: 24 * 3600,
     JOB_MINE: 12 * 3600,
+    JOB_COMPACT: 6 * 3600,
 }
 _LAST_RUN: dict[int, float] = {}
 
@@ -210,10 +212,13 @@ async def run_due_jobs() -> dict[str, int]:
         return {}
     results: dict[str, int] = {}
     now = asyncio.get_event_loop().time()
+    from app.memory.episodic import compact_digests
+
     jobs = {
         JOB_DECAY: ("decay", decay_sweep),
         JOB_REFLECT: ("reflect", reflection),
         JOB_CONTRADICT: ("contradict", contradiction_sweep),
+        JOB_COMPACT: ("compact", compact_digests),
     }
     for job_id, (name, fn) in jobs.items():
         if not await _due(job_id, now):
