@@ -11,6 +11,7 @@ from app.models.ambient import (
     UserPresence,
 )
 from app.models.base import Base, RegistryRecord
+from app.models.eval import EvalCase, EvalDataset, EvalResult, EvalRun
 from app.models.mcp_server import McpServer
 from app.models.memory import (
     ConversationRollup,
@@ -30,6 +31,10 @@ from app.models.sub_agent import SubAgent, sub_agent_skills
 from app.models.tool import Tool
 
 __all__ = [
+    "EvalCase",
+    "EvalDataset",
+    "EvalResult",
+    "EvalRun",
     "AmbientEvent",
     "AmbientPolicy",
     "AmbientWakeup",

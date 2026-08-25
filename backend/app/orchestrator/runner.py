@@ -42,6 +42,8 @@ async def create_run(
     include_history_summary: bool = False,
     include_memories: bool = False,
     project_key: str | None = None,
+    is_eval: bool = False,
+    eval_skill_id: UUID | None = None,
 ) -> Run:
     async with get_session_factory()() as session:
         if conversation_id is None:
@@ -64,6 +66,8 @@ async def create_run(
             target_sub_agent_id=target_sub_agent_id,
             include_history_summary=include_history_summary,
             include_memories=include_memories,
+            is_eval=is_eval,
+            eval_skill_id=eval_skill_id,
         )
         session.add(run)
         await session.commit()
@@ -89,6 +93,13 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         include_history_summary = run.include_history_summary
         include_memories = run.include_memories
         trigger = run.trigger
+        is_eval = run.is_eval
+        eval_skill_id = run.eval_skill_id
+    if is_eval:
+        # §15: eval runs are ordinary runs tagged eval=true in the label set
+        import structlog as _structlog
+
+        _structlog.contextvars.bind_contextvars(eval=True)
     # §17.4: an ambient run carries its routine's narrowed registry projection
     ambient_allowlist: dict[str, Any] | None = None
     if trigger and trigger.get("routine_id"):
@@ -134,6 +145,8 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
                 conversation_id=conversation_id,
                 include_history_summary=include_history_summary,
                 include_memories=include_memories,
+                is_eval=is_eval,
+                eval_skill_id=eval_skill_id,
             )
         elif mode == "agentic":
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
@@ -381,10 +394,14 @@ async def _run_direct(
     conversation_id: UUID | None = None,
     include_history_summary: bool = False,
     include_memories: bool = False,
+    is_eval: bool = False,
+    eval_skill_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Direct sub-agent invocation (spec §7.5): a one-node graph on the run's
     checkpointer thread so worker HITL pauses/resumes exactly like graph-mode
-    dispatch; the shared finalization tail (formatter included) applies."""
+    dispatch; the shared finalization tail (formatter included) applies.
+    §15 eval runs ride the same graph: an eval_skill_id targets a single-skill
+    ephemeral worker; sub-agent evals skip the direct_exposure gate."""
     from app.orchestrator.direct_mode import (
         DirectInvokeError,
         build_direct_graph,
@@ -394,7 +411,7 @@ async def _run_direct(
         summarize_history,
     )
 
-    if target_sub_agent_id is None:
+    if target_sub_agent_id is None and eval_skill_id is None:
         raise RunFailed("direct run has no target sub agent — this is a bug")
     checkpointer = await get_checkpointer()
     graph = build_direct_graph(checkpointer)
@@ -405,11 +422,14 @@ async def _run_direct(
     }
     if resume is not None:
         graph_input: Any = await _resume_command(graph, config, resume)
+    elif eval_skill_id is not None:
+        # §15 admin-direct skill eval — no routing, no exposure gate
+        graph_input = {"task": task_text, "eval_skill_id": str(eval_skill_id)}
     else:
         # gate + route step before the graph starts: fresh runs only, so HITL
         # resume replays never duplicate the route record
         try:
-            await check_direct_invokable(str(target_sub_agent_id))
+            await check_direct_invokable(str(target_sub_agent_id), allow_unexposed=is_eval)
         except DirectInvokeError as exc:
             raise RunFailed(str(exc)) from exc
         await record_direct_route(str(target_sub_agent_id))
@@ -431,7 +451,11 @@ async def _run_direct(
             )
             if block:
                 worker_task = f"{block}\n\n{worker_task}"
-        graph_input = {"task": worker_task, "sub_agent_id": str(target_sub_agent_id)}
+        graph_input = {
+            "task": worker_task,
+            "sub_agent_id": str(target_sub_agent_id),
+            "is_eval": is_eval,
+        }
     from typing import cast
 
     from langchain_core.runnables import RunnableConfig

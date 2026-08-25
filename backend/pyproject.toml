@@ -31,6 +31,8 @@ dependencies = [
     "greenlet>=3.0",
     "pgvector>=0.3",
     "croniter>=6.2.4",
+    "python-multipart>=0.0.9",
+    "openpyxl>=3.1",
 ]
 
 [dependency-groups]
@@ -59,7 +61,7 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["langchain_mcp_adapters.*", "langgraph.*", "mcp.*"]
+module = ["langchain_mcp_adapters.*", "langgraph.*", "mcp.*", "openpyxl.*"]
 follow_untyped_imports = true
 
 [tool.pytest.ini_options]

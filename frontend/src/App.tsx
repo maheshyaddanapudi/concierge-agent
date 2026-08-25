@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NavLink, Route, HashRouter, Routes } from 'react-router-dom'
 import { AmbientPage } from './pages/AmbientPage'
 import { ChatPage } from './pages/ChatPage'
+import { EvalsPage } from './pages/EvalsPage'
 import { McpServersPage } from './pages/McpServersPage'
 import { ToolsPage } from './pages/ToolsPage'
 import { SkillsPage } from './pages/SkillsPage'
@@ -24,6 +25,7 @@ const NAV: { to: string; label: string; glyph: string; ambientOnly?: boolean }[]
   { to: '/skills', label: 'Skills', glyph: '§' },
   { to: '/sub-agents', label: 'Sub Agents', glyph: '⬡' },
   { to: '/runs', label: 'Runs', glyph: '≡' },
+  { to: '/evals', label: 'Evals', glyph: '✓' },
   { to: '/memory', label: 'Memory', glyph: '◈' },
   // Ambient (spec §8.9) appears only while ambient_enabled — see NavItems
   { to: '/ambient', label: 'Ambient', glyph: '◎', ambientOnly: true },
@@ -101,6 +103,7 @@ export default function App() {
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/sub-agents" element={<SubAgentsPage />} />
               <Route path="/runs" element={<RunsPage />} />
+              <Route path="/evals" element={<EvalsPage />} />
               <Route path="/memory" element={<MemoryPage />} />
               <Route path="/ambient" element={<AmbientPage />} />
               <Route path="/settings" element={<SettingsPage />} />

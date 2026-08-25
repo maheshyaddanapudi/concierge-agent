@@ -24,6 +24,10 @@ DIRECT_ENTRY_ID = "direct"
 class DirectState(TypedDict, total=False):
     task: str
     sub_agent_id: str
+    # §15 eval: a single-skill ephemeral worker built by registry id — the
+    # rung-4 exposure rule governs planner routing, never admin eval
+    eval_skill_id: str
+    is_eval: bool
     answer: str
 
 
@@ -31,9 +35,13 @@ class DirectInvokeError(RuntimeError):
     """The pinned sub agent cannot be invoked (gating or execution failure)."""
 
 
-async def check_direct_invokable(sub_agent_id: str) -> dict[str, Any]:
+async def check_direct_invokable(
+    sub_agent_id: str, *, allow_unexposed: bool = False
+) -> dict[str, Any]:
     """Gating (spec §7.5): active + direct_exposure, from the registry cache.
-    Returns the cached record; raises DirectInvokeError with the reason."""
+    Returns the cached record; raises DirectInvokeError with the reason.
+    §15 eval runs pass allow_unexposed — admin-direct eval is not gated by
+    exposure, only by the definition being active."""
     from app.registry_cache import get_cache
 
     record = await get_cache().sub_agent_by_id(sub_agent_id)
@@ -41,11 +49,32 @@ async def check_direct_invokable(sub_agent_id: str) -> dict[str, Any]:
         raise DirectInvokeError(f"sub agent {sub_agent_id} not found")
     if record["status"] != "active":
         raise DirectInvokeError(f"sub agent {record['name']!r} is not active")
-    if not record["direct_exposure"]:
+    if not record["direct_exposure"] and not allow_unexposed:
         raise DirectInvokeError(
             f"sub agent {record['name']!r} is not exposed for direct invocation"
         )
     return record
+
+
+async def _eval_skill_resolution(skill_id: str) -> Any:
+    """§15: build the single-skill ephemeral worker resolution directly by
+    registry id — the same compile path §4 validation uses; hidden skills
+    are evaluable, only 'active' is required."""
+    from app.orchestrator.ladder import Resolution, ResolutionError
+    from app.registry_cache import get_cache
+
+    skill = await get_cache().skill_by_id(skill_id)
+    if skill is None or skill["status"] != "active":
+        raise ResolutionError(f"skill {skill_id} is not active")
+    return Resolution(
+        rung="dynamic_worker",
+        tier="sub_agent",
+        kind="dynamic",
+        source="dynamic",
+        entity_id=None,
+        entity_name=f"eval-worker ({skill['name']})",
+        payload={"skills": [skill], "callsign": "eval-worker"},
+    )
 
 
 async def invoke_node(state: DirectState) -> dict[str, Any]:
@@ -54,10 +83,19 @@ async def invoke_node(state: DirectState) -> dict[str, Any]:
     from app.orchestrator.graph_mode import RunFailed
     from app.orchestrator.ladder import execute_resolution, resolve_capability
 
+    if state.get("eval_skill_id"):
+        resolution = await _eval_skill_resolution(state["eval_skill_id"])
+        result = await execute_resolution(resolution, state["task"], DIRECT_ENTRY_ID)
+        if result.get("status") == "error":
+            raise RunFailed(f"skill eval failed: {result.get('error')}")
+        return {"answer": str(result.get("output") or "")}
+
     # defense in depth: re-check the gate at execution start — a toggle
     # flipped between request and execution fails the run cleanly
     try:
-        await check_direct_invokable(state["sub_agent_id"])
+        await check_direct_invokable(
+            state["sub_agent_id"], allow_unexposed=bool(state.get("is_eval"))
+        )
     except DirectInvokeError as exc:
         raise RunFailed(str(exc)) from exc
 

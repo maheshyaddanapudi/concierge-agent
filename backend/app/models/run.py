@@ -46,6 +46,10 @@ class Run(Base):
     include_memories: Mapped[bool] = mapped_column(default=False)
     # §17.4 ambient provenance: {routine_id, event_id, source} — NULL for chat runs
     trigger: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # §15 eval provenance: ordinary runs tagged eval=true (HITL auto-approved
+    # by the eval runner); eval_skill_id set ⇒ admin-direct single-skill worker
+    is_eval: Mapped[bool] = mapped_column(default=False)
+    eval_skill_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     # §17.4 liveness (heartbeat sense H3): refreshed by the runner each tick
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None

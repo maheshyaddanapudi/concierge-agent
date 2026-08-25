@@ -6,6 +6,7 @@ from app.api import (
     ambient,
     cache,
     chat,
+    evals,
     fake_llm,
     mcp_servers,
     memories,
@@ -26,6 +27,7 @@ api_router.include_router(skills.router)
 api_router.include_router(sub_agents.router)
 api_router.include_router(chat.router)
 api_router.include_router(runs.router)
+api_router.include_router(evals.router)
 api_router.include_router(memories.router)
 api_router.include_router(routines.router)
 api_router.include_router(routines.presence_router)
