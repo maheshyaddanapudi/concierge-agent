@@ -61,6 +61,7 @@ def test_configured_provider_returns_base_chat_model(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-dummy")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-dummy")
     monkeypatch.setenv("OPENAI_API_KEY", "test-dummy")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-dummy")
     get_config.cache_clear()
     try:
         assert provider.is_configured() is True
@@ -71,7 +72,7 @@ def test_configured_provider_returns_base_chat_model(
 
 
 def test_registered_builtins_present() -> None:
-    assert {"anthropic", "google_genai", "openai", "fake"} <= set(PROVIDER_IDS)
+    assert {"anthropic", "google_genai", "openai", "openrouter", "fake"} <= set(PROVIDER_IDS)
 
 
 def test_get_model_resolves_prefix() -> None:
@@ -138,6 +139,7 @@ class TestModelParamsMapping:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-dummy")
         monkeypatch.setenv("GOOGLE_API_KEY", "test-dummy")
         monkeypatch.setenv("OPENAI_API_KEY", "test-dummy")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-dummy")
         get_config.cache_clear()
         yield
         get_config.cache_clear()
@@ -218,6 +220,7 @@ class TestValidateModelSelection:
 
     def test_unsupported_params(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "test-dummy")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-dummy")
         get_config.cache_clear()
         try:
             errors = validate_model_selection("openai:gpt-5", ModelParams(temperature=1.0))
