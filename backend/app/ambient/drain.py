@@ -20,8 +20,11 @@ from app.models import AmbientEvent
 
 logger = structlog.get_logger("ambient")
 
-# processor contract: return (verdict, reason) or None to leave pending
-Processor = Callable[[AmbientEvent], Awaitable[tuple[str, str] | None]]
+# processor contract: return (verdict, reason) or (verdict, reason, decision)
+# or None to leave pending. Processors MUST NOT write ambient_events rows —
+# the drain holds them FOR UPDATE and applies the outcome itself.
+ProcessorResult = tuple[str, str] | tuple[str, str, dict[str, "object"]] | None
+Processor = Callable[[AmbientEvent], Awaitable[ProcessorResult]]
 _processor: Processor | None = None
 
 
@@ -31,7 +34,7 @@ def register_processor(fn: Processor | None) -> None:
     _processor = fn
 
 
-async def default_processor(event: AmbientEvent) -> tuple[str, str] | None:
+async def default_processor(event: AmbientEvent) -> ProcessorResult:
     """M21 decision plane: patterns advance first (derived events), then the
     three-tier gate decides fire/hold for this event."""
     from app.ambient.decide import process_event
@@ -67,16 +70,17 @@ async def drain_once(limit: int = 20) -> int:
             event = await session.get(AmbientEvent, event_id)
             if event is None:
                 continue
-            outcome: tuple[str, str] | None = None
+            outcome: ProcessorResult = None
             if _processor is not None:
                 try:
                     outcome = await _processor(event)
                 except Exception as exc:  # noqa: BLE001 — the drain never dies
                     outcome = ("held", f"processor error: {exc}")
             if outcome is not None:
-                verdict, reason = outcome
-                event.verdict = verdict
-                event.verdict_reason = reason
+                event.verdict = outcome[0]
+                event.verdict_reason = outcome[1]
+                if len(outcome) == 3:
+                    event.decision = outcome[2]
                 event.processed_at = datetime.now(UTC)
                 handled += 1
         await session.commit()

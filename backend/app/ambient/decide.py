@@ -98,19 +98,15 @@ async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> Si
     return out
 
 
-async def process_event(event: AmbientEvent) -> tuple[str, str] | None:
-    """The drain's processor: returns (verdict, reason); decision detail is
-    written onto the event row by the caller-side session via `decide`."""
+async def process_event(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:
+    """The drain's processor. Returns (verdict, reason, decision). The DRAIN
+    writes all three onto the row it holds locked — a processor must never
+    touch ambient_events itself (FOR UPDATE self-deadlock, found live)."""
     decision: dict[str, Any] = {"tier": 1}
     try:
         verdict, reason, decision = await _decide(event)
     except Exception as exc:  # noqa: BLE001 — fail-open to held
         verdict, reason = "held", f"decision error: {exc}"
-    async with get_session_factory()() as session:
-        row = await session.get(AmbientEvent, event.id)
-        if row is not None:
-            row.decision = decision
-            await session.commit()
     from app import obs
 
     obs.AMBIENT_OPS.labels(kind=verdict, status="ok").inc()
@@ -121,7 +117,7 @@ async def process_event(event: AmbientEvent) -> tuple[str, str] | None:
         event_kind=event.kind,
         reason=reason[:120],
     )
-    return (verdict, reason)
+    return (verdict, reason, decision)
 
 
 async def _decide(event: AmbientEvent) -> tuple[str, str, dict[str, Any]]:

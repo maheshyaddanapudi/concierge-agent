@@ -212,15 +212,9 @@ async def test_decide_routine_event_fires_and_writes_ledger() -> None:
     routine = await _routine(name="fire-me")
     event = await emit_event(kind="routine_fire", source="webhook", routine_id=routine.id)
     assert event is not None
-    verdict = await process_event(event)
-    assert verdict == ("fired", "routine trigger matched")
-    async with get_session_factory()() as session:
-        row = await session.get(AmbientEvent, event.id)
-    assert row is not None and row.decision == {
-        "tier": 1,
-        "urgency": 2,
-        "fired_for": "routine",
-    }
+    verdict, reason, decision = await process_event(event)
+    assert (verdict, reason) == ("fired", "routine trigger matched")
+    assert decision == {"tier": 1, "urgency": 2, "fired_for": "routine"}
 
 
 async def test_decide_tier1_filters_hold() -> None:
@@ -236,7 +230,7 @@ async def test_decide_tier1_filters_hold() -> None:
         },
     )
     assert event is not None
-    assert await process_event(event) == ("held", "tier-1 filters did not match")
+    assert (await process_event(event))[:2] == ("held", "tier-1 filters did not match")
 
 
 async def test_decide_runs_per_day_cap_drops() -> None:
@@ -278,18 +272,16 @@ async def test_significance_judge_gates_intent_events() -> None:
     )
     e1 = await emit_event(kind="intent_poll_item", source="poll", intent_id=intent.id)
     assert e1 is not None
-    assert await process_event(e1) == ("fired", "intent condition met")
-    async with get_session_factory()() as session:
-        row = await session.get(AmbientEvent, e1.id)
-    assert row is not None and row.decision is not None
-    assert row.decision["tier"] == 2 and row.decision["urgency"] == 4
+    v1 = await process_event(e1)
+    assert v1[:2] == ("fired", "intent condition met")
+    assert v1[2]["tier"] == 2 and v1[2]["urgency"] == 4
     # not significant ⇒ held
     fake_llm.push_ai(
         "", tool_calls=[{"id": "c2", "name": "SignificanceOutput", "args": {"significant": False, "urgency": 1, "reason": "noise"}}]
     )
     e2 = await emit_event(kind="intent_poll_item", source="poll", intent_id=intent.id)
     assert e2 is not None
-    assert await process_event(e2) == ("held", "judged not significant")
+    assert (await process_event(e2))[:2] == ("held", "judged not significant")
 
 
 async def test_significance_judge_failure_holds() -> None:
@@ -401,6 +393,30 @@ async def test_pattern_derived_events_respect_depth_guard() -> None:
 
 
 # ── HITL aging internal event ────────────────────────────────────────
+
+
+async def test_drain_with_default_processor_no_deadlock() -> None:
+    """Regression (found live): the drain holds FOR UPDATE locks while the
+    processor decides — the processor must never write ambient_events itself.
+    A hang here means the self-deadlock is back."""
+    import asyncio
+
+    from app.ambient.drain import default_processor, drain_once, register_processor
+
+    await _enable()
+    routine = await _routine(name="deadlock-check")
+    event = await emit_event(kind="routine_fire", source="manual", routine_id=routine.id)
+    assert event is not None
+    register_processor(default_processor)
+    try:
+        handled = await asyncio.wait_for(drain_once(), timeout=10)
+    finally:
+        register_processor(None)
+    assert handled == 1
+    async with get_session_factory()() as session:
+        row = await session.get(AmbientEvent, event.id)
+    assert row is not None and row.verdict == "fired"
+    assert row.decision == {"tier": 1, "urgency": 2, "fired_for": "routine"}
 
 
 async def test_hitl_aging_sweep_emits_once() -> None:
