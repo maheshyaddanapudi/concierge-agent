@@ -874,9 +874,10 @@ incrementally on entity-link changes, never per-query. Dark unless
 
 The §2.1 rationale made real: a `custom` provider adapter — OpenAI-
 compatible chat-completions gateway, `CUSTOM_GATEWAY_BASE_URL` +
-`CUSTOM_GATEWAY_API_KEY` env-only, model list from a validated
-`custom_gateway_models` setting (the "its own gateway, its own model list"
-scenario). Registered like every provider, passes the shared adapter
+`CUSTOM_GATEWAY_API_KEY` env-only, model list from the validated
+`CUSTOM_GATEWAY_MODELS` env var (comma-separated ids — env keeps the sync
+`list_models()` port contract, §13; the "its own gateway, its own model
+list" scenario). Registered like every provider, passes the shared adapter
 contract suite, zero changes outside `app/llm/`.
 
 ### 18.8 Auth & tenancy (M34 — dark by default)

@@ -31,6 +31,11 @@ class AppConfig(BaseSettings):
     smtp_from: str | None = None
     smtp_to: str | None = None
     ambient_webhook_url: str | None = None
+    # custom OpenAI-compatible gateway (spec §18.7) — env-only, like all keys;
+    # the comma-separated model list is env too (sync list_models() contract)
+    custom_gateway_base_url: str | None = None
+    custom_gateway_api_key: str | None = None
+    custom_gateway_models: str | None = None
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

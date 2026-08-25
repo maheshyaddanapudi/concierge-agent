@@ -62,6 +62,9 @@ def test_configured_provider_returns_base_chat_model(
     monkeypatch.setenv("GOOGLE_API_KEY", "test-dummy")
     monkeypatch.setenv("OPENAI_API_KEY", "test-dummy")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-dummy")
+    monkeypatch.setenv("CUSTOM_GATEWAY_BASE_URL", "https://llm-gw.corp.example/v1")
+    monkeypatch.setenv("CUSTOM_GATEWAY_API_KEY", "test-dummy")
+    monkeypatch.setenv("CUSTOM_GATEWAY_MODELS", "corp-large")
     get_config.cache_clear()
     try:
         assert provider.is_configured() is True
@@ -72,7 +75,9 @@ def test_configured_provider_returns_base_chat_model(
 
 
 def test_registered_builtins_present() -> None:
-    assert {"anthropic", "google_genai", "openai", "openrouter", "fake"} <= set(PROVIDER_IDS)
+    assert {"anthropic", "google_genai", "openai", "openrouter", "custom", "fake"} <= set(
+        PROVIDER_IDS
+    )
 
 
 def test_get_model_resolves_prefix() -> None:

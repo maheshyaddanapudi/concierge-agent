@@ -11,7 +11,7 @@ import pytest
 from app.db import get_session_factory
 from app.evals.grade import grade_case
 from app.evals.parse import EvalParseError, parse_eval_file
-from app.models import EvalCase, EvalDataset, EvalResult, EvalRun, Run, Skill
+from app.models import EvalResult, Run
 from app.settings_store import update_settings
 
 pytestmark = pytest.mark.anyio

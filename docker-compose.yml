@@ -40,6 +40,9 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_TO: ${SMTP_TO:-}
       AMBIENT_WEBHOOK_URL: ${AMBIENT_WEBHOOK_URL:-}
+      CUSTOM_GATEWAY_BASE_URL: ${CUSTOM_GATEWAY_BASE_URL:-}
+      CUSTOM_GATEWAY_API_KEY: ${CUSTOM_GATEWAY_API_KEY:-}
+      CUSTOM_GATEWAY_MODELS: ${CUSTOM_GATEWAY_MODELS:-}
     volumes:
       - workspace:/workspace
     ports:
