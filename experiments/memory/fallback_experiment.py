@@ -33,7 +33,7 @@ TEST_ASKS = [
 
 
 async def _wait(client: httpx.AsyncClient, run_id: str) -> dict[str, Any]:
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
         run = (await client.get(f"{BASE}/runs/{run_id}")).json()
         if run["status"] == "paused_hitl":
