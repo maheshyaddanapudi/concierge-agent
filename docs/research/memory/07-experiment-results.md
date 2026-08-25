@@ -265,3 +265,46 @@ Based on the matrix: **`semantic` shape** — memory on, extraction on,
 procedural off (until the workload routes), injection budget 1200, floor
 0.35, top-k 6, `fake:scripted` replaced by a real embedding model in
 production. This is the configuration that dominated every axis measured.
+
+
+## 9. Cross-provider retest (M19) — the port proves out
+
+An `openrouter` gateway adapter (spec §2.1's "custom gateway" scenario) was
+added with zero consumer changes, and the identical battery — routing
+experiment + memory off/semantic probe suite, real runs, deterministic
+grading — ran on five OpenRouter models against the Claude baseline. Raw
+results: `result_*_{glm,kimi2,qwen38max,oxalpha2,qwen36plus}.json`.
+
+| model (all roles) | memory off | memory semantic | semantic tokens / latency | indirect-ask fallbacks (L3 off→on) | notes |
+|---|---|---|---|---|---|
+| claude (sonnet-5 planner / sonnet-4-6) | 2/7 | **7/7** | 82k / 16.4s | 0/3 → 0/3 | reference |
+| z-ai/glm-5.3 | 2/7 | 5/7 | 27k / 60.1s | routing OK; run never settled ≤600s | formatter A2UI call takes minutes; workspace-warden run >10min |
+| moonshotai/kimi-k3 | 2/7 | 5/7 | 35k / 29.2s | 0/3 → 0/3 (round 1) | intermittent planner structured-output schema failures; slow runs can exceed 600s |
+| qwen/qwen3.8-max | 2/7 | **7/7** | 31k / 25.1s | 0/3 → 0/3 | matches Claude on the suite at ~⅓ the tokens |
+| stealth/ox-alpha | 2/7 | **7/7** | 30k / 21.3s | 0/3 → 0/3 | first round fully upstream-rate-limited (shared pool); retry clean |
+| qwen/qwen3.6-plus | 2/7 | 5/7 | 44k / 24.7s | **1/3 → 0/3** | first observed L3 win: procedural learning removed a genuine fallback |
+
+Cross-provider findings:
+
+1. **The architecture is provider-portable.** Every model produced the same
+   *shape*: memory off = 2/7 (only abstention + preference), memory on =
+   large lift. The platform machinery — routing ladder, HITL, digests,
+   extraction, injection, citation feedback — ran unmodified everywhere.
+2. **The two recurring semantic misses are model-quality, not machinery.**
+   GLM/Kimi/Qwen-3.6 fail `single_fact_recall` (first-touch race — their slow
+   extraction hasn't landed when the first question arrives) and GLM/Qwen-3.6
+   fail `knowledge_update` the same way: their reconciliation judge leaves the
+   stale fact active and recall serves it. The LLM-judged step inherits the
+   judge's quality; the deterministic paths (gate, supersession, decay) never
+   differed across providers.
+3. **Adapter quirks stay in the adapter** (spec §2.1 vindicated): GLM ignores
+   `response_format` json-schema → structured output defaults to function
+   calling; Z.AI rejects forced tool_choice → coerced to auto. No consumer
+   changed.
+4. **Gateway latency is the real tax.** Claude settles probe runs in seconds;
+   GLM's A2UI formatter call alone can take minutes, and Kimi intermittently
+   exceeded a 600-second run ceiling. For gateway models, `formatter_enabled=false`
+   or a fast formatter-role override is the practical configuration.
+5. **L3's first measured win appeared on the weakest router** (qwen3.6-plus),
+   consistent with §4's conclusion: procedural learning pays off exactly when
+   the planner actually fails — strong planners never gave it the chance.
