@@ -23,6 +23,7 @@ class InjectionStats:
     pinned: int = 0
     memories: int = 0
     episodes: int = 0
+    communities: int = 0  # §18.6 community breadth
     tokens: int = 0
     memory_ids: list[str] = field(default_factory=list)
 
@@ -106,6 +107,23 @@ async def build_memory_block(
         episodes = await recall_digests(query, k=3, exclude_conversation_id=conversation_id)
         epi_lines = [f"- [episode {str(d.id)[:8]} score={s:.2f}] {d.text}" for d, s in episodes]
 
+        # §18.6 community breadth: a recalled entity's community summary is
+        # eligible under its OWN budget line — never per-query graph work
+        community_budget = int(await cache.setting("memory_community_budget_tokens"))
+        com_lines: list[str] = []
+        if community_budget > 0 and hits:
+            from app.memory.communities import communities_for_memories
+
+            found = await communities_for_memories([h.memory.id for h in hits])
+            com_lines = _clip(
+                [
+                    f"- [community {c.label[:8]} · {c.member_count} entities] {c.summary}"
+                    for c in found
+                    if c.summary
+                ],
+                community_budget,
+            )
+
         # spend the main budget on instructions, then memories, then episodes
         instr_lines = _clip(instr_lines, budget)
         used = sum(max(len(x) // _CHARS_PER_TOKEN, 1) for x in instr_lines)
@@ -113,7 +131,13 @@ async def build_memory_block(
         used += sum(max(len(x) // _CHARS_PER_TOKEN, 1) for x in mem_lines)
         epi_lines = _clip(epi_lines, max(budget - used, 0))
 
-        if not pinned_lines and not instr_lines and not mem_lines and not epi_lines:
+        if (
+            not pinned_lines
+            and not instr_lines
+            and not mem_lines
+            and not epi_lines
+            and not com_lines
+        ):
             return "", stats
 
         from app.prompts import load_prompt
@@ -130,10 +154,12 @@ async def build_memory_block(
             ),
             memories_section=section("Relevant memories", mem_lines),
             episodes_section=section("Similar past episodes (other conversations)", epi_lines),
+            communities_section=section("Community context (related-entity summaries)", com_lines),
         )
         stats.pinned = len(pinned_lines)
         stats.memories = len(mem_lines)
         stats.episodes = len(epi_lines)
+        stats.communities = len(com_lines)
         stats.tokens = max(len(block) // _CHARS_PER_TOKEN, 1)
         stats.memory_ids = [str(h.memory.id) for h in hits] + [str(m.id) for m in pinned]
         _record_injected(stats.memory_ids)
@@ -164,6 +190,7 @@ def _observe(stats: InjectionStats) -> None:
     obs.MEMORY_OPS.labels(kind="inject", status="ok").inc()
     logger.info(
         "memory_injected",
+        communities=stats.communities,
         tier="memory",
         kind="inject",
         surface=stats.surface,

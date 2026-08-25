@@ -15,6 +15,7 @@ from app.models.mcp_server import McpServer
 from app.models.memory import (
     ConversationRollup,
     Memory,
+    MemoryCommunity,
     MemoryEmbedding,
     MemoryEntity,
     MemoryEntityLink,
@@ -41,6 +42,7 @@ __all__ = [
     "Memory",
     "MemoryEmbedding",
     "MemoryEntity",
+    "MemoryCommunity",
     "MemoryEntityLink",
     "PatternInstance",
     "PlanExemplar",

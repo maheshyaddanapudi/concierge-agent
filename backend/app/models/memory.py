@@ -132,6 +132,25 @@ class MemoryEntityLink(Base):
     )
 
 
+class MemoryCommunity(Base):
+    """§18.6: a label-propagation community over the entity graph. `label`
+    is the deterministic representative (min member entity id); `signature`
+    hashes the member set so unchanged communities keep their summary."""
+
+    __tablename__ = "memory_communities"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    label: Mapped[str] = mapped_column(String(64), unique=True)
+    member_entity_ids: Mapped[list[Any] | None] = mapped_column(default=None)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    signature: Mapped[str] = mapped_column(String(64), default="")
+    summary: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class RunDigest(Base):
     """L1 episodic retrieval unit (spec §16.2/§16.7): one row per completed
     run (kind='run'), or a synthetic per-conversation compaction of old

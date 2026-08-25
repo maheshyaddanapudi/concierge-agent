@@ -61,6 +61,8 @@ DEFAULTS: dict[str, Any] = {
     "memory_half_life_days": 30.0,
     "memory_idle_minutes": 10,
     "memory_digest_compact_days": 14,
+    # §18.6 community breadth: its own budget line; 0 disables the section
+    "memory_community_budget_tokens": 150,
     # §17 ambient keys — dark by default
     "ambient_enabled": False,
     "ambient_max_routines": 10,
@@ -262,6 +264,10 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int | float) or float(value) <= 0
         ):
             errors.append("memory_half_life_days must be a positive number")
+        elif key == "memory_community_budget_tokens" and (
+            not isinstance(value, int) or value < 0
+        ):
+            errors.append("memory_community_budget_tokens must be an integer ≥ 0 (0 disables)")
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):

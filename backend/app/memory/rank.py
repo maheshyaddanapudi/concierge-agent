@@ -24,7 +24,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import bindparam, update
+from sqlalchemy import bindparam, select, update
 from sqlalchemy import text as sql_text
 
 from app.db import get_session_factory
@@ -150,22 +150,18 @@ async def recall(
             return []
         max_rrf = max(rrf.values())
 
-        rows = (
-            (
-                await session.execute(
-                    sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
-                        *Memory.__table__.c
-                    ),
-                    {"ids": list(rrf.keys())},
-                )
-            )
-            .mappings()
+        # ORM load by id — NEVER a raw `SELECT *` with positional column
+        # mapping: a migrated DB's column order can differ from the model's
+        # (found live in M31: project_key appended last shifted every later
+        # column onto the wrong result processor)
+        mem_rows = list(
+            (await session.execute(select(Memory).where(Memory.id.in_(list(rrf.keys())))))
+            .scalars()
             .all()
         )
         now = datetime.now(UTC)
         hits: list[RecallHit] = []
-        for row in rows:
-            mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+        for mem in mem_rows:
             relevance = rrf[mem.id] / max_rrf
             half_life_h = (
                 float(mem.half_life_days) * 24 if mem.half_life_days else DEFAULT_HALF_LIFE_HOURS
@@ -219,20 +215,12 @@ async def recall(
             hop_ids = [r[0] for r in hop_rows]
             if hop_ids:
                 hop_score = round(min(h.score for h in hits) * 0.8, 4)
-                hop_mem_rows = (
-                    (
-                        await session.execute(
-                            sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
-                                *Memory.__table__.c
-                            ),
-                            {"ids": hop_ids},
-                        )
-                    )
-                    .mappings()
+                hop_mems = list(
+                    (await session.execute(select(Memory).where(Memory.id.in_(hop_ids))))
+                    .scalars()
                     .all()
                 )
-                for row in hop_mem_rows:
-                    mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+                for mem in hop_mems:
                     hits.append(
                         RecallHit(
                             memory=mem,
