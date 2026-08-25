@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api import (
+    ambient,
     cache,
     chat,
     fake_llm,
@@ -28,6 +29,9 @@ api_router.include_router(runs.router)
 api_router.include_router(memories.router)
 api_router.include_router(routines.router)
 api_router.include_router(routines.presence_router)
+api_router.include_router(ambient.deliveries_router)
+api_router.include_router(ambient.watches_router)
+api_router.include_router(ambient.ledger_router)
 api_router.include_router(settings.router)
 api_router.include_router(seed.router)
 api_router.include_router(fake_llm.router)

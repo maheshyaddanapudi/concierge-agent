@@ -71,7 +71,9 @@ async def evaluate_presence(idle_minutes: int) -> str | None:
         old_state = row.state
         if new_state == old_state:
             return None
+        away_s = (now - row.state_since).total_seconds() if row.state_since else 0.0
         row.state = new_state
+        row.state_since = now
         await session.commit()
     if old_state in {"idle", "away", "offline"} and new_state == "active":
         emitted = "user_returned"
@@ -81,9 +83,14 @@ async def evaluate_presence(idle_minutes: int) -> str | None:
         await emit_event(
             kind=emitted,
             source="presence",
-            payload={"from": old_state, "to": new_state},
+            payload={"from": old_state, "to": new_state, "away_s": away_s},
             require_enabled=True,
         )
+        if emitted == "user_returned":
+            # §17.5 return-flush: tier 1 always; > 1h away also the digest
+            from app.ambient.deliver import on_user_returned
+
+            await on_user_returned(away_s, now=now)
         logger.info(
             "ambient_presence", tier="ambient", kind="ingest", transition=f"{old_state}->{new_state}"
         )

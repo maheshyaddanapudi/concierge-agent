@@ -2,6 +2,7 @@
 
 from app.models.ambient import (
     AmbientEvent,
+    AmbientPolicy,
     AmbientWakeup,
     Delivery,
     PatternInstance,
@@ -29,6 +30,7 @@ from app.models.tool import Tool
 
 __all__ = [
     "AmbientEvent",
+    "AmbientPolicy",
     "AmbientWakeup",
     "AppSetting",
     "Base",

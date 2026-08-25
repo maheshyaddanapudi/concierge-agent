@@ -212,6 +212,9 @@ class Delivery(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     channel: Mapped[str | None] = mapped_column(String(32), default=None)
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    # supersede-collapse key (spec §17.5): pending items sharing it are
+    # superseded by the newest arrival
+    skey: Mapped[str | None] = mapped_column(String(255), default=None)
     feedback: Mapped[str | None] = mapped_column(String(16), default=None)
     reward: Mapped[float | None] = mapped_column(Float, default=None)  # §17.7 substrate
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -230,6 +233,23 @@ class UserPresence(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # when the current state began — user_returned carries away_s (§17.5)
+    state_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class AmbientPolicy(Base):
+    """Append-only category policy ledger (spec §17.6/§17.7): the latest row
+    per category wins; history is the audit trail and the revert path."""
+
+    __tablename__ = "ambient_policies"
+    __table_args__ = (Index("ambient_policies_cat_idx", "category", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    category: Mapped[str] = mapped_column(String(64))
+    tier_override: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    reason: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(16), default="rule")  # rule|learner|user
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

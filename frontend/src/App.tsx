@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NavLink, Route, HashRouter, Routes } from 'react-router-dom'
+import { AmbientPage } from './pages/AmbientPage'
 import { ChatPage } from './pages/ChatPage'
 import { McpServersPage } from './pages/McpServersPage'
 import { ToolsPage } from './pages/ToolsPage'
@@ -15,7 +16,7 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 })
 
-const NAV = [
+const NAV: { to: string; label: string; glyph: string; ambientOnly?: boolean }[] = [
   { to: '/', label: 'Chat', glyph: '⌘' },
   { to: '/mcp-servers', label: 'MCP Servers', glyph: '⇌' },
   { to: '/tools', label: 'Tools', glyph: '⚒' },
@@ -23,8 +24,37 @@ const NAV = [
   { to: '/sub-agents', label: 'Sub Agents', glyph: '⬡' },
   { to: '/runs', label: 'Runs', glyph: '≡' },
   { to: '/memory', label: 'Memory', glyph: '◈' },
+  // Ambient (spec §8.9) appears only while ambient_enabled — see NavItems
+  { to: '/ambient', label: 'Ambient', glyph: '◎', ambientOnly: true },
   { to: '/settings', label: 'Settings', glyph: '◉' },
 ]
+
+function NavItems() {
+  const { data: settings } = useSettings()
+  const ambientOn = Boolean(settings?.ambient_enabled)
+  return (
+    <>
+      {NAV.filter((item) => !item.ambientOnly || ambientOn).map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.to === '/'}
+          className={({ isActive }) =>
+            cx(
+              'group flex items-center gap-2.5 rounded-md border-l-2 px-3 py-2 text-[13px] font-medium transition-all',
+              isActive
+                ? 'border-accent-400 bg-accent-500/10 text-accent-300'
+                : 'border-transparent text-slate-400 hover:bg-slate-900 hover:text-slate-200',
+            )
+          }
+        >
+          <span className="w-4 text-center font-mono text-xs opacity-70">{item.glyph}</span>
+          {item.label}
+        </NavLink>
+      ))}
+    </>
+  )
+}
 
 function ModeIndicator() {
   const { data: settings } = useSettings()
@@ -55,24 +85,7 @@ export default function App() {
               </div>
             </div>
             <nav className="mt-2 flex-1 space-y-0.5 px-2">
-              {NAV.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  className={({ isActive }) =>
-                    cx(
-                      'group flex items-center gap-2.5 rounded-md border-l-2 px-3 py-2 text-[13px] font-medium transition-all',
-                      isActive
-                        ? 'border-accent-400 bg-accent-500/10 text-accent-300'
-                        : 'border-transparent text-slate-400 hover:bg-slate-900 hover:text-slate-200',
-                    )
-                  }
-                >
-                  <span className="w-4 text-center font-mono text-xs opacity-70">{item.glyph}</span>
-                  {item.label}
-                </NavLink>
-              ))}
+              <NavItems />
             </nav>
             <ModeIndicator />
             <div className="border-t border-slate-800/60 px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-slate-700">
@@ -88,6 +101,7 @@ export default function App() {
               <Route path="/sub-agents" element={<SubAgentsPage />} />
               <Route path="/runs" element={<RunsPage />} />
               <Route path="/memory" element={<MemoryPage />} />
+              <Route path="/ambient" element={<AmbientPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

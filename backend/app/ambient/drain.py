@@ -174,9 +174,15 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
                 await reap_stalled_runs()
                 await drain_once()
                 idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
-                from app.ambient.presence import evaluate_presence
+                from app.ambient.deliver import flush_deliveries
+                from app.ambient.presence import evaluate_presence, is_platform_idle
 
                 await evaluate_presence(idle_minutes)
+                await flush_deliveries()
+                if await is_platform_idle(idle_minutes):
+                    from app.ambient.anticipate import run_anticipation
+
+                    await run_anticipation()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
             logger.warning("ambient_tick_failed", error=str(exc))
         wake.clear()

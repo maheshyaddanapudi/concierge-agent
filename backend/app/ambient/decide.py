@@ -222,28 +222,25 @@ async def _match_event_intents(
 async def _queue_hitl_delivery(
     event: AmbientEvent, decision: dict[str, Any]
 ) -> tuple[str, str, dict[str, Any]]:
-    from app.models import Delivery
+    from app.ambient.deliver import add_delivery
     from app.registry_cache import get_cache
 
     run_id_raw = (event.payload or {}).get("run_id")
     if not run_id_raw:
         return ("dropped", "hitl_aged event without run_id", decision)
     timeout_h = int(await get_cache().setting("ambient_hitl_timeout_h"))
-    async with get_session_factory()() as session:
-        session.add(
-            Delivery(
-                run_id=UUID(str(run_id_raw)),
-                category="hitl",
-                tier=2,
-                urgency=3,
-                title="[ambient] a run is waiting on your input",
-                body=(
-                    f"Run {run_id_raw} has been paused on a human-input gate for over "
-                    f"{timeout_h}h. It stays resumable from the run history."
-                ),
-            )
-        )
-        await session.commit()
+    await add_delivery(
+        run_id=UUID(str(run_id_raw)),
+        category="hitl",
+        tier=2,
+        urgency=3,
+        title="[ambient] a run is waiting on your input",
+        body=(
+            f"Run {run_id_raw} has been paused on a human-input gate for over "
+            f"{timeout_h}h. It stays resumable from the run history."
+        ),
+        skey=f"hitl:{run_id_raw}",
+    )
     decision.update({"action": "delivery", "delivery_tier": 2})
     return ("fired", "HITL question queued to the digest", decision)
 

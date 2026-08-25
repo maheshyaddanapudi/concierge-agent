@@ -226,23 +226,26 @@ async def finish_ambient_run(run_id: UUID, event_id: UUID) -> None:
             category = "watch"
         else:
             tier, category = 2, "routine"
-        async with get_session_factory()() as session:
-            session.add(
-                Delivery(
-                    run_id=run_id,
-                    intent_id=intent.id if intent is not None else None,
-                    category=category,
-                    tier=tier,
-                    urgency=urgency,
-                    title=f"[{name}] {_first_line(answer) or '(no answer)'}"[:250],
-                    body=answer or None,
-                    deliver_no_later_than=now + timedelta(minutes=30) if tier == 1 else None,
-                )
-            )
-            await session.commit()
-        from app import obs
+        from app.ambient.deliver import add_delivery
 
-        obs.AMBIENT_OPS.labels(kind="deliver", status=f"tier{tier}").inc()
+        # supersede-collapse (spec §17.5): repeated fires of the same
+        # routine/watch replace their still-pending predecessor
+        skey = (
+            f"intent:{intent.id}:{category}"
+            if intent is not None
+            else (f"routine:{routine.id}:{category}" if routine is not None else None)
+        )
+        await add_delivery(
+            run_id=run_id,
+            intent_id=intent.id if intent is not None else None,
+            category=category,
+            tier=tier,
+            urgency=urgency,
+            title=f"[{name}] {_first_line(answer) or '(no answer)'}",
+            body=answer or None,
+            skey=skey,
+            deliver_no_later_than=now + timedelta(minutes=30) if tier == 1 else None,
+        )
         logger.info(
             "ambient_run_finished",
             tier="ambient",
@@ -295,24 +298,22 @@ async def finish_ambient_run(run_id: UUID, event_id: UUID) -> None:
                     logger.warning("ambient_selfwake_capped", error=str(exc))
         if any(d.category == "failure" for d in existing):
             return
-        async with get_session_factory()() as session:
-            session.add(
-                Delivery(
-                    run_id=run_id,
-                    intent_id=intent.id if intent is not None else None,
-                    category="failure",
-                    tier=0 if paused else 1,
-                    urgency=5 if paused else 4,
-                    title=(
-                        f"[{name}] auto-paused after repeated failures"
-                        if paused
-                        else f"[{name}] run {run.status}: {_first_line(run.error or '', 120)}"
-                    )[:250],
-                    body=run.error,
-                    deliver_no_later_than=now + timedelta(minutes=30),
-                )
-            )
-            await session.commit()
+        from app.ambient.deliver import add_delivery
+
+        await add_delivery(
+            run_id=run_id,
+            intent_id=intent.id if intent is not None else None,
+            category="failure",
+            tier=0 if paused else 1,
+            urgency=5 if paused else 4,
+            title=(
+                f"[{name}] auto-paused after repeated failures"
+                if paused
+                else f"[{name}] run {run.status}: {_first_line(run.error or '', 120)}"
+            ),
+            body=run.error,
+            deliver_no_later_than=now + timedelta(minutes=30),
+        )
         from app import obs
 
         obs.AMBIENT_OPS.labels(kind="fire", status=run.status).inc()
