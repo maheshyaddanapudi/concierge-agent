@@ -241,7 +241,23 @@ through decay, contradiction, and compaction. All six equilibrium checks pass:
 | E5 episodic store compacts to O(conversations) | ✅ 88 digests → 7 period + 11 recent |
 | E6 duplicate active entity_keys quarantined, oldest-validity wins | ✅ |
 
-<!-- M18_REGRESSION -->
+**Live regression (three rounds of the full probe suite on the M18 build,
+real models):** accuracy held at **7/7 in every round**, and the re-runs
+earned their cost by surfacing one more real defect. In rounds 1–2 the
+`knowledge_update` probe reproducibly cost ~38k input tokens (vs ~6k
+pre-M18): the extractor had parroted an injected-block citation into memory
+text and phrased the fact as a change event — "The deploy branch was changed
+from `main` to `release-2026` (episode 1fcf6bb1)" — which superseded the
+clean current-state fact; the planner then distrusted the event-shaped
+memory and re-verified via full-catalog fallback. Fixed deterministically
+(`e63e2ea`): the admission gate strips citation-id markers, and the
+extraction prompt requires current-state phrasing. Round 3 confirmed
+`knowledge_update` back to 5.8k tokens direct. Residual cost spikes moved to
+different probes each round (multi-session in one, abstention in another) —
+stochastic sonnet-5 self-verification at effort high, present with or
+without memory, and it always produced correct answers. Memory content,
+scores, injection, citation feedback, and entity links were verified correct
+in the traces each round.
 
 ## 8. Recommended default configuration
 
