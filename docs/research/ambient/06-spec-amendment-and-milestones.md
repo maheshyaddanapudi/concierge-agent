@@ -175,11 +175,13 @@ shifting `ambient_digest_times` toward observed acceptance windows,
 re-tiering categories (a chronically dismissed interrupt category down; a
 consistently accepted digest category up), and tuning per-intent judge
 thresholds. Governed by `ambient_learning_mode`: `off` (default — collect
-only), `propose` (each adjustment lands in the review queue as a quarantined
-proposal, activating only on approval — the §16.2 instruction-quarantine
-pattern), `auto` (adjustments apply immediately within hard clamps — digest
-times move ≤ 2h from configured, tiers move one step at a time, never into
-tier 0 — and every change is ledgered and one-click revertible). The reward
+only, dark-by-default discipline), `auto` (**the primary mode**: adjustments
+apply immediately with no approval step, within hard clamps — digest times
+move ≤ 2h from configured, tiers move one step at a time, never into tier 0
+— every change ledgered and one-click revertible), `propose` (optional
+cautious mode: each adjustment lands in the review queue and activates on
+approval — the §16.2 quarantine pattern). Both modes are fully implemented;
+auto is not gated behind propose. The reward
 is a blend: acceptance + downstream usefulness (the delivered item's run/
 memory was later referenced) − explicit-dismissal penalty, with a
 repetition-decay term (recovering-bandit shape); pure acceptance optimization
@@ -229,10 +231,10 @@ the interactive surface when dark.
 26. Urgency 5 event during quiet hours vs outside; verify budget debit,
     quiet-hour suppression to digest-lead.
 27. `ambient_enabled=false`: byte-identity regression suite passes.
-28. (M25) With `ambient_learning_mode='propose'`, dismiss a category three
-    times; verify a re-tier proposal appears in the review queue and applies
-    only on approval; with `'auto'`, verify the clamped change + ledger entry
-    + revert control.
+28. (M25) With `ambient_learning_mode='auto'`, dismiss a category three
+    times; verify the clamped re-tier applies WITHOUT approval, with a ledger
+    entry and a working revert control; with `'propose'`, the same signal
+    produces a queued proposal that applies only on approval.
 
 ## Milestones (proposed)
 
@@ -241,9 +243,9 @@ the interactive surface when dark.
 | M20 | Ambient substrate: all tables + migration, settings, webhook endpoint + token lifecycle, NOTIFY-wake drain, **real idle detector + presence states**, run `trigger`/`last_heartbeat_at`, byte-identity when dark | §14c-27; curl-able fire |
 | M21 | Trigger + decision planes: schedules with stagger, adaptive pollers, state conditions, internal events, three-tier gate + fire/hold ledger, caps/drops/auto-pause, **CEP-lite (sequence/conjunction/absence) with all four chaining guards** | scripted-event harness: tier precision, absence-timer slop, cascade guards |
 | M22 | Execution plane: routines end-to-end (both orchestrators, narrowed projection, budgets, abstain, progress monitor), standing intents (compile-echo-confirm → evaluate → fire), **agent wakeups with clamps/caps/done-guard**, watchdog + orphan rescue, HITL timeout semantics | §14c-20..25 |
-| M23 | Delivery plane + §8.9 UI: outbox tiers, digest builder + return-flush + supersede-collapse, budgets/quiet hours, approval batching, feedback capture, precision auto-downgrade; anticipation job with hit-rate metric | §14c-26 + stage-3x UI evidence campaign |
+| M23 | Delivery plane + §8.9 UI: outbox tiers, digest builder + return-flush + supersede-collapse, budgets/quiet hours, approval batching, **feedback capture + reward computation substrate** (blended reward persisted per delivery), rule-based precision auto-downgrade; anticipation job with hit-rate metric | §14c-26 + stage-3x UI evidence campaign |
 | M24 | Ambient evals: simulated-clock event harness (fire/hold Set-F1 + false alarms, reaction time, cost) across gate ablations and delivery policies incl. cascade stress; multi-day live soak; experiment report | 07-style results doc |
-| M25 | Adaptive policy learning (§17.7): bandit learner over delivery feedback with propose/auto modes, clamps, ledgered revertible changes; measured against static policy on the M24 harness | learning on ≥ static policy, zero tier-0 escalations by learner |
+| M25 | Adaptive policy learning (§17.7): bandit learner over the M23 reward substrate — digest-time shifting + category auto-tiering, **auto mode first-class (no approval), propose mode optional**, clamps, ledgered revertible changes; measured against static policy on the M24 harness | learning-on ≥ static policy on intervention precision; zero learner-caused tier-0 escalations |
 
 ## Settled decisions (from docs 02–05b) and open questions
 
