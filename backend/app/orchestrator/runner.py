@@ -41,10 +41,13 @@ async def create_run(
     target_sub_agent_id: UUID | None = None,
     include_history_summary: bool = False,
     include_memories: bool = False,
+    project_key: str | None = None,
 ) -> Run:
     async with get_session_factory()() as session:
         if conversation_id is None:
-            conversation = Conversation(title=message[:80] or "New conversation")
+            conversation = Conversation(
+                title=message[:80] or "New conversation", project_key=project_key
+            )
             session.add(conversation)
             await session.commit()
             conversation_id = conversation.id

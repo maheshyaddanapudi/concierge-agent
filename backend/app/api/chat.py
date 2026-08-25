@@ -31,6 +31,9 @@ class ChatRequest(ApiModel):
     # §7.5 opt-in, target-only: summarize history into the worker's context
     include_history_summary: bool = False
     include_memories: bool = False
+    # §18.2: tag the NEW conversation with a project key (ignored when
+    # continuing an existing conversation)
+    project: str | None = None
 
 
 class HitlRequest(ApiModel):
@@ -165,9 +168,10 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             target_sub_agent_id=agent.id,
             include_history_summary=body.include_history_summary,
             include_memories=body.include_memories,
+            project_key=body.project,
         )
     else:
-        run = await create_run(body.conversation_id, body.message)
+        run = await create_run(body.conversation_id, body.message, project_key=body.project)
     start_run_task(run.id)
     return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
 

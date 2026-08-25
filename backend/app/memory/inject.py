@@ -62,6 +62,16 @@ async def build_memory_block(
         from app.memory.episodic import recall_digests
         from app.memory.rank import pinned_memories, recall
 
+        # §18.2: project rows inject only into their project's conversations
+        project_key: str | None = None
+        if conversation_id is not None:
+            from app.db import get_session_factory
+            from app.models import Conversation
+
+            async with get_session_factory()() as session:
+                conv = await session.get(Conversation, conversation_id)
+                project_key = conv.project_key if conv is not None else None
+
         pinned = await pinned_memories(conversation_id)
         pinned_lines = _clip(
             [f"- [{m.kind} {str(m.id)[:8]}] {m.text}" for m in pinned], pinned_budget
@@ -73,6 +83,7 @@ async def build_memory_block(
         hits = await recall(
             query,
             conversation_id=conversation_id,
+            project_key=project_key,
             k=top_k,
             floor=floor,
             bump_access=False,

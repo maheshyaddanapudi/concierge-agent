@@ -317,6 +317,21 @@ async def fallback_node(state: OrchestratorState) -> dict[str, Any]:
         raise RunFailed(f"full-catalog fallback failed: {exc}") from exc
 
 
+async def aggregator_memory_block(task: str) -> str:
+    """The §16.3 remembered-context block for the aggregator surface
+    (§18.2). Fail-open; empty string when memory is dark."""
+    from app.memory.inject import build_memory_block
+    from app.orchestrator.context import get_run_context
+
+    ctx = get_run_context()
+    block, _stats = await build_memory_block(
+        task,
+        conversation_id=ctx.conversation_id if ctx else None,
+        surface="aggregator",
+    )
+    return block + "\n" if block else ""
+
+
 async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
     """Final merge; aggregator tokens stream as SSE `token` events."""
     ctx = require_run_context()
@@ -335,7 +350,10 @@ async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
         f"[{entry_id}] status={o.get('status')}\n" + str(o.get("output") or o.get("error") or "")
         for entry_id, o in sorted(outputs.items())
     )
-    prompt = load_prompt("aggregator").format(task=state["task"], outputs=formatted)
+    # §18.2: the aggregator gains the same fenced remembered-context block
+    # the planner has — budgeted, fail-open, "" when memory is dark
+    memory_block = await aggregator_memory_block(state["task"])
+    prompt = memory_block + load_prompt("aggregator").format(task=state["task"], outputs=formatted)
     usage = {"input_tokens": 0, "output_tokens": 0}
 
     async def stream_answer() -> str:

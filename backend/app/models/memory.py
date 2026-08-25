@@ -42,11 +42,12 @@ class Memory(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # 'global' | 'conversation' ('project' reserved for multi-user)
+    # 'global' | 'conversation' | 'project' (§18.2 — key-partitioned)
     scope: Mapped[str] = mapped_column(String(16), default="global")
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), default=None
     )
+    project_key: Mapped[str | None] = mapped_column(String(128), default=None)
     # 'fact' | 'preference' | 'entity' | 'relation' | 'instruction'
     kind: Mapped[str] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)

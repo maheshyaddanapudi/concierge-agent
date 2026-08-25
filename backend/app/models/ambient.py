@@ -94,6 +94,9 @@ class Routine(Base):
     # narrowed registry projection: refs like {'skills': [...], 'tools': [...]}
     allowlist: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     model_ref: Mapped[str | None] = mapped_column(String(255), default=None)
+    # §18.2 cross-fire continuity: fires reuse ONE persistent conversation
+    include_memories: Mapped[bool] = mapped_column(default=False)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     autonomy: Mapped[str] = mapped_column(String(16), default="propose")
     budgets: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     fire_token_hash: Mapped[str | None] = mapped_column(String(128), default=None)

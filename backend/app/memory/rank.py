@@ -69,6 +69,9 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     if kinds:
         parts.append("m.kind = ANY(:kinds)")
     parts.append("(m.scope != 'conversation' OR m.conversation_id = :conversation_id)")
+    # §18.2: project rows are visible only under their own key; without a
+    # key the equality is NULL ⇒ false — projects never leak sideways
+    parts.append("(m.scope != 'project' OR m.project_key = CAST(:project_key AS text))")
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 
@@ -78,6 +81,7 @@ async def recall(
     scopes: list[str] | None = None,
     kinds: list[str] | None = None,
     conversation_id: UUID | None = None,
+    project_key: str | None = None,
     k: int = 6,
     floor: float = 0.35,
     as_of: datetime | None = None,
@@ -97,6 +101,7 @@ async def recall(
         "scopes": scopes,
         "kinds": kinds,
         "conversation_id": conversation_id,
+        "project_key": project_key,
         "as_of": as_of,
     }
     where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)

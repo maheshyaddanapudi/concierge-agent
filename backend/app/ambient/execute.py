@@ -93,12 +93,30 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
     else:
         return None
 
-    async with get_session_factory()() as session:
-        conversation = Conversation(title=f"[ambient] {name}"[:80])
-        session.add(conversation)
-        await session.commit()
-        conversation_id = conversation.id
-    run = await create_run(conversation_id, prompt)
+    # §18.2 cross-fire continuity: an include_memories routine reuses ONE
+    # persistent conversation, so history and rollups accrue across fires
+    include_memories = bool(routine is not None and routine.include_memories)
+    conversation_id = None
+    if include_memories and routine is not None:
+        async with get_session_factory()() as session:
+            owner = await session.get(Routine, routine.id)
+            if owner is not None and owner.conversation_id is not None:
+                existing = await session.get(Conversation, owner.conversation_id)
+                if existing is not None:
+                    conversation_id = existing.id
+    if conversation_id is None:
+        async with get_session_factory()() as session:
+            conversation = Conversation(title=f"[ambient] {name}"[:80])
+            session.add(conversation)
+            await session.commit()
+            conversation_id = conversation.id
+        if include_memories and routine is not None:
+            async with get_session_factory()() as session:
+                owner = await session.get(Routine, routine.id)
+                if owner is not None:
+                    owner.conversation_id = conversation_id
+                    await session.commit()
+    run = await create_run(conversation_id, prompt, include_memories=include_memories)
     async with get_session_factory()() as session:
         row = await session.get(Run, run.id)
         if row is None:  # pragma: no cover - just created

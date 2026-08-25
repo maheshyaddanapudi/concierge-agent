@@ -32,6 +32,7 @@ class RoutineBody(BaseModel):
     triggers: list[dict[str, Any]] | None = None
     allowlist: dict[str, Any] | None = None
     model_ref: str | None = None
+    include_memories: bool = False
     autonomy: str = "propose"
     budgets: dict[str, Any] | None = None
 
@@ -45,6 +46,7 @@ class RoutinePatch(BaseModel):
     triggers: list[dict[str, Any]] | None = None
     allowlist: dict[str, Any] | None = None
     model_ref: str | None = None
+    include_memories: bool | None = None
     autonomy: str | None = None
     budgets: dict[str, Any] | None = None
 
@@ -59,6 +61,7 @@ def _out(r: Routine) -> dict[str, Any]:
         "triggers": r.triggers,
         "allowlist": r.allowlist,
         "model_ref": r.model_ref,
+        "include_memories": r.include_memories,
         "autonomy": r.autonomy,
         "budgets": r.budgets,
         "has_fire_token": r.fire_token_hash is not None,
@@ -120,6 +123,7 @@ async def create_routine(body: RoutineBody, session: SessionDep) -> dict[str, An
         triggers=body.triggers,
         allowlist=body.allowlist,
         model_ref=body.model_ref,
+        include_memories=body.include_memories,
         autonomy=body.autonomy,
         budgets=body.budgets,
         stagger_offset_s=secrets.randbelow(300),  # consistent per-routine stagger

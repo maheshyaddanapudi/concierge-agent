@@ -80,6 +80,7 @@ async def memory_remember(
     kind: str = "fact",
     scope: str = "global",
     importance: int = 5,
+    project: str | None = None,
 ) -> dict[str, Any]:
     from app.memory import MemoryWriteError, remember
     from app.registry_cache import get_cache
@@ -94,6 +95,7 @@ async def memory_remember(
             scope=scope,
             source="user_stated",
             conversation_id=_current_conversation_id(),
+            project_key=project,
             importance=importance,
             run_id=ctx[0],
             step_id=ctx[1],

@@ -29,7 +29,7 @@ from app.models import Memory, MemoryEmbedding
 logger = structlog.get_logger("memory")
 
 KINDS = {"fact", "preference", "entity", "relation", "instruction"}
-SCOPES = {"global", "conversation"}
+SCOPES = {"global", "conversation", "project"}
 SOURCES = {"extracted", "user_stated", "user_edited", "hitl_note", "inferred"}
 MACHINE_SOURCES = {"extracted", "inferred", "hitl_note"}
 
@@ -161,9 +161,12 @@ async def remember(
     via_tool: bool = False,
     entities: list[str] | None = None,
     session: AsyncSession | None = None,
+    project_key: str | None = None,
 ) -> Memory:
     """Insert one memory row under the §16.2 rules. Raises MemoryWriteError."""
     _validate(kind, scope, source)
+    if scope == "project" and not project_key:
+        raise MemoryWriteError("scope 'project' requires project_key")
     # inferred memories may cite other memories instead of a run — the
     # evidence list IS their provenance (spec §16.2 reflection)
     cites_evidence = source == "inferred" and bool(payload and payload.get("evidence"))
@@ -186,6 +189,7 @@ async def remember(
         source=source,
         status=status,
         conversation_id=conversation_id,
+        project_key=project_key if scope == "project" else None,
         payload=payload,
         entity_key=entity_key,
         importance=max(1, min(10, importance)),
