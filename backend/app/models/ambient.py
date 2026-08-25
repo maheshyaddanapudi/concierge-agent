@@ -76,6 +76,8 @@ class AmbientEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     verdict: Mapped[str | None] = mapped_column(String(16), default=None)  # NULL = pending
     verdict_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    # §17.3 fire/hold ledger detail: {value, urgency, attention_state, tier}
+    decision: Mapped[dict[str, Any] | None] = mapped_column(default=None)
 
 
 class Routine(Base):

@@ -26,9 +26,19 @@ _processor: Processor | None = None
 
 
 def register_processor(fn: Processor | None) -> None:
-    """M21 installs the decision plane here; tests install fakes."""
+    """The loop installs the decision plane here; tests install fakes."""
     global _processor
     _processor = fn
+
+
+async def default_processor(event: AmbientEvent) -> tuple[str, str] | None:
+    """M21 decision plane: patterns advance first (derived events), then the
+    three-tier gate decides fire/hold for this event."""
+    from app.ambient.decide import process_event
+    from app.ambient.patterns import advance_patterns
+
+    await advance_patterns(event)
+    return await process_event(event)
 
 
 async def drain_once(limit: int = 20) -> int:
@@ -106,6 +116,22 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
             if enabled:
                 if listener_task is None or listener_task.done():
                     listener_task = asyncio.create_task(_listen())
+                if _processor is None:
+                    register_processor(default_processor)
+                # trigger evaluators (spec §17.2) then the drain
+                from app.ambient.decide import sweep_hitl_aging
+                from app.ambient.patterns import expire_pattern_deadlines
+                from app.ambient.triggers import (
+                    evaluate_schedules,
+                    evaluate_state_conditions,
+                    poll_due_intents,
+                )
+
+                await evaluate_schedules()
+                await poll_due_intents()
+                await evaluate_state_conditions()
+                await expire_pattern_deadlines()
+                await sweep_hitl_aging()
                 await drain_once()
                 idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
                 from app.ambient.presence import evaluate_presence
