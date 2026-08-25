@@ -5,6 +5,7 @@ import { McpServersPage } from './pages/McpServersPage'
 import { ToolsPage } from './pages/ToolsPage'
 import { SkillsPage } from './pages/SkillsPage'
 import { SubAgentsPage } from './pages/SubAgentsPage'
+import { MemoryPage } from './pages/MemoryPage'
 import { RunsPage } from './pages/RunsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { useSettings } from './api/hooks'
@@ -21,6 +22,7 @@ const NAV = [
   { to: '/skills', label: 'Skills', glyph: '§' },
   { to: '/sub-agents', label: 'Sub Agents', glyph: '⬡' },
   { to: '/runs', label: 'Runs', glyph: '≡' },
+  { to: '/memory', label: 'Memory', glyph: '◈' },
   { to: '/settings', label: 'Settings', glyph: '◉' },
 ]
 
@@ -85,6 +87,7 @@ export default function App() {
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/sub-agents" element={<SubAgentsPage />} />
               <Route path="/runs" element={<RunsPage />} />
+              <Route path="/memory" element={<MemoryPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

@@ -17,6 +17,7 @@ class AppConfig(BaseSettings):
     anthropic_api_key: str | None = None
     google_api_key: str | None = None
     openai_api_key: str | None = None
+    openrouter_api_key: str | None = None
     fake_llm_enabled: bool = False
     langsmith_api_key: str | None = None
     redis_url: str | None = None  # optional registry-cache backend (spec §7.3)

@@ -290,9 +290,7 @@ def _chart_deficiency(
             '{"type": "chart", "ref": <index>} as its own component for each, '
             "at the position where the text discusses that chart's data"
         )
-    has_data_chart = any(
-        c.type == "chart" and c.chart_kind and c.series for c in parsed.components
-    )
+    has_data_chart = any(c.type == "chart" and c.chart_kind and c.series for c in parsed.components)
     if n == 0 and not has_data_chart and _asks_for_charts(task):
         return (
             "the request explicitly asks for charts but the document contains no "
@@ -401,7 +399,7 @@ async def generate_answer_ui(
         existing = ""
         if tool_charts and charts_enabled:
             listing = "; ".join(
-                f'{i}: {c.get("title") or c.get("kind", "chart")!r}'
+                f"{i}: {c.get('title') or c.get('kind', 'chart')!r}"
                 for i, c in enumerate(tool_charts)
             )
             existing = (

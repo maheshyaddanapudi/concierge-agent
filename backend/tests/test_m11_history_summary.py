@@ -144,9 +144,7 @@ class TestSummaryOn:
         assert run["status"] == "completed", run["error"]
         assert "summary text here" in dispatch_task(run)
 
-    async def test_summarizer_failure_fails_open_to_cold_task(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_summarizer_failure_fails_open_to_cold_task(self, client: AsyncClient) -> None:
         agent = await make_agent()
         conv = await seed_history(client, str(agent.id))
         fake_llm.push_error(RuntimeError("summarizer exploded"))

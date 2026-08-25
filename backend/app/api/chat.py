@@ -30,6 +30,7 @@ class ChatRequest(ApiModel):
     target_sub_agent_id: UUID | None = None
     # §7.5 opt-in, target-only: summarize history into the worker's context
     include_history_summary: bool = False
+    include_memories: bool = False
 
 
 class HitlRequest(ApiModel):
@@ -46,10 +47,9 @@ def _run_out(run: Run) -> dict[str, Any]:
         "chat_message": run.chat_message,
         "status": run.status,
         "orchestrator_mode": run.orchestrator_mode,
-        "target_sub_agent_id": str(run.target_sub_agent_id)
-        if run.target_sub_agent_id
-        else None,
+        "target_sub_agent_id": str(run.target_sub_agent_id) if run.target_sub_agent_id else None,
         "include_history_summary": run.include_history_summary,
+        "include_memories": run.include_memories,
         "final_answer": run.final_answer,
         "answer_ui": run.answer_ui,
         "charts": run.charts,
@@ -132,6 +132,12 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
     asyncio task in this process (spec §2)."""
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty")
+    if body.include_memories and body.target_sub_agent_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="include_memories applies only to sub-agent-pinned messages — "
+            "the orchestrator injects memory on its own surfaces",
+        )
     if body.include_history_summary and body.target_sub_agent_id is None:
         raise HTTPException(
             status_code=422,
@@ -158,6 +164,7 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             mode="direct",
             target_sub_agent_id=agent.id,
             include_history_summary=body.include_history_summary,
+            include_memories=body.include_memories,
         )
     else:
         run = await create_run(body.conversation_id, body.message)

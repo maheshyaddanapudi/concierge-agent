@@ -93,6 +93,7 @@ class RunContext:
     run_id: UUID
     mode: str
     recorder: Any  # RunRecorder — Any avoids a circular import
+    conversation_id: UUID | None = None  # provenance for memory writes (spec §16)
     flags: RunFlags = field(default_factory=RunFlags)
     settings: dict[str, Any] = field(default_factory=dict)
     callbacks: list[Any] = field(default_factory=list)
@@ -100,6 +101,10 @@ class RunContext:
     # retrieval (spec §7.4): the ranking query + ids pinned past ranking
     query_text: str = ""
     pinned_ids: set[str] = field(default_factory=set)
+    # §16.5: exemplars injected into this run's planner (vote lifecycle)
+    used_exemplar_ids: list[Any] = field(default_factory=list)
+    # §16.7: memory ids injected into any surface this run (citation feedback)
+    injected_memory_ids: list[str] = field(default_factory=list)
 
     def next_worker_callsign(self) -> str:
         n = self.worker_count

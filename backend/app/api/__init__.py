@@ -7,6 +7,7 @@ from app.api import (
     chat,
     fake_llm,
     mcp_servers,
+    memories,
     runs,
     seed,
     settings,
@@ -23,6 +24,7 @@ api_router.include_router(skills.router)
 api_router.include_router(sub_agents.router)
 api_router.include_router(chat.router)
 api_router.include_router(runs.router)
+api_router.include_router(memories.router)
 api_router.include_router(settings.router)
 api_router.include_router(seed.router)
 api_router.include_router(fake_llm.router)

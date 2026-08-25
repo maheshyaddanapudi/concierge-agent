@@ -415,6 +415,51 @@ export function SettingsPage() {
         </div>
       </Section>
 
+      <Section title="Memory (§16 — the experiment layers)">
+        <div className="grid grid-cols-2 gap-4">
+          <BoolSetting
+            label="Memory enabled"
+            k="memory_enabled"
+            hint="master switch — off is byte-identical to a memory-less build"
+          />
+          <BoolSetting
+            label="Extraction (L2 writes)"
+            k="memory_extraction_enabled"
+            hint="post-run fact/preference extraction through the admission gate"
+          />
+          <BoolSetting
+            label="Reflection (L4)"
+            k="memory_reflection_enabled"
+            hint="idle-time synthesis of higher-order memories (evidence-cited)"
+          />
+          <BoolSetting
+            label="Procedural learning (L3)"
+            k="procedural_learning_enabled"
+            hint="routing stats + plan exemplars feeding the planner"
+          />
+          <IntSetting
+            label="Injection budget (tokens)"
+            k="memory_injection_budget_tokens"
+            hint="per-surface cap for the remembered-context block"
+          />
+          <IntSetting label="Pinned budget (tokens)" k="memory_pinned_budget_tokens" />
+          <IntSetting label="Recall top-K" k="memory_recall_top_k" />
+          <Field label="Score floor (0–1)" hint="below it nothing injects — abstain over distract">
+            <TextInput
+              defaultValue={String(settings.memory_score_floor ?? 0.35)}
+              onBlur={(e) => patch.mutate({ memory_score_floor: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="Half-life (days)" hint="access-recency decay default">
+            <TextInput
+              defaultValue={String(settings.memory_half_life_days ?? 30)}
+              onBlur={(e) => patch.mutate({ memory_half_life_days: Number(e.target.value) })}
+            />
+          </Field>
+          <IntSetting label="Idle minutes" k="memory_idle_minutes" />
+        </div>
+      </Section>
+
       <Section title="MCP">
         <div className="flex items-end gap-4">
           <IntSetting label="Health-check interval (s)" k="mcp_health_interval_s" />

@@ -47,14 +47,35 @@ DEFAULTS: dict[str, Any] = {
     "retrieval_threshold": 30,
     "retrieval_top_k": 10,
     "embedding_model": None,  # nullable 'provider:model'; null → lexical-only
+    # memory layers (spec §16.7) — dark by default: off is byte-identical
+    "memory_enabled": False,
+    "memory_extraction_enabled": True,
+    "memory_reflection_enabled": False,
+    "procedural_learning_enabled": False,
+    "memory_injection_budget_tokens": 1200,
+    "memory_pinned_budget_tokens": 400,
+    "memory_recall_top_k": 6,
+    "memory_score_floor": 0.35,
+    "memory_extraction_model": None,  # null → default_model at effort low
+    "memory_extraction_model_params": None,
+    "memory_half_life_days": 30.0,
+    "memory_idle_minutes": 10,
+    "memory_digest_compact_days": 14,
 }
 
-_MODEL_KEYS = {"default_model", "planner_model", "aggregator_model", "formatter_model"}
+_MODEL_KEYS = {
+    "default_model",
+    "planner_model",
+    "aggregator_model",
+    "formatter_model",
+    "memory_extraction_model",
+}
 _PARAMS_KEYS = {
     "default_model_params",
     "planner_model_params",
     "aggregator_model_params",
     "formatter_model_params",
+    "memory_extraction_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -64,6 +85,11 @@ _INT_KEYS = {
     "mcp_health_interval_s",
     "retrieval_threshold",
     "retrieval_top_k",
+    "memory_injection_budget_tokens",
+    "memory_pinned_budget_tokens",
+    "memory_recall_top_k",
+    "memory_idle_minutes",
+    "memory_digest_compact_days",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -72,6 +98,10 @@ _BOOL_KEYS = {
     "formatter_enabled",
     "answer_ui_charts_enabled",
     "retrieval_enabled",
+    "memory_enabled",
+    "memory_extraction_enabled",
+    "memory_reflection_enabled",
+    "procedural_learning_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
@@ -163,6 +193,14 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("formatter_coverage_flag_threshold must be an integer 1–100")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
+        elif key == "memory_score_floor" and (
+            not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
+        ):
+            errors.append("memory_score_floor must be a number between 0 and 1")
+        elif key == "memory_half_life_days" and (
+            not isinstance(value, int | float) or float(value) <= 0
+        ):
+            errors.append("memory_half_life_days must be a positive number")
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):

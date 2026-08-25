@@ -40,6 +40,7 @@ async def create_run(
     mode: str | None = None,
     target_sub_agent_id: UUID | None = None,
     include_history_summary: bool = False,
+    include_memories: bool = False,
 ) -> Run:
     async with get_session_factory()() as session:
         if conversation_id is None:
@@ -59,6 +60,7 @@ async def create_run(
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
             target_sub_agent_id=target_sub_agent_id,
             include_history_summary=include_history_summary,
+            include_memories=include_memories,
         )
         session.add(run)
         await session.commit()
@@ -82,12 +84,14 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         conversation_id = run.conversation_id
         target_sub_agent_id = run.target_sub_agent_id
         include_history_summary = run.include_history_summary
+        include_memories = run.include_memories
     settings = await load_settings_snapshot()
     recorder = RunRecorder(run_id)
     ctx = RunContext(
         run_id=run_id,
         mode=mode,
         recorder=recorder,
+        conversation_id=conversation_id,
         settings=settings,
         callbacks=obs.build_langsmith_callbacks(settings, str(run_id)),
         query_text=task_text,
@@ -109,6 +113,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
                 resume,
                 conversation_id=conversation_id,
                 include_history_summary=include_history_summary,
+                include_memories=include_memories,
             )
         elif mode == "agentic":
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
@@ -140,6 +145,10 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             recorder.emit("answer_ui", answer_ui)
         recorder.emit("run_status", {"status": "completed"})
         recorder.emit("done", {"answer": answer, "tokens": totals})
+        # post-run memory pipeline (spec §16.2) — fire-and-forget, off = no-op
+        from app.memory.scheduler import on_run_completed
+
+        on_run_completed(run_id)
         obs.RUNS_TOTAL.labels(mode=mode, status="completed").inc()
         obs.RUN_DURATION.labels(mode=mode, status="completed").observe(
             (datetime.now(UTC) - started).total_seconds()
@@ -351,6 +360,7 @@ async def _run_direct(
     *,
     conversation_id: UUID | None = None,
     include_history_summary: bool = False,
+    include_memories: bool = False,
 ) -> dict[str, Any]:
     """Direct sub-agent invocation (spec §7.5): a one-node graph on the run's
     checkpointer thread so worker HITL pauses/resumes exactly like graph-mode
@@ -391,6 +401,16 @@ async def _run_direct(
             summary = await summarize_history(conversation_id)
             if summary:
                 worker_task = compose_task_with_summary(summary, task_text)
+        if include_memories:
+            # §16.3 opt-in: the remembered-context block rides the worker task
+            # (checkpointed — HITL resume never re-retrieves)
+            from app.memory.inject import build_memory_block
+
+            block, _ = await build_memory_block(
+                task_text, conversation_id=conversation_id, surface="direct"
+            )
+            if block:
+                worker_task = f"{block}\n\n{worker_task}"
         graph_input = {"task": worker_task, "sub_agent_id": str(target_sub_agent_id)}
     from typing import cast
 
@@ -518,12 +538,14 @@ async def retry_run(run_id: UUID) -> Run:
         mode = run.orchestrator_mode if run.orchestrator_mode == "direct" else None
         target = run.target_sub_agent_id
         with_summary = run.include_history_summary
+        with_memories = run.include_memories
     new_run = await create_run(
         conversation_id,
         message,
         mode=mode,
         target_sub_agent_id=target,
         include_history_summary=with_summary,
+        include_memories=with_memories,
     )
     start_run_task(new_run.id)
     return new_run

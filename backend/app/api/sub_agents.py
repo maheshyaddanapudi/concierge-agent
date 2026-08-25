@@ -175,6 +175,12 @@ async def invoke_sub_agent(
         )
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty")
+    if getattr(body, "include_memories", False) and not body.conversation_id:
+        raise HTTPException(
+            status_code=422,
+            detail="include_memories requires a conversation_id — a fresh "
+            "conversation has no memory scope to draw from",
+        )
     if body.include_history_summary and not body.conversation_id:
         raise HTTPException(
             status_code=422,
@@ -189,6 +195,7 @@ async def invoke_sub_agent(
             mode="direct",
             target_sub_agent_id=agent.id,
             include_history_summary=body.include_history_summary,
+            include_memories=getattr(body, "include_memories", False),
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

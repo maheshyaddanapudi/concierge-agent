@@ -38,7 +38,9 @@ persona: You are an agent.
 """
 
 
-def write_skill(d: Path, name: str, *, tools: str = "  - fs.read", mention: str = "fs.read") -> Path:
+def write_skill(
+    d: Path, name: str, *, tools: str = "  - fs.read", mention: str = "fs.read"
+) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.skill.md"
     p.write_text(SKILL.format(name=name, tools=tools, mention=mention))
@@ -100,9 +102,7 @@ class TestSkillErrors:
 
 class TestSkillWarnings:
     def test_filename_mismatch_and_empty_prose_warn_only(self, tmp_path: Path) -> None:
-        (tmp_path / "wrong-name.skill.md").write_text(
-            "---\nname: s1\ntools: []\n---\n"
-        )
+        (tmp_path / "wrong-name.skill.md").write_text("---\nname: s1\ntools: []\n---\n")
         errors, warnings, names = lint_skills(tmp_path)
         assert errors == []
         assert names == {"s1"}
@@ -224,8 +224,9 @@ class TestAdversarialHoles:
 
         errors, _ = _lint(SKILLS_DIR, tmp_path)
         assert errors == []  # the real tree has them
-        assert set(REQUIRED_STATIC_SKILLS) <= {p.stem.removesuffix(".skill") for p in
-                                               SKILLS_DIR.glob("*.skill.md")}
+        assert set(REQUIRED_STATIC_SKILLS) <= {
+            p.stem.removesuffix(".skill") for p in SKILLS_DIR.glob("*.skill.md")
+        }
         # an arbitrary directory is NOT held to the shipped contract
         write_skill(tmp_path / "s", "unrelated")
         errors, _ = _lint(tmp_path / "s", tmp_path / "a")

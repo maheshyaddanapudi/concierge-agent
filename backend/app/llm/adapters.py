@@ -1,4 +1,4 @@
-"""Built-in provider adapters (spec §2.1): anthropic, google_genai, openai.
+"""Built-in provider adapters (spec §2.1): anthropic, google_genai, openai, openrouter.
 
 Thin wrappers over LangChain provider packages, each gated by its API key env
 var. Each adapter maps the normalized ModelParams onto its provider's knobs —
@@ -27,6 +27,41 @@ _CLAUDE5_PREFIXES = ("claude-sonnet-5", "claude-opus-5", "claude-fable-5")
 _GEMINI_THINKING_BUDGET = {"none": 0, "low": 1024, "medium": 8192, "high": 24576}
 # effort → OpenAI reasoning effort string
 _OPENAI_REASONING_EFFORT = {"none": "minimal", "low": "low", "medium": "medium", "high": "high"}
+# effort → OpenRouter unified reasoning config (https://openrouter.ai/docs)
+_OPENROUTER_REASONING: dict[str, dict[str, Any]] = {
+    "none": {"enabled": False},
+    "low": {"effort": "low"},
+    "medium": {"effort": "medium"},
+    "high": {"effort": "high"},
+}
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_openrouter_chat_cls: type | None = None
+
+
+def _openrouter_chat_class() -> type:
+    """ChatOpenAI specialized for OpenRouter: structured output defaults to
+    function calling — many routed models (GLM, Qwen, DeepSeek) support tools
+    but ignore OpenAI's response_format json_schema, which is langchain's
+    default method and fails parsing on their prose replies."""
+    global _openrouter_chat_cls
+    if _openrouter_chat_cls is None:
+        from langchain_openai import ChatOpenAI
+
+        class _ChatOpenRouter(ChatOpenAI):
+            def with_structured_output(self, schema: Any = None, **kwargs: Any) -> Any:
+                kwargs.setdefault("method", "function_calling")
+                return super().with_structured_output(schema, **kwargs)
+
+            def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+                # several routed vendors (Z.AI among them) reject forced
+                # tool_choice ("Tool choice must be auto") — coerce; a model
+                # offered a single tool calls it under auto in practice
+                if kwargs.get("tool_choice") not in (None, "auto", "none"):
+                    kwargs["tool_choice"] = "auto"
+                return super().bind_tools(tools, **kwargs)
+
+        _openrouter_chat_cls = _ChatOpenRouter
+    return _openrouter_chat_cls
 
 
 def _check_params(provider: "ModelProviderBase", model: str, params: ModelParams | None) -> None:
@@ -190,3 +225,53 @@ class OpenAIProvider(ModelProviderBase):
         from langchain_openai import OpenAIEmbeddings
 
         return await OpenAIEmbeddings(model=model).aembed_documents(texts)
+
+
+@model_provider
+class OpenRouterProvider(ModelProviderBase):
+    """The spec §2.1 'custom gateway adapter' made real: OpenRouter's
+    OpenAI-compatible endpoint through ChatOpenAI with a base_url override.
+    Effort maps to OpenRouter's unified `reasoning` config via extra_body.
+    Chat-only — no embeddings API (consumers degrade per §7.4)."""
+
+    provider_id = "openrouter"
+
+    def is_configured(self) -> bool:
+        return bool(get_config().openrouter_api_key)
+
+    def list_models(self) -> list[ModelInfo]:
+        # curated tool-capable subset (any 'openrouter:vendor/model' ref
+        # still resolves — the catalog is 400+ models and changes weekly)
+        return [
+            ModelInfo("z-ai/glm-5.3", "GLM 5.3 (Z.ai)"),
+            ModelInfo("z-ai/glm-5.2", "GLM 5.2 (Z.ai)"),
+            ModelInfo("deepseek/deepseek-v4-pro-0813", "DeepSeek V4 Pro"),
+            ModelInfo("qwen/qwen3.8-max", "Qwen 3.8 Max"),
+            ModelInfo("qwen/qwen3.6-plus", "Qwen 3.6 Plus"),
+            ModelInfo("moonshotai/kimi-k3", "Kimi K3"),
+            ModelInfo("stealth/ox-alpha", "Ox Alpha (stealth preview)"),
+        ]
+
+    def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:
+        config = get_config()
+        if not self.is_configured():
+            raise ProviderNotConfiguredError("openrouter: OPENROUTER_API_KEY not set")
+        _check_params(self, model, params)
+        chat_cls = _openrouter_chat_class()
+
+        kwargs: dict[str, Any] = {
+            "base_url": _OPENROUTER_BASE_URL,
+            "api_key": config.openrouter_api_key,
+        }
+        extra_body: dict[str, Any] = {}
+        if params:
+            if params.effort is not None:
+                extra_body["reasoning"] = _OPENROUTER_REASONING[params.effort]
+            if params.temperature is not None:
+                kwargs["temperature"] = params.temperature
+            if params.max_output_tokens is not None:
+                kwargs["max_tokens"] = params.max_output_tokens
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        model_obj: BaseChatModel = chat_cls(model=model, **kwargs)
+        return model_obj

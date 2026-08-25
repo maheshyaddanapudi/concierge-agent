@@ -216,9 +216,7 @@ async def _resolve_covers(session: AsyncSession, covers: list[str]) -> list[str]
             continue
         except ValueError:
             pass
-        skill = (
-            await session.execute(select(Skill).where(Skill.name == ref))
-        ).scalar_one_or_none()
+        skill = (await session.execute(select(Skill).where(Skill.name == ref))).scalar_one_or_none()
         if skill is None:
             logger.warning("native_covers_unresolved", ref=ref)
             continue
@@ -269,15 +267,16 @@ async def seed_agent_files(session: AsyncSession, directory: Path | None = None)
             errors = validate_workflow(workflow, active_ids)
         if not errors:
             errors = await compile_workflow_check(
-                session, workflow, persona=doc.persona, model=doc.model,
+                session,
+                workflow,
+                persona=doc.persona,
+                model=doc.model,
                 model_params=doc.model_params,
             )
         if errors:
             logger.error("agent_file_invalid", file=doc.filename, errors=errors)
         by_id = {str(s.id): s for s in active_skills.values()}
-        node_skill_ids = {
-            str(nd["skill_id"]) for nd in workflow["nodes"] if nd.get("skill_id")
-        }
+        node_skill_ids = {str(nd["skill_id"]) for nd in workflow["nodes"] if nd.get("skill_id")}
         bound = [by_id[sid] for sid in sorted(node_skill_ids) if sid in by_id]
         agent = (
             await session.execute(

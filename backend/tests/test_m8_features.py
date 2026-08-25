@@ -372,9 +372,7 @@ class TestRenderChartTool:
             await entry.fn(kind="gantt", labels=["t1", "t2"], series=[], ranges=[["a", "b"]])
         # waterfall/funnel: single series only
         with pytest.raises(ValueError, match="one series"):
-            await entry.fn(
-                kind="funnel", labels=["a"], series=[{"values": [1]}, {"values": [2]}]
-            )
+            await entry.fn(kind="funnel", labels=["a"], series=[{"values": [1]}, {"values": [2]}])
 
     async def test_unknown_kind_rejected(self) -> None:
         entry = native_tools().get("render_chart")

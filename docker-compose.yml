@@ -5,7 +5,8 @@
 # the registry cache only uses it when the registry_cache_mode setting says so.
 services:
   db:
-    image: postgres:16
+    # pgvector = official postgres image + extension (spec §16.1)
+    image: pgvector/pgvector:0.8.6-pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-concierge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concierge}
@@ -25,6 +26,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       FAKE_LLM_ENABLED: ${FAKE_LLM_ENABLED:-}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

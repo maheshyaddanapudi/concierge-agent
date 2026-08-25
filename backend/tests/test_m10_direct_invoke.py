@@ -21,6 +21,7 @@ from tests.factory_helpers import create_skill, create_sub_agent
 
 API = "/api/v1"
 
+
 @pytest.fixture(autouse=True)
 async def _direct_settings() -> None:
     async with get_session_factory()() as session:
@@ -177,9 +178,7 @@ class TestDirectExecution:
             from app.factory.worker import WorkerState
 
             async def work(state: WorkerState) -> dict[str, Any]:
-                return {
-                    "node_outputs": {"nd": {"status": "ok", "output": "native direct output"}}
-                }
+                return {"node_outputs": {"nd": {"status": "ok", "output": "native direct output"}}}
 
             g = StateGraph(WorkerState)
             g.add_node("nd", work)
@@ -319,9 +318,7 @@ class TestDirectLifecycle:
 class TestStaticRules:
     async def test_static_agent_exposure_toggle_allowed(self, client: AsyncClient) -> None:
         agent = await make_exposed_agent(source="static", direct_exposure=False)
-        resp = await client.patch(
-            f"{API}/sub-agents/{agent.id}", json={"direct_exposure": True}
-        )
+        resp = await client.patch(f"{API}/sub-agents/{agent.id}", json={"direct_exposure": True})
         assert resp.status_code == 200, resp.text
         assert resp.json()["direct_exposure"] is True
         # definition stays locked
