@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { sseUrl } from '../api/client'
 import { useSettings } from '../api/hooks'
 import { cx } from './ui'
 
@@ -30,7 +31,7 @@ export function AmbientToaster() {
 
   useEffect(() => {
     if (!ambientOn) return
-    const source = new EventSource('/api/v1/ambient/stream')
+    const source = new EventSource(sseUrl('/ambient/stream'))
     source.onmessage = (e: MessageEvent) => {
       let event: AmbientStreamEvent
       try {

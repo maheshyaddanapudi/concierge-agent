@@ -12,6 +12,7 @@ import { RunsPage } from './pages/RunsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { useSettings } from './api/hooks'
 import { AmbientToaster } from './components/AmbientToaster'
+import { LoginGate } from './components/LoginGate'
 import { cx } from './components/ui'
 
 const queryClient = new QueryClient({
@@ -110,6 +111,7 @@ export default function App() {
             </Routes>
           </main>
           <AmbientToaster />
+          <LoginGate />
         </div>
       </HashRouter>
     </QueryClientProvider>

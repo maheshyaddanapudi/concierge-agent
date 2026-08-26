@@ -162,9 +162,14 @@ async def remember(
     entities: list[str] | None = None,
     session: AsyncSession | None = None,
     project_key: str | None = None,
+    user_id: UUID | None = None,
 ) -> Memory:
     """Insert one memory row under the §16.2 rules. Raises MemoryWriteError."""
     _validate(kind, scope, source)
+    if user_id is None:
+        from app.auth import current_user_id
+
+        user_id = current_user_id()  # §18.8: memories belong to the requester
     if scope == "project" and not project_key:
         raise MemoryWriteError("scope 'project' requires project_key")
     # inferred memories may cite other memories instead of a run — the
@@ -183,6 +188,7 @@ async def remember(
         status = "quarantined"  # behavior-changing writes gate through review
 
     row = Memory(
+        user_id=user_id,
         text=text,
         kind=kind,
         scope=scope,
@@ -455,8 +461,12 @@ async def list_memories(
     q: str | None = None,
     limit: int = 100,
 ) -> list[Memory]:
+    from app.auth import scope_to_user
+
     async with get_session_factory()() as session:
-        stmt = select(Memory).order_by(Memory.recorded_at.desc()).limit(limit)
+        stmt = scope_to_user(select(Memory).order_by(Memory.recorded_at.desc()), Memory).limit(
+            limit
+        )
         if scope:
             stmt = stmt.where(Memory.scope == scope)
         if kind:

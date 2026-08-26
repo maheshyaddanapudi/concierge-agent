@@ -86,6 +86,8 @@ class Routine(Base):
     __tablename__ = "routines"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     prompt: Mapped[str] = mapped_column(Text)  # TRUSTED — stored by an authorized session
@@ -119,6 +121,8 @@ class StandingIntent(Base):
     __tablename__ = "standing_intents"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     text: Mapped[str] = mapped_column(Text)  # the user's words
     condition_type: Mapped[str] = mapped_column(String(8))  # event|state|time
     compiled: Mapped[dict[str, Any] | None] = mapped_column(default=None)  # typed rule
@@ -198,6 +202,8 @@ class Delivery(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), default=None
     )
@@ -232,6 +238,9 @@ class UserPresence(Base):
     __tablename__ = "user_presence"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default="default")
+    # §18.8: per-user rows keyed "user:{uuid}" carry the owner; "default"
+    # stays the single-user row (user_id NULL)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     state: Mapped[str] = mapped_column(String(8), default="offline")
     visible: Mapped[bool] = mapped_column(default=False)
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -253,6 +262,8 @@ class AmbientPolicy(Base):
     __table_args__ = (Index("ambient_policies_cat_idx", "category", "created_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     category: Mapped[str] = mapped_column(String(64))
     tier_override: Mapped[int | None] = mapped_column(SmallInteger, default=None)
     reason: Mapped[str] = mapped_column(Text)

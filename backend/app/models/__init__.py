@@ -29,8 +29,11 @@ from app.models.setting import AppSetting
 from app.models.skill import Skill, skill_tools
 from app.models.sub_agent import SubAgent, sub_agent_skills
 from app.models.tool import Tool
+from app.models.user import AuthSession, User
 
 __all__ = [
+    "AuthSession",
+    "User",
     "EvalCase",
     "EvalDataset",
     "EvalResult",

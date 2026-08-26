@@ -42,6 +42,8 @@ class Memory(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     # 'global' | 'conversation' | 'project' (§18.2 — key-partitioned)
     scope: Mapped[str] = mapped_column(String(16), default="global")
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(

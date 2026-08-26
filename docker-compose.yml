@@ -43,6 +43,8 @@ services:
       CUSTOM_GATEWAY_BASE_URL: ${CUSTOM_GATEWAY_BASE_URL:-}
       CUSTOM_GATEWAY_API_KEY: ${CUSTOM_GATEWAY_API_KEY:-}
       CUSTOM_GATEWAY_MODELS: ${CUSTOM_GATEWAY_MODELS:-}
+      AUTH_ENABLED: ${AUTH_ENABLED:-}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
     volumes:
       - workspace:/workspace
     ports:

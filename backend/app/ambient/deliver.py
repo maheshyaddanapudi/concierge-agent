@@ -44,26 +44,58 @@ def in_quiet_hours(now: datetime, ranges: list[str]) -> bool:
     return now >= start or now < end
 
 
-async def current_tier_override(category: str) -> int | None:
-    """Latest APPLIED policy-ledger row wins (spec §17.6). Queued
-    learner_proposal rows are inert until approved (§17.7 propose mode)."""
+async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
+    """§18.8: the global §3.7 values overlaid with the user's prefs. With
+    auth off (or no owner) this is exactly the global settings — §3.7 and
+    §17.5 read unchanged in the single-user regime."""
+    from app.registry_cache import get_cache
+
+    cache = get_cache()
+    out: dict[str, Any] = {
+        "ambient_quiet_hours": list(await cache.setting("ambient_quiet_hours") or []),
+        "ambient_digest_times": list(await cache.setting("ambient_digest_times") or []),
+        "ambient_notification_budget_per_day": int(
+            await cache.setting("ambient_notification_budget_per_day")
+        ),
+        "ambient_escalation_budget_per_day": int(
+            await cache.setting("ambient_escalation_budget_per_day")
+        ),
+    }
+    if user_id is None:
+        return out
+    from app.models import User
+
     async with get_session_factory()() as session:
-        row = (
+        user = await session.get(User, user_id)
+    prefs = dict(user.prefs or {}) if user is not None else {}
+    for key in ("ambient_quiet_hours", "ambient_digest_times"):
+        if isinstance(prefs.get(key), list):
+            out[key] = list(prefs[key])
+    return out
+
+
+async def current_tier_override(category: str, user_id: "UUID | None" = None) -> int | None:
+    """Latest APPLIED policy-ledger row wins (spec §17.6). Queued
+    learner_proposal rows are inert until approved (§17.7 propose mode).
+    §18.8: a user-scoped row beats the global (NULL-user) fallback."""
+    async with get_session_factory()() as session:
+        rows = list(
             (
                 await session.execute(
                     select(AmbientPolicy)
                     .where(
                         AmbientPolicy.category == category,
                         AmbientPolicy.source != "learner_proposal",
+                        (AmbientPolicy.user_id == user_id) | (AmbientPolicy.user_id.is_(None)),
                     )
                     .order_by(AmbientPolicy.created_at.desc())
-                    .limit(1)
                 )
-            )
-            .scalars()
-            .first()
+            ).scalars()
         )
-    return row.tier_override if row is not None else None
+    for row in rows:  # newest first; prefer the user-scoped lineage
+        if row.user_id == user_id:
+            return row.tier_override
+    return rows[0].tier_override if rows else None
 
 
 async def add_delivery(
@@ -77,16 +109,22 @@ async def add_delivery(
     intent_id: UUID | None = None,
     skey: str | None = None,
     deliver_no_later_than: datetime | None = None,
+    user_id: "UUID | None" = None,
 ) -> Delivery:
     """The single insert path: applies the category policy override,
     supersede-collapses pending rows sharing `skey`, and delivers tier-3
-    rows immediately (silence is an explicit, logged decision)."""
-    override = await current_tier_override(category)
+    rows immediately (silence is an explicit, logged decision).
+    §18.8: the row's owner comes from the caller, the run, the intent, or
+    the requester — in that order."""
+    if user_id is None:
+        user_id = await _resolve_owner(run_id, intent_id)
+    override = await current_tier_override(category, user_id)
     if override is not None:
         tier = override
     now = datetime.now(UTC)
     async with get_session_factory()() as session:
         row = Delivery(
+            user_id=user_id,
             run_id=run_id,
             intent_id=intent_id,
             category=category,
@@ -125,44 +163,79 @@ async def add_delivery(
     return row
 
 
-async def _pending(session: Any, tier: int) -> list[Delivery]:
-    return list(
-        (
-            await session.execute(
-                select(Delivery)
-                .where(
-                    Delivery.tier == tier,
-                    Delivery.delivered_at.is_(None),
-                    Delivery.superseded_by.is_(None),
-                )
-                .order_by(Delivery.urgency.desc(), Delivery.created_at)
-            )
-        ).scalars()
-    )
+async def _resolve_owner(run_id: UUID | None, intent_id: UUID | None) -> UUID | None:
+    """§18.8 ownership chain: the run's owner, else the intent's, else the
+    current requester (None in the single-user regime)."""
+    from app.auth import current_user_id
+    from app.models import StandingIntent
 
-
-async def _interrupts_delivered_today(session: Any, now: datetime) -> int:
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(
-        (
-            await session.execute(
-                select(func.count()).where(
-                    Delivery.channel == "interrupt", Delivery.delivered_at >= midnight
-                )
-            )
-        ).scalar_one()
-    )
-
-
-async def _presence_active() -> bool:
     async with get_session_factory()() as session:
-        row = await session.get(UserPresence, "default")
+        if run_id is not None:
+            run = await session.get(Run, run_id)
+            if run is not None and run.user_id is not None:
+                return run.user_id
+        if intent_id is not None:
+            intent = await session.get(StandingIntent, intent_id)
+            if intent is not None and intent.user_id is not None:
+                return intent.user_id
+    return current_user_id()
+
+
+def _owner_clause(owner: UUID | None, scoped: bool) -> Any:
+    """Bucket filter: exact owner match when scoped (§18.8); no-op dark."""
+    if not scoped:
+        return None
+    return Delivery.user_id == owner if owner is not None else Delivery.user_id.is_(None)
+
+
+async def _pending(
+    session: Any, tier: int, owner: UUID | None = None, scoped: bool = False
+) -> list[Delivery]:
+    query = (
+        select(Delivery)
+        .where(
+            Delivery.tier == tier,
+            Delivery.delivered_at.is_(None),
+            Delivery.superseded_by.is_(None),
+        )
+        .order_by(Delivery.urgency.desc(), Delivery.created_at)
+    )
+    clause = _owner_clause(owner, scoped)
+    if clause is not None:
+        query = query.where(clause)
+    return list((await session.execute(query)).scalars())
+
+
+async def _interrupts_delivered_today(
+    session: Any, now: datetime, owner: UUID | None = None, scoped: bool = False
+) -> int:
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    query = select(func.count()).where(
+        Delivery.channel == "interrupt", Delivery.delivered_at >= midnight
+    )
+    clause = _owner_clause(owner, scoped)
+    if clause is not None:
+        query = query.where(clause)
+    return int((await session.execute(query)).scalar_one())
+
+
+async def _presence_active(owner: UUID | None = None, scoped: bool = False) -> bool:
+    key = f"user:{owner}" if scoped and owner is not None else "default"
+    async with get_session_factory()() as session:
+        row = await session.get(UserPresence, key)
     return row is not None and row.state == "active"
 
 
-async def _digest_due(session: Any, now: datetime, digest_times: list[str]) -> bool:
+async def _digest_due(
+    session: Any,
+    now: datetime,
+    digest_times: list[str],
+    owner: "UUID | None" = None,
+    scoped: bool = False,
+) -> bool:
     """Due when we crossed a configured digest time (today) that no digest
-    flush has covered yet — a missed time catches up exactly once."""
+    flush has covered yet — a missed time catches up exactly once. §18.8:
+    per-owner when auth is on (each user has their own last flush)."""
     occurrences = []
     for hhmm in digest_times:
         try:
@@ -175,42 +248,41 @@ async def _digest_due(session: Any, now: datetime, digest_times: list[str]) -> b
     if not occurrences:
         return False
     latest_occurrence = max(occurrences)
-    last_flush = (
-        await session.execute(
-            select(func.max(Delivery.delivered_at)).where(Delivery.channel == "digest")
-        )
-    ).scalar_one()
+    query = select(func.max(Delivery.delivered_at)).where(Delivery.channel == "digest")
+    clause = _owner_clause(owner, scoped)
+    if clause is not None:
+        query = query.where(clause)
+    last_flush = (await session.execute(query)).scalar_one()
     return last_flush is None or last_flush < latest_occurrence
 
 
 APPROVAL_CATEGORIES = {"hitl", "learning"}
 
 
-async def _digest_flush(now: datetime) -> int:
+async def _digest_flush(
+    now: datetime, owner: "UUID | None" = None, scoped: bool = False
+) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
     (demoted interrupts lead — they kept urgency 5). Approval items
     (spec §18.1) flush ranked by urgency under
     `ambient_escalation_budget_per_day`; the overflow waits for the next
     digest."""
-    from app.registry_cache import get_cache
-
-    escalation_budget = int(await get_cache().setting("ambient_escalation_budget_per_day"))
+    eff = await effective_ambient_settings(owner if scoped else None)
+    escalation_budget = int(eff["ambient_escalation_budget_per_day"])
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     flushed = 0
     delivered_rows: list[Delivery] = []
     async with get_session_factory()() as session:
-        approvals_today = int(
-            (
-                await session.execute(
-                    select(func.count()).where(
-                        Delivery.category.in_(APPROVAL_CATEGORIES),
-                        Delivery.delivered_at >= midnight,
-                    )
-                )
-            ).scalar_one()
+        approvals_query = select(func.count()).where(
+            Delivery.category.in_(APPROVAL_CATEGORIES),
+            Delivery.delivered_at >= midnight,
         )
+        clause = _owner_clause(owner, scoped)
+        if clause is not None:
+            approvals_query = approvals_query.where(clause)
+        approvals_today = int((await session.execute(approvals_query)).scalar_one())
         allowed = max(escalation_budget - approvals_today, 0)
-        rows = await _pending(session, 2)  # already urgency-desc ordered
+        rows = await _pending(session, 2, owner, scoped)  # urgency-desc ordered
         for row in rows:
             if row.category in APPROVAL_CATEGORIES:
                 if allowed <= 0:
@@ -233,15 +305,22 @@ async def _digest_flush(now: datetime) -> int:
     return flushed
 
 
-async def _flush_tier1(now: datetime, *, quiet: bool, force: bool = False) -> int:
+async def _flush_tier1(
+    now: datetime,
+    *,
+    quiet: bool,
+    force: bool = False,
+    owner: "UUID | None" = None,
+    scoped: bool = False,
+) -> int:
     """Tier 1: the user-returned edge (or current presence) delivers; the
     bounded deferral (spec §17.5, Horvitz) delivers past the deadline even
     with nobody present."""
     delivered = 0
     delivered_rows: list[Delivery] = []
-    present = force or await _presence_active()
+    present = force or await _presence_active(owner, scoped)
     async with get_session_factory()() as session:
-        for row in await _pending(session, 1):
+        for row in await _pending(session, 1, owner, scoped):
             deadline_passed = (
                 row.deliver_no_later_than is not None and now >= row.deliver_no_later_than
             )
@@ -262,23 +341,18 @@ async def _flush_tier1(now: datetime, *, quiet: bool, force: bool = False) -> in
     return delivered
 
 
-async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
-    """The tick's delivery pass: interrupts (budget + quiet), notifies
-    (presence/deferral), and time-based digests."""
-    from app.registry_cache import get_cache
-
-    now = now or datetime.now(UTC)
-    cache = get_cache()
-    quiet_ranges = list(await cache.setting("ambient_quiet_hours") or [])
-    budget = int(await cache.setting("ambient_notification_budget_per_day"))
-    digest_times = list(await cache.setting("ambient_digest_times") or [])
-    quiet = in_quiet_hours(now, quiet_ranges)
-    out = {"interrupt": 0, "notify": 0, "digest": 0, "demoted": 0}
+async def _flush_bucket(
+    now: datetime, owner: "UUID | None", scoped: bool, out: dict[str, int]
+) -> None:
+    """One owner's delivery pass with THEIR effective settings (§18.8)."""
+    eff = await effective_ambient_settings(owner if scoped else None)
+    quiet = in_quiet_hours(now, list(eff["ambient_quiet_hours"]))
+    budget = int(eff["ambient_notification_budget_per_day"])
 
     interrupt_rows: list[Delivery] = []
     async with get_session_factory()() as session:
-        used = await _interrupts_delivered_today(session, now)
-        for row in await _pending(session, 0):
+        used = await _interrupts_delivered_today(session, now, owner, scoped)
+        for row in await _pending(session, 0, owner, scoped):
             if quiet or used >= budget:
                 # digest-lead: demoted but keeps its urgency, so it sorts first
                 row.tier = 2
@@ -301,26 +375,61 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
 
         await dispatch_delivered("interrupt", interrupt_rows)
 
-    out["notify"] = await _flush_tier1(now, quiet=quiet)
+    out["notify"] += await _flush_tier1(now, quiet=quiet, owner=owner, scoped=scoped)
 
     # quiet hours absolute (spec §17.5): even a catch-up digest waits them
     # out — the user-returned flush stays live because the user is present
     if not quiet:
         async with get_session_factory()() as session:
-            due = await _digest_due(session, now, digest_times)
+            due = await _digest_due(
+                session, now, list(eff["ambient_digest_times"]), owner, scoped
+            )
         if due:
-            out["digest"] = await _digest_flush(now)
+            out["digest"] += await _digest_flush(now, owner, scoped)
+
+
+async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
+    """The tick's delivery pass: interrupts (budget + quiet), notifies
+    (presence/deferral), and time-based digests. §18.8: with auth on the
+    pass runs per owner bucket under each owner's effective settings;
+    dark = one unscoped bucket, byte-identical to M23–M25."""
+    from app.auth import auth_enabled
+
+    now = now or datetime.now(UTC)
+    out = {"interrupt": 0, "notify": 0, "digest": 0, "demoted": 0}
+    if not auth_enabled():
+        await _flush_bucket(now, None, False, out)
+        return out
+    async with get_session_factory()() as session:
+        owners = {
+            row[0]
+            for row in (
+                await session.execute(
+                    select(Delivery.user_id)
+                    .where(Delivery.delivered_at.is_(None), Delivery.superseded_by.is_(None))
+                    .distinct()
+                )
+            ).all()
+        }
+    for owner in sorted(owners, key=lambda o: str(o)):
+        await _flush_bucket(now, owner, True, out)
     return out
 
 
-async def on_user_returned(away_s: float, now: datetime | None = None) -> None:
+async def on_user_returned(
+    away_s: float, now: datetime | None = None, user_id: "UUID | None" = None
+) -> None:
     """The away→active edge (spec §17.5): every return flushes tier 1; a
     return from absence > 1h also flushes the digest as one collapsed
-    'while you were away' stack. Micro-absences flush tier 1 only."""
+    'while you were away' stack. Micro-absences flush tier 1 only.
+    §18.8: the returning USER's bucket only when auth is on."""
+    from app.auth import auth_enabled
+
+    scoped = auth_enabled()
     now = now or datetime.now(UTC)
-    await _flush_tier1(now, quiet=False, force=True)
+    await _flush_tier1(now, quiet=False, force=True, owner=user_id, scoped=scoped)
     if away_s > 3600:
-        await _digest_flush(now)
+        await _digest_flush(now, user_id, scoped)
 
 
 # ── feedback → blended reward (spec §17.7 substrate) ─────────────────
@@ -386,41 +495,47 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
     from app.registry_cache import get_cache
 
     if str(await get_cache().setting("ambient_learning_mode")) == "off":
-        await apply_precision_rule(row.category)
+        from app.auth import auth_enabled
+
+        await apply_precision_rule(row.category, row.user_id, auth_enabled())
     return row
 
 
-async def category_precision(category: str) -> tuple[float | None, int]:
+async def category_precision(
+    category: str, user_id: "UUID | None" = None, scoped: bool = False
+) -> tuple[float | None, int]:
     """Intervention precision (spec §17.3): accepted / (accepted+dismissed)
-    over the last PRECISION_WINDOW judged items."""
+    over the last PRECISION_WINDOW judged items — per owner when auth is on."""
     async with get_session_factory()() as session:
-        rows = list(
-            (
-                await session.execute(
-                    select(Delivery.feedback)
-                    .where(
-                        Delivery.category == category,
-                        Delivery.feedback.in_(["accepted", "dismissed"]),
-                    )
-                    .order_by(Delivery.created_at.desc())
-                    .limit(PRECISION_WINDOW)
-                )
-            ).scalars()
+        query = (
+            select(Delivery.feedback)
+            .where(
+                Delivery.category == category,
+                Delivery.feedback.in_(["accepted", "dismissed"]),
+            )
+            .order_by(Delivery.created_at.desc())
+            .limit(PRECISION_WINDOW)
         )
+        clause = _owner_clause(user_id, scoped)
+        if clause is not None:
+            query = query.where(clause)
+        rows = list((await session.execute(query)).scalars())
     n = len(rows)
     if n == 0:
         return None, 0
     return rows.count("accepted") / n, n
 
 
-async def apply_precision_rule(category: str) -> AmbientPolicy | None:
+async def apply_precision_rule(
+    category: str, user_id: "UUID | None" = None, scoped: bool = False
+) -> AmbientPolicy | None:
     """Rule-based auto-downgrade (spec §17.3/§17.6): persistently low
     precision demotes the category ONE tier (never into 0, never past 3),
     as an append-only, revertible ledger entry."""
-    precision, n = await category_precision(category)
+    precision, n = await category_precision(category, user_id, scoped)
     if precision is None or n < PRECISION_MIN_SAMPLE or precision >= PRECISION_FLOOR:
         return None
-    override = await current_tier_override(category)
+    override = await current_tier_override(category, user_id if scoped else None)
     if override is not None:
         base_tier = override
     else:
@@ -443,6 +558,7 @@ async def apply_precision_rule(category: str) -> AmbientPolicy | None:
         return None
     async with get_session_factory()() as session:
         policy = AmbientPolicy(
+            user_id=user_id if scoped else None,
             category=category,
             tier_override=target,
             reason=(

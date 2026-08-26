@@ -44,11 +44,18 @@ async def create_run(
     project_key: str | None = None,
     is_eval: bool = False,
     eval_skill_id: UUID | None = None,
+    user_id: UUID | None = None,
 ) -> Run:
+    from app.auth import auth_enabled, current_user_id
+
+    if user_id is None:
+        user_id = current_user_id()  # §18.8: requester owns the work; None when dark
     async with get_session_factory()() as session:
         if conversation_id is None:
             conversation = Conversation(
-                title=message[:80] or "New conversation", project_key=project_key
+                title=message[:80] or "New conversation",
+                project_key=project_key,
+                user_id=user_id,
             )
             session.add(conversation)
             await session.commit()
@@ -57,6 +64,8 @@ async def create_run(
             existing = await session.get(Conversation, conversation_id)
             if existing is None:
                 raise ValueError(f"conversation {conversation_id} not found")
+            if auth_enabled() and existing.user_id != user_id:
+                raise ValueError(f"conversation {conversation_id} not found")  # invisible
         settings = await load_settings_snapshot()
         run = Run(
             conversation_id=conversation_id,
@@ -68,6 +77,7 @@ async def create_run(
             include_memories=include_memories,
             is_eval=is_eval,
             eval_skill_id=eval_skill_id,
+            user_id=user_id,
         )
         session.add(run)
         await session.commit()
@@ -95,6 +105,12 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         trigger = run.trigger
         is_eval = run.is_eval
         eval_skill_id = run.eval_skill_id
+        run_owner = run.user_id
+    # §18.8: in-run writes (memories, watches, deliveries) scope to the
+    # run's owner even off-request — ambient fires and eval runs included
+    from app.auth import bind_run_owner
+
+    bind_run_owner(run_owner)
     if is_eval:
         # §15: eval runs are ordinary runs tagged eval=true in the label set
         import structlog as _structlog
@@ -157,6 +173,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             recorder.emit("run_status", {"status": "paused_hitl"})
             return
         answer = str(outcome.get("answer") or "")
+        totals = {"input_tokens": 0, "output_tokens": 0}
         tool_charts = await _collect_tool_charts(run_id)
         answer_ui = await _maybe_format_answer(ctx, task_text, answer, tool_charts)
         async with get_session_factory()() as session:

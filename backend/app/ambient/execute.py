@@ -106,7 +106,12 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
                     conversation_id = existing.id
     if conversation_id is None:
         async with get_session_factory()() as session:
-            conversation = Conversation(title=f"[ambient] {name}"[:80])
+            conversation = Conversation(
+                title=f"[ambient] {name}"[:80],
+                # §18.8: the ambient conversation belongs to the fire's owner
+                user_id=(routine.user_id if routine else None)
+                or (intent.user_id if intent else None),
+            )
             session.add(conversation)
             await session.commit()
             conversation_id = conversation.id
@@ -116,7 +121,11 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
                 if owner is not None:
                     owner.conversation_id = conversation_id
                     await session.commit()
-    run = await create_run(conversation_id, prompt, include_memories=include_memories)
+    # §18.8: a routine fires runs AS ITS OWNER; intent fires as the watch owner
+    owner_id = (routine.user_id if routine else None) or (intent.user_id if intent else None)
+    run = await create_run(
+        conversation_id, prompt, include_memories=include_memories, user_id=owner_id
+    )
     async with get_session_factory()() as session:
         row = await session.get(Run, run.id)
         if row is None:  # pragma: no cover - just created

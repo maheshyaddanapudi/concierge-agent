@@ -39,7 +39,12 @@ _last_run: datetime | None = None
 
 
 async def apply_policy(
-    *, category: str, tier_override: int | None, reason: str, source: str
+    *,
+    category: str,
+    tier_override: int | None,
+    reason: str,
+    source: str,
+    user_id: "UUID | None" = None,
 ) -> AmbientPolicy:
     """The single application path for category overrides. Hard clamp:
     an override may NEVER place a category into tier 0 (spec §17.7)."""
@@ -47,7 +52,11 @@ async def apply_policy(
         raise ValueError("policy overrides may never move a category into tier 0")
     async with get_session_factory()() as session:
         row = AmbientPolicy(
-            category=category, tier_override=tier_override, reason=reason, source=source
+            user_id=user_id,
+            category=category,
+            tier_override=tier_override,
+            reason=reason,
+            source=source,
         )
         session.add(row)
         await session.commit()
@@ -66,7 +75,9 @@ async def apply_policy(
     return row
 
 
-async def _queue_proposal(category: str, tier_override: int | None, reason: str) -> None:
+async def _queue_proposal(
+    category: str, tier_override: int | None, reason: str, user_id: "UUID | None" = None
+) -> None:
     """Propose mode: the change is ledgered as a proposal (inert until
     approval) and a review item rides the inbox digest (§16.2 pattern)."""
     from app.ambient.deliver import add_delivery
@@ -120,45 +131,75 @@ def _mean_reward(rows: list[Delivery]) -> float | None:
     return sum(rewards) / len(rewards)
 
 
-async def _category_signals() -> list[tuple[str, int, float, int]]:
+async def _category_signals(
+    owner: "UUID | None" = None, scoped: bool = False
+) -> list[tuple[str, int, float, int]]:
     """(category, current_effective_tier, mean_reward, judged_n) for every
     category with judged feedback — the learner's observation."""
     from app.ambient.deliver import current_tier_override
 
     async with get_session_factory()() as session:
-        categories = list(
-            (
-                await session.execute(
-                    select(Delivery.category).where(Delivery.feedback.isnot(None)).distinct()
-                )
-            ).scalars()
-        )
+        cat_query = select(Delivery.category).where(Delivery.feedback.isnot(None)).distinct()
+        if scoped:
+            cat_query = cat_query.where(
+                Delivery.user_id == owner if owner is not None else Delivery.user_id.is_(None)
+            )
+        categories = list((await session.execute(cat_query)).scalars())
         out: list[tuple[str, int, float, int]] = []
         for category in categories:
             if category == "learning":
                 continue  # never learn on our own review items
-            rows = list(
-                (
-                    await session.execute(
-                        select(Delivery)
-                        .where(Delivery.category == category, Delivery.feedback.isnot(None))
-                        .order_by(Delivery.created_at.desc())
-                        .limit(LEARN_WINDOW)
-                    )
-                ).scalars()
+            row_query = (
+                select(Delivery)
+                .where(Delivery.category == category, Delivery.feedback.isnot(None))
+                .order_by(Delivery.created_at.desc())
+                .limit(LEARN_WINDOW)
             )
+            if scoped:
+                row_query = row_query.where(
+                    Delivery.user_id == owner if owner is not None else Delivery.user_id.is_(None)
+                )
+            rows = list((await session.execute(row_query)).scalars())
             mean = _mean_reward(rows)
             if mean is None:
                 continue
-            override = await current_tier_override(category)
+            override = await current_tier_override(category, owner if scoped else None)
             tier = override if override is not None else int(rows[0].tier)
             out.append((category, tier, mean, len(rows)))
     return out
 
 
 async def _learn_retiers(mode: str) -> int:
+    """§18.8: with auth on the learner observes and re-tiers each owner's
+    delivery pool separately (policies carry user_id)."""
+    from app.auth import auth_enabled
+
+    scoped = auth_enabled()
+    owners: list[UUID | None] = [None]
+    if scoped:
+        async with get_session_factory()() as session:
+            owners = sorted(
+                {
+                    row[0]
+                    for row in (
+                        await session.execute(
+                            select(Delivery.user_id)
+                            .where(Delivery.feedback.isnot(None))
+                            .distinct()
+                        )
+                    ).all()
+                },
+                key=str,
+            )
     changed = 0
-    for category, tier, mean, n in await _category_signals():
+    for owner in owners:
+        changed += await _learn_retiers_for(mode, owner, scoped)
+    return changed
+
+
+async def _learn_retiers_for(mode: str, owner: "UUID | None", scoped: bool) -> int:
+    changed = 0
+    for category, tier, mean, n in await _category_signals(owner, scoped):
         target: int | None = None
         if n >= LEARN_MIN_SAMPLE and mean <= DEMOTE_BELOW and tier < 3:
             target = tier + 1
@@ -168,16 +209,20 @@ async def _learn_retiers(mode: str) -> int:
             continue
         from app.ambient.deliver import current_tier_override
 
-        if await current_tier_override(category) == target:
+        if await current_tier_override(category, owner if scoped else None) == target:
             continue
         direction = "demoted" if target > tier else "promoted"
         reason = f"mean reward {mean:+.2f} over {n} judged items — {direction} tier {tier}→{target}"
         if mode == "auto":
             await apply_policy(
-                category=category, tier_override=target, reason=reason, source="learner"
+                category=category,
+                tier_override=target,
+                reason=reason,
+                source="learner",
+                user_id=owner if scoped else None,
             )
         else:
-            await _queue_proposal(category, target, reason)
+            await _queue_proposal(category, target, reason, owner if scoped else None)
         changed += 1
     return changed
 
@@ -220,6 +265,18 @@ async def _digest_anchor(current: list[str]) -> list[str]:
 
 
 async def _learn_digest_times(mode: str) -> int:
+    from app.auth import auth_enabled
+
+    if auth_enabled():
+        # §18.8: digest times live per user (users.prefs) in the multi-user
+        # regime — a GLOBAL shift learned from one user's feedback would
+        # leak preference across tenants, so the global learner stands down
+        logger.info("ambient_learn_digest_skipped_multiuser", tier="ambient", kind="learn")
+        return 0
+    return await _learn_digest_times_global(mode)
+
+
+async def _learn_digest_times_global(mode: str) -> int:
     """Shift each digest time toward the mean hour of recently ACCEPTED
     digest deliveries, clamped to ±2h of the anchor."""
     from app.registry_cache import get_cache

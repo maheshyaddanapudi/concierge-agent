@@ -38,6 +38,12 @@ W_REL, W_REC, W_IMP = 1.0, 0.8, 0.6
 DEFAULT_HALF_LIFE_HOURS = 30.0 * 24
 
 
+def _auth_uid() -> Any:
+    from app.auth import current_user_id
+
+    return current_user_id()
+
+
 @dataclass
 class RecallHit:
     memory: Memory
@@ -72,6 +78,14 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     # §18.2: project rows are visible only under their own key; without a
     # key the equality is NULL ⇒ false — projects never leak sideways
     parts.append("(m.scope != 'project' OR m.project_key = CAST(:project_key AS text))")
+    # §18.8 tenancy: another user's memories are invisible; unowned
+    # (pre-auth / system) rows stay visible to everyone
+    from app.auth import auth_enabled
+
+    if auth_enabled():
+        parts.append(
+            "(m.user_id = CAST(:auth_user_id AS uuid) OR m.user_id IS NULL)"
+        )
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 
@@ -103,6 +117,7 @@ async def recall(
         "conversation_id": conversation_id,
         "project_key": project_key,
         "as_of": as_of,
+        "auth_user_id": str(_auth_uid()) if _auth_uid() else None,
     }
     where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)
 

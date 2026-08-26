@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
 from app.api.deps import SessionDep
+from app.auth import current_user_id, owns_row, scope_to_user
+from app.db import get_session_factory
 from app.models import AmbientEvent, AmbientPolicy, Delivery, StandingIntent
 
 deliveries_router = APIRouter(prefix="/deliveries", tags=["ambient"])
@@ -48,7 +50,9 @@ def _delivery_out(d: Delivery) -> dict[str, Any]:
 async def list_deliveries(
     session: SessionDep, status: str = "all", limit: int = 100
 ) -> dict[str, Any]:
-    query = select(Delivery).order_by(Delivery.created_at.desc()).limit(min(limit, 500))
+    query = scope_to_user(
+        select(Delivery).order_by(Delivery.created_at.desc()).limit(min(limit, 500)), Delivery
+    )
     if status == "pending":
         query = query.where(Delivery.delivered_at.is_(None), Delivery.superseded_by.is_(None))
     elif status == "delivered":
@@ -63,7 +67,7 @@ async def digest_preview(session: SessionDep) -> dict[str, Any]:
     rows = list(
         (
             await session.execute(
-                select(Delivery)
+                scope_to_user(select(Delivery), Delivery)
                 .where(
                     Delivery.tier == 2,
                     Delivery.delivered_at.is_(None),
@@ -88,6 +92,10 @@ async def give_feedback(delivery_id: UUID, body: FeedbackBody) -> dict[str, Any]
 
     if body.feedback not in FEEDBACK_VALUES:
         raise HTTPException(422, f"feedback must be one of {sorted(FEEDBACK_VALUES)}")
+    async with get_session_factory()() as session:
+        existing = await session.get(Delivery, delivery_id)
+    if existing is None or not owns_row(existing):
+        raise HTTPException(404, "no such delivery")
     row = await record_feedback(delivery_id, body.feedback)
     if row is None:
         raise HTTPException(404, "no such delivery")
@@ -122,7 +130,7 @@ async def list_watches(session: SessionDep, limit: int = 100) -> dict[str, Any]:
     rows = list(
         (
             await session.execute(
-                select(StandingIntent)
+                scope_to_user(select(StandingIntent), StandingIntent)
                 .order_by(StandingIntent.created_at.desc())
                 .limit(min(limit, 500))
             )
@@ -195,6 +203,7 @@ async def create_watch(body: WatchCreateBody, session: SessionDep) -> dict[str, 
         if f.op not in VALID_FILTER_OPS:
             raise HTTPException(422, f"unknown filter op {f.op!r} — use {sorted(VALID_FILTER_OPS)}")
     row = StandingIntent(
+        user_id=current_user_id(),
         text=body.text[:2000],
         condition_type="event",
         compiled={"match": "events", "filters": [f.model_dump() for f in body.filters]},
@@ -214,7 +223,7 @@ async def patch_watch(intent_id: UUID, body: WatchPatch, session: SessionDep) ->
     if body.status not in {"active", "paused", "retired"}:
         raise HTTPException(422, "status must be active | paused | retired")
     row = await session.get(StandingIntent, intent_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "no such watch")
     if row.status == "proposed" and body.status == "active":
         pass  # confirming a proposal from the UI is allowed

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
 from app.api.deps import SessionDep
+from app.auth import current_user_id, owns_row, scope_to_user
 from app.models import Routine
 from app.models.ambient import ROUTINE_AUTONOMY
 
@@ -95,7 +96,10 @@ def _validate_model_ref(ref: str | None) -> None:
 
 @router.get("")
 async def list_routines(session: SessionDep) -> list[dict[str, Any]]:
-    rows = list((await session.execute(select(Routine).order_by(Routine.name))).scalars())
+    rows = list(
+        (await session.execute(scope_to_user(select(Routine).order_by(Routine.name), Routine)))
+        .scalars()
+    )
     return [_out(r) for r in rows]
 
 
@@ -117,6 +121,7 @@ async def create_routine(body: RoutineBody, session: SessionDep) -> dict[str, An
     if dup is not None:
         raise HTTPException(409, f"routine name {body.name!r} already exists")
     row = Routine(
+        user_id=current_user_id(),
         name=body.name,
         prompt=body.prompt,
         description=body.description,
@@ -137,7 +142,7 @@ async def create_routine(body: RoutineBody, session: SessionDep) -> dict[str, An
 @router.get("/{routine_id}")
 async def get_routine(routine_id: UUID, session: SessionDep) -> dict[str, Any]:
     row = await session.get(Routine, routine_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
     return _out(row)
 
@@ -147,7 +152,7 @@ async def patch_routine(
     routine_id: UUID, body: RoutinePatch, session: SessionDep
 ) -> dict[str, Any]:
     row = await session.get(Routine, routine_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
     changes = body.model_dump(exclude_none=True)
     if row.source == "static":
@@ -174,7 +179,7 @@ async def patch_routine(
 @router.delete("/{routine_id}", status_code=204)
 async def delete_routine(routine_id: UUID, session: SessionDep) -> None:
     row = await session.get(Routine, routine_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
     if row.source == "static":
         raise HTTPException(409, "static routines cannot be deleted")
@@ -194,7 +199,7 @@ async def issue_token(routine_id: UUID, session: SessionDep) -> dict[str, str]:
     """Issue (or rotate) the fire token. Shown ONCE — only the hash is kept."""
     await _ambient_on(session)
     row = await session.get(Routine, routine_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
     token = f"amb_{secrets.token_urlsafe(32)}"
     row.fire_token_hash = _hash_token(token)
@@ -205,7 +210,7 @@ async def issue_token(routine_id: UUID, session: SessionDep) -> dict[str, str]:
 @router.delete("/{routine_id}/token", status_code=204)
 async def revoke_token(routine_id: UUID, session: SessionDep) -> None:
     row = await session.get(Routine, routine_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
     row.fire_token_hash = None
     await session.commit()
@@ -227,7 +232,8 @@ async def fire_routine(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """The webhook fire path: bearer token → UNTRUSTED event → drain pickup.
-    A leaked token can start a run, never steer one (§17.2)."""
+    A leaked token can start a run, never steer one (§17.2). No owner check
+    here — the fire token IS the auth (§18.8 exempts this path)."""
     await _ambient_on(session)
     row = await session.get(Routine, routine_id)
     if row is None:

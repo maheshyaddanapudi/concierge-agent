@@ -21,14 +21,24 @@ _AWAY_BEAT_S = 2 * 60
 _OFFLINE_BEAT_S = 30 * 60
 
 
+def _presence_key() -> tuple[str, "object | None"]:
+    """§18.8: per-user presence rows when auth is on ("user:{uuid}");
+    the single-user regime keeps the one "default" row."""
+    from app.auth import auth_enabled, current_user_id
+
+    uid = current_user_id() if auth_enabled() else None
+    return (f"user:{uid}", uid) if uid is not None else ("default", None)
+
+
 async def record_heartbeat(*, visible: bool, activity: bool) -> UserPresence:
     """Client heartbeat (30s cadence; immediate on foreground). `activity`
     marks real input since the last beat."""
     now = datetime.now(UTC)
+    key, uid = _presence_key()
     async with get_session_factory()() as session:
-        row = await session.get(UserPresence, "default")
+        row = await session.get(UserPresence, key)
         if row is None:
-            row = UserPresence(id="default")
+            row = UserPresence(id=key, user_id=uid)
             session.add(row)
         row.last_heartbeat_at = now
         row.visible = visible
@@ -59,41 +69,52 @@ async def evaluate_presence(idle_minutes: int) -> str | None:
 
     Returns the emitted event kind, if any.
     """
+    from sqlalchemy import select
+
     from app.ambient.store import emit_event
 
     now = datetime.now(UTC)
     emitted: str | None = None
     async with get_session_factory()() as session:
-        row = await session.get(UserPresence, "default")
-        if row is None:
-            return None
-        new_state = _derive_state(row, now)
-        old_state = row.state
-        if new_state == old_state:
-            return None
-        away_s = (now - row.state_since).total_seconds() if row.state_since else 0.0
-        row.state = new_state
-        row.state_since = now
-        await session.commit()
-    if old_state in {"idle", "away", "offline"} and new_state == "active":
-        emitted = "user_returned"
-    elif old_state == "active" and new_state in {"idle", "away"}:
-        emitted = "user_idle"
-    if emitted:
-        await emit_event(
-            kind=emitted,
-            source="presence",
-            payload={"from": old_state, "to": new_state, "away_s": away_s},
-            require_enabled=True,
-        )
-        if emitted == "user_returned":
-            # §17.5 return-flush: tier 1 always; > 1h away also the digest
-            from app.ambient.deliver import on_user_returned
+        rows = list((await session.execute(select(UserPresence))).scalars())
+    for snapshot in rows:  # §18.8: one transition pass per presence row
+        async with get_session_factory()() as session:
+            row = await session.get(UserPresence, snapshot.id)
+            if row is None:
+                continue
+            new_state = _derive_state(row, now)
+            old_state = row.state
+            if new_state == old_state:
+                continue
+            away_s = (now - row.state_since).total_seconds() if row.state_since else 0.0
+            row_user_id = row.user_id
+            row.state = new_state
+            row.state_since = now
+            await session.commit()
+        kind: str | None = None
+        if old_state in {"idle", "away", "offline"} and new_state == "active":
+            kind = "user_returned"
+        elif old_state == "active" and new_state in {"idle", "away"}:
+            kind = "user_idle"
+        if kind:
+            emitted = kind
+            await emit_event(
+                kind=kind,
+                source="presence",
+                payload={"from": old_state, "to": new_state, "away_s": away_s},
+                require_enabled=True,
+            )
+            if kind == "user_returned":
+                # §17.5 return-flush: tier 1 always; > 1h away also the digest
+                from app.ambient.deliver import on_user_returned
 
-            await on_user_returned(away_s, now=now)
-        logger.info(
-            "ambient_presence", tier="ambient", kind="ingest", transition=f"{old_state}->{new_state}"
-        )
+                await on_user_returned(away_s, now=now, user_id=row_user_id)
+            logger.info(
+                "ambient_presence",
+                tier="ambient",
+                kind="ingest",
+                transition=f"{old_state}->{new_state}",
+            )
     return emitted
 
 

@@ -14,6 +14,8 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     title: Mapped[str] = mapped_column(String(255), default="New conversation")
     # §18.2: opt-in project scoping — project memories inject only here
     project_key: Mapped[str | None] = mapped_column(String(128), default=None)
@@ -29,6 +31,8 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
     chat_message: Mapped[str] = mapped_column(Text)
     plan: Mapped[dict[str, Any] | None] = mapped_column(default=None)

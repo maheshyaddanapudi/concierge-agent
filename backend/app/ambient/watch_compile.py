@@ -109,7 +109,10 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
         compiled = {"match": "events", "filters": [f.model_dump() for f in out.filters]}
 
     async with get_session_factory()() as session:
+        from app.auth import current_user_id
+
         intent = StandingIntent(
+            user_id=current_user_id(),
             text=text[:2000],
             condition_type=condition_type,
             compiled=compiled,

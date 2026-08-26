@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api import (
     ambient,
+    auth,
     cache,
     chat,
     evals,
@@ -20,6 +21,7 @@ from app.api import (
 )
 
 api_router = APIRouter()
+api_router.include_router(auth.router)
 api_router.include_router(cache.router)
 api_router.include_router(mcp_servers.router)
 api_router.include_router(tools.router)
