@@ -122,11 +122,15 @@ async def drain_once(limit: int = 20) -> int:
 
 async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
     """Lifespan-owned loop: LISTEN for wake pings, sweep on the tick.
-    Cheap no-op while ambient is dark."""
+    Cheap no-op while ambient is dark. Under `--scale backend=N` the tick
+    elects a leader per tick (spec §18.9): only the leader runs the
+    evaluators; every replica LISTENs and drains (SKIP-LOCKED-safe)."""
+    from app.ambient.coordinate import LeaderLease
     from app.registry_cache import get_cache
 
     wake = asyncio.Event()
     listener_task: asyncio.Task[None] | None = None
+    lease = LeaderLease()
 
     async def _listen() -> None:
         # dedicated (unpooled) connection: LISTEN breaks under pooling
@@ -154,40 +158,57 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
                     from app.ambient.execute import execute_fired_event
 
                     register_executor(execute_fired_event)
-                # trigger evaluators (spec §17.2) then the drain
-                from app.ambient.decide import sweep_hitl_aging
-                from app.ambient.execute import reap_stalled_runs
-                from app.ambient.patterns import expire_pattern_deadlines
-                from app.ambient.triggers import (
-                    evaluate_schedules,
-                    evaluate_state_conditions,
-                    poll_due_intents,
-                )
-                from app.ambient.wakeups import fire_due_wakeups
+                from app import obs
 
-                await evaluate_schedules()
-                await poll_due_intents()
-                await evaluate_state_conditions()
-                await expire_pattern_deadlines()
-                await fire_due_wakeups()
-                await sweep_hitl_aging()
-                await reap_stalled_runs()
-                await drain_once()
-                idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
-                from app.ambient.deliver import flush_deliveries
-                from app.ambient.presence import evaluate_presence, is_platform_idle
+                # §18.9 leader election: the session advisory lock is the
+                # lease — renew-or-acquire once per tick, failover ≤ one tick
+                leader = await lease.ensure()
+                obs.AMBIENT_LEADER.set(1.0 if leader else 0.0)
+                if leader:
+                    # trigger evaluators (spec §17.2) then the drain
+                    from app.ambient.decide import sweep_hitl_aging
+                    from app.ambient.execute import reap_stalled_runs
+                    from app.ambient.patterns import expire_pattern_deadlines
+                    from app.ambient.triggers import (
+                        evaluate_schedules,
+                        evaluate_state_conditions,
+                        poll_due_intents,
+                    )
+                    from app.ambient.wakeups import fire_due_wakeups
 
-                await evaluate_presence(idle_minutes)
-                await flush_deliveries()
-                if await is_platform_idle(idle_minutes):
-                    from app.ambient.anticipate import run_anticipation
+                    await evaluate_schedules()
+                    await poll_due_intents()
+                    await evaluate_state_conditions()
+                    await expire_pattern_deadlines()
+                    await fire_due_wakeups()
+                    await sweep_hitl_aging()
+                    await reap_stalled_runs()
+                    await drain_once()
+                    idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
+                    from app.ambient.deliver import flush_deliveries
+                    from app.ambient.presence import evaluate_presence, is_platform_idle
 
-                    await run_anticipation()
-                # §17.7 learner — consolidation-class, throttled internally,
-                # a no-op unless ambient_learning_mode is auto|propose
-                from app.ambient.learn import run_learner
+                    await evaluate_presence(idle_minutes)
+                    await flush_deliveries()
+                    if await is_platform_idle(idle_minutes):
+                        from app.ambient.anticipate import run_anticipation
 
-                await run_learner()
+                        await run_anticipation()
+                    # §17.7 learner — consolidation-class, throttled internally,
+                    # a no-op unless ambient_learning_mode is auto|propose
+                    from app.ambient.learn import run_learner
+
+                    await run_learner()
+                else:
+                    # non-leaders LISTEN + drain only (spec §18.9): the
+                    # SKIP-LOCKED drain and the executor are replica-safe
+                    await drain_once()
+            elif lease.held:
+                # ambient went dark — surrender leadership immediately
+                from app import obs
+
+                await lease.release()
+                obs.AMBIENT_LEADER.set(0.0)
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
             logger.warning("ambient_tick_failed", error=str(exc))
         wake.clear()
@@ -197,5 +218,7 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
         )
         for task in pending:
             task.cancel()
+    # a clean stop releases the lease NOW; a crash lapses it with the session
+    await lease.release()
     if listener_task is not None:
         listener_task.cancel()
