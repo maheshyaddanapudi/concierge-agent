@@ -51,7 +51,7 @@ design).
 | `25`–`28` | §14d-39 | 20s budget → task **parked** with the honest tool note; run completed with **no recheck run**; ambient leader tick polled the finished remote task; fenced result delivered to the Inbox as `category=a2a`; drawer row flipped to delivered |
 | `29`–`31` | §14d-39/40 | Parked-then-ask: tier-1 "needs your input" delivery; reply typed in the Remote Agents task drawer; remote task completed |
 | `32`–`33` | §14d-40 | Card drift: counterparty added `proofread` live; Refresh card projected the new `kind=a2a` tool |
-| `34`–`39` | §14d-35 | Auth matrix: apiKey resolved from **`env:STUB_A2A_KEY`** (auth ok + authenticated echo call), oauth2 client_credentials (token minted at the stub's `/token`, authenticated call), mutualTLS-only card → `auth-unsupported` chip and a clean tool error on call |
+| `34`–`39` | §14d-35 | Auth matrix: apiKey resolved from **`env:STUB_A2A_KEY`** (auth ok chip + authenticated echo round-trip), oauth2 client_credentials (**exactly one token minted** at the stub's `/token`, then an authenticated echo round-trip), mutualTLS-only card → `auth-unsupported` chip; the call sends no credentials (nothing supported to place) and fails as a clean `401 Unauthorized` tool step, with the run completing and reporting it honestly |
 
 ## Defects found by this campaign (fixed on the branch)
 
