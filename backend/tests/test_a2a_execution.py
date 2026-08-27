@@ -261,6 +261,71 @@ async def test_agentic_hitl_deny_cancels_remote_task(
     assert "denied by human" in (rows[0].error or "")
 
 
+async def test_graph_worker_input_required_pauses_and_resumes(
+    client: AsyncClient, a2a_manager: A2AManager, stub: StubA2AServer
+) -> None:
+    """Graph mode, custom-sub-agent rung: a remote `input-required` inside a
+    WORKER's skill loop must pause the run (never take the error edge — the
+    §3.5 catch may not swallow GraphInterrupt), and the typed reply resumes
+    into the SAME remote task via replay adoption."""
+    _agent, tools = await register_stub_agent(client, stub)
+    research = next(t for t in tools if t["tool_key"] == "stub-agent.research")
+    from app.models import Tool
+
+    async with get_session_factory()() as db:
+        tool_row = await db.get(Tool, research["id"])
+        assert tool_row is not None
+    skill = await create_skill(name=f"remote-gate-{uuid4().hex[:4]}", tools=[tool_row])
+    agent_row = await create_sub_agent(
+        {
+            "nodes": [{"id": "s1", "type": "skill", "skill_id": str(skill.id)}],
+            "edges": [
+                {"from": "START", "to": "s1"},
+                {"from": "s1", "to": "END", "on": "success"},
+            ],
+        }
+    )
+
+    plan_call(
+        entries=[
+            {
+                "id": "s1",
+                "capability": {"type": "sub_agent", "id": str(agent_row.id)},
+                "task": "relay the exact ask: message to the remote agent",
+                "depends_on": [],
+            }
+        ]
+    )
+    a2a_tool_call("stub-agent_research", "ask:Which environment should I target?")
+
+    run_id = await send_chat(client, "relay the question")
+    run = await wait_run(client, run_id, {"paused_hitl", "completed", "failed"})
+    assert run["status"] == "paused_hitl", (run["status"], run["error"])
+
+    pending = (await client.get(f"{API}/hitl/pending")).json()
+    assert any(p["run_id"] == run_id for p in pending)
+
+    rows = await a2a_task_rows()
+    assert len(rows) == 1 and rows[0].state == "input-required"
+
+    fake_llm.push_ai("Relayed; the remote agent answered.")  # skill loop wrap-up
+    fake_llm.push_ai("Aggregated: staged reply delivered.")  # aggregator
+    resp = await client.post(
+        f"{API}/runs/{run_id}/hitl",
+        json={"decision": "approve", "note": "", "answers": {"reply": "target staging"}},
+    )
+    assert resp.status_code == 200, resp.text
+    run = await wait_run(client, run_id, {"completed", "failed"})
+    assert run["status"] == "completed", run["error"]
+
+    rows = await a2a_task_rows()
+    assert len(rows) == 1, "replay must adopt the open remote task, never re-send"
+    assert rows[0].state == "completed"
+    assert "stub-answered: target staging" in (rows[0].result or {}).get("text", "")
+    tool_steps = [s for s in run["steps"] if s["step_type"] == "tool_call"]
+    assert any("untrusted_remote_agent_output" in str(s.get("output")) for s in tool_steps)
+
+
 # ── failure + timeout semantics ──────────────────────────────────────
 
 
@@ -369,3 +434,60 @@ async def test_stop_propagates_remote_cancel(
     assert stub.cancelled_tasks, "Stop must best-effort cancel the remote task"
     rows = await a2a_task_rows()
     assert rows and rows[0].state == "canceled"
+
+
+# ── rung 1: a direct tool call cannot pause — clear error + drawer ───
+
+
+async def test_direct_tool_rung_cannot_pause_clear_error_and_drawer_continues(
+    client: AsyncClient, a2a_manager: A2AManager, stub: StubA2AServer
+) -> None:
+    """Rung 1 executes outside any graph, so a remote `input-required` gate
+    cannot pause the run. The interrupt must surface as a CLEAR tool error
+    (never a swallowed GraphInterrupt repr), the task row stays
+    `input-required`, and the §19.6 drawer reply completes the remote task."""
+    agent, tools = await register_stub_agent(client, stub)
+    research = next(t for t in tools if t["tool_key"] == "stub-agent.research")
+    resp = await client.patch(f"{API}/tools/{research['id']}", json={"direct_exposure": True})
+    assert resp.status_code == 200, resp.text
+    resp = await client.patch(f"{API}/settings", json={"ambient_enabled": True})
+    assert resp.status_code == 200, resp.text
+
+    plan_call(
+        entries=[
+            {
+                "id": "s1",
+                "capability": {"type": "direct_tool", "id": str(research["id"])},
+                "task": "ask the remote agent which environment",
+                "depends_on": [],
+            }
+        ]
+    )
+    # the rung's own arg-derivation model call picks the tool…
+    a2a_tool_call("stub-agent_research", "ask:Which environment should I target?")
+    fake_llm.push_ai("The remote agent needs input; see the task drawer.")  # aggregator
+
+    run_id = await send_chat(client, "direct-tool ask")
+    run = await wait_run(client, run_id, {"completed", "failed"})
+    assert run["status"] == "completed", run["error"]
+
+    tool_steps = [s for s in run["steps"] if s["step_type"] == "tool_call"]
+    assert tool_steps and tool_steps[0]["status"] == "failed"
+    err = str(tool_steps[0].get("error") or "")
+    assert "cannot pause" in err and "task drawer" in err
+    assert "Which environment should I target?" in err
+    assert "GraphInterrupt" not in err and "Interrupt(" not in err
+
+    rows = await a2a_task_rows()
+    assert len(rows) == 1 and rows[0].state == "input-required"
+    assert "Which environment" in (rows[0].question or "")
+
+    # the drawer carries the reply from here (spec §19.6)
+    resp = await client.post(
+        f"{API}/remote-agents/{agent['id']}/tasks/{rows[0].id}/reply",
+        json={"text": "use staging"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "completed"
+    rows = await a2a_task_rows()
+    assert "stub-answered: use staging" in (rows[0].result or {}).get("text", "")

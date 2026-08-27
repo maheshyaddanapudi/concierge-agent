@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -399,6 +400,12 @@ def _make_skill_node(
                 },
                 "messages": [AIMessage(content=f"[{node_id}] {text}")],
             }
+        except GraphInterrupt:
+            # a tool-raised gate inside the skill loop (HITL middleware, a2a
+            # input-required — spec §19.5) — NEVER an error edge: let the
+            # worker graph pause; resume replays the tool, which adopts its
+            # open remote task (§7.1 replay contract)
+            raise
         except Exception as exc:  # noqa: BLE001 - error-edge semantics (spec §3.5)
             logger.warning("skill_node_failed", node_id=node_id, error=str(exc))
             return {
