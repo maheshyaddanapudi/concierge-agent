@@ -520,7 +520,9 @@ class TestSettings:
         assert (await client.get(f"{API}/settings")).json()["max_plan_steps"] == 5
 
     async def test_patch_unconfigured_model_rejected(self, seeded_client: AsyncClient) -> None:
-        resp = await seeded_client.patch(f"{API}/settings", json={"default_model": "openai:gpt-4o"})
+        resp = await seeded_client.patch(
+            f"{API}/settings", json={"default_model": "openai:gpt-5-mini"}
+        )
         assert resp.status_code == 422
 
     async def test_patch_configured_model_ok(self, seeded_client: AsyncClient) -> None:

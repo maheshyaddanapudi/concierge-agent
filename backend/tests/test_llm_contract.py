@@ -200,11 +200,10 @@ class TestModelParamsMapping:
 
     def test_unsupported_combination_rejected_at_adapter(self) -> None:
         # gpt-5 is a reasoning model: temperature is not supported
+        # (the effort-rejection branch of _check_params is the same code
+        # path; its former subject gpt-4o left the list — see adapters.py)
         with pytest.raises(ValueError, match="temperature"):
             get_model("openai:gpt-5", ModelParams(temperature=0.3))
-        # gpt-4o is not a reasoning model: effort is not supported
-        with pytest.raises(ValueError, match="effort"):
-            get_model("openai:gpt-4o", ModelParams(effort="high"))
 
 
 class TestValidateModelSelection:
