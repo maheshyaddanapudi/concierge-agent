@@ -6,6 +6,7 @@ the only surface the M38 proxy (and tests) touch. All strings inside the
 outcome are raw remote output: callers MUST fence them (app.a2a.fence)
 before they reach any model context."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
@@ -84,10 +85,16 @@ def build_message(
     )
 
 
-async def send_message(agent_id: UUID, message: Message) -> RemoteOutcome:
+async def send_message(
+    agent_id: UUID,
+    message: Message,
+    on_task: "Callable[[RemoteOutcome], Awaitable[None]] | None" = None,
+) -> RemoteOutcome:
     """Send and drain to the first settle point (terminal / input-required /
     stream end). Long-poll budgeting is the CALLER's job (asyncio.timeout) —
-    this port never sleeps on its own."""
+    this port never sleeps on its own. ``on_task`` fires once at the first
+    task observation so a caller whose budget expires mid-stream still knows
+    the remote task id (park path, spec §19.6)."""
     from app.a2a.manager import get_manager
 
     manager = get_manager()
@@ -95,6 +102,7 @@ async def send_message(agent_id: UUID, message: Message) -> RemoteOutcome:
         raise RuntimeError("A2A manager not running")
     client, _card = await manager.build_client(agent_id)
     last: RemoteOutcome | None = None
+    observed = False
     async for event in client.send_message(message):
         if isinstance(event, Message):
             # message-only reply — treat as an immediate completion
@@ -106,6 +114,9 @@ async def send_message(agent_id: UUID, message: Message) -> RemoteOutcome:
             )
         task, _update = event
         last = outcome_from_task(task)
+        if not observed and on_task is not None:
+            observed = True
+            await on_task(last)
         if last.state in _STOP_STATES:
             break
     return last or RemoteOutcome(state="unknown", text="", error="no response events")
@@ -119,10 +130,12 @@ async def send_text(
     task_id: str | None = None,
     context_id: str | None = None,
     skill_id: str | None = None,
+    on_task: "Callable[[RemoteOutcome], Awaitable[None]] | None" = None,
 ) -> RemoteOutcome:
     return await send_message(
         agent_id,
         build_message(text, data=data, task_id=task_id, context_id=context_id, skill_id=skill_id),
+        on_task=on_task,
     )
 
 

@@ -259,7 +259,10 @@ class A2AManager:
             card = AgentCard.model_validate(agent.card)
             credentials = dict(agent.credentials or {})
         service = AgentCredentialService(agent_id=str(agent_id), card=card, credentials=credentials)
-        config = ClientConfig(streaming=True, polling=True, httpx_client=self._http)
+        # streaming preferred; the factory falls back to blocking message/send
+        # for cards that don't declare streaming (polling=False — that flag
+        # would force blocking sends and starve early task events, §19.6)
+        config = ClientConfig(streaming=True, polling=False, httpx_client=self._http)
         client = ClientFactory(config).create(
             card, interceptors=[ConciergeAuthInterceptor(service)]
         )

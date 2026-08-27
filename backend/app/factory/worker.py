@@ -235,6 +235,10 @@ def _make_native_tool(row: dict[str, Any]) -> BaseTool | None:
 def materialize_tool(row: dict[str, Any]) -> BaseTool | None:
     if row["kind"] == "mcp":
         return _make_mcp_proxy(row)
+    if row["kind"] == "a2a":
+        from app.a2a.proxy import make_a2a_proxy
+
+        return make_a2a_proxy(row, sanitize_tool_name(row["tool_key"]))
     return _make_native_tool(row)
 
 

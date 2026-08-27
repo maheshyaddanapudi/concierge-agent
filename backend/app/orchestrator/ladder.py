@@ -300,10 +300,14 @@ async def run_direct_tool(
     if not tools:
         return {"status": "error", "error": f"tool {tool_id} is not active"}
     tool = tools[0]
+    from app.registry_cache import get_cache
+
+    records = await get_cache().tools_by_ids([UUID(tool_id)])
+    record_kind = records[0]["kind"] if records else "mcp"
     step_id = await ctx.recorder.start_step(
         "tool_call",
         tier="tool",
-        kind="mcp",
+        kind=record_kind,
         source="dynamic",
         entity_id=tool_id,
         entity_name=tool.name,
