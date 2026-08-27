@@ -42,7 +42,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 OAUTH_TOKEN = "stub-oauth-access-token"  # noqa: S105 - test fixture value
-PUBLIC_PATHS = ("/.well-known/agent-card.json", "/token", "/_control/add-skill")
+PUBLIC_PATHS = ("/.well-known/agent-card.json", "/token")
 
 
 def _text_of(context: RequestContext) -> str:
@@ -65,6 +65,33 @@ class ScriptedExecutor(AgentExecutor):
             await updater.add_artifact([Part(root=TextPart(text=f"stub-answered: {text}"))])
             await updater.complete()
             return
+        # forced mode (acceptance runner control): behavior set on the STUB, so
+        # a natural chat prompt exercises ask/slow paths without magic prefixes
+        mode = self.stub.forced_mode
+        if mode is not None:
+            kind = str(mode.get("kind"))
+            if kind == "ask":
+                await updater.requires_input(
+                    updater.new_agent_message(
+                        [Part(root=TextPart(text=str(mode.get("question") or "proceed?")))]
+                    )
+                )
+                return
+            if kind in ("slow", "slowask"):
+                self.stub.slow_started.set()
+                await asyncio.sleep(float(mode.get("delay") or 1))
+                if kind == "slowask":
+                    await updater.requires_input(
+                        updater.new_agent_message(
+                            [Part(root=TextPart(text=str(mode.get("question") or "proceed?")))]
+                        )
+                    )
+                else:
+                    await updater.add_artifact(
+                        [Part(root=TextPart(text=f"stub-slow-done: {text}"))]
+                    )
+                    await updater.complete()
+                return
         if text.startswith("ask:"):
             question = text[4:] or "what should I do?"
             await updater.requires_input(
@@ -128,6 +155,9 @@ class StubA2AServer:
     seen_auth: list[dict[str, Any]] = field(default_factory=list)
     cancelled_tasks: list[str] = field(default_factory=list)
     token_requests: int = 0
+    # when set, overrides the message-text script for NEW tasks:
+    # {"kind": "ask"|"slow"|"slowask", "question": str, "delay": float}
+    forced_mode: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.skills:
@@ -283,7 +313,13 @@ class StubA2AServer:
                 self.inner = inner
 
             async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-                if scope["type"] == "http" and scope["path"] not in PUBLIC_PATHS:
+                path = scope.get("path", "")
+                if (
+                    scope["type"] == "http"
+                    and path not in PUBLIC_PATHS
+                    # runner control endpoints are loopback test plumbing
+                    and not path.startswith("/_control/")
+                ):
                     request = Request(scope, receive)
                     if not stub._auth_ok(request):
                         response = JSONResponse({"detail": "unauthorized"}, status_code=401)
