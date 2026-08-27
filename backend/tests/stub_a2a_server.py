@@ -42,7 +42,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 OAUTH_TOKEN = "stub-oauth-access-token"  # noqa: S105 - test fixture value
-PUBLIC_PATHS = ("/.well-known/agent-card.json", "/token")
+PUBLIC_PATHS = ("/.well-known/agent-card.json", "/token", "/_control/add-skill")
 
 
 def _text_of(context: RequestContext) -> str:
@@ -112,6 +112,12 @@ class StubA2AServer:
     # None | 'apikey-header' | 'apikey-query' | 'apikey-cookie' | 'basic'
     # | 'bearer' | 'oauth2' | 'mtls-only' (declares an unsupported scheme)
     auth: str | None = None
+    # acceptance runs bind 0.0.0.0 and advertise the docker-bridge IP so the
+    # backend CONTAINER can reach a host-process counterparty; tests keep
+    # loopback defaults
+    bind_host: str = "127.0.0.1"
+    advertise_host: str = "127.0.0.1"
+    fixed_port: int = 0
     api_key: str = "stub-api-key"
     basic_user: str = "stub-user"
     basic_pass: str = "stub-pass"  # noqa: S105 - test fixture value
@@ -148,11 +154,11 @@ class StubA2AServer:
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/"
+        return f"http://{self.advertise_host}:{self.port}/"
 
     @property
     def card_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/.well-known/agent-card.json"
+        return f"http://{self.advertise_host}:{self.port}/.well-known/agent-card.json"
 
     def _security(self) -> tuple[dict[str, Any] | None, list[dict[str, list[str]]] | None]:
         match self.auth:
@@ -173,7 +179,7 @@ class StubA2AServer:
                     "type": "oauth2",
                     "flows": {
                         "clientCredentials": {
-                            "tokenUrl": f"http://127.0.0.1:{self.port}/token",
+                            "tokenUrl": f"http://{self.advertise_host}:{self.port}/token",
                             "scopes": {},
                         }
                     },
@@ -286,7 +292,11 @@ class StubA2AServer:
                 await self.inner(scope, receive, send)
 
         config = uvicorn.Config(
-            _AuthGate(app), host="127.0.0.1", port=0, log_level="warning", lifespan="off"
+            _AuthGate(app),
+            host=self.bind_host,
+            port=self.fixed_port,
+            log_level="warning",
+            lifespan="off",
         )
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve())
