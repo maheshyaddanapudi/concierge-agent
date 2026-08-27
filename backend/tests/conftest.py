@@ -67,6 +67,19 @@ def _reset_registry_cache() -> Iterator[None]:
     reset_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_sse_shutdown_flag() -> Iterator[None]:
+    """sse-starlette monkey-patches uvicorn.Server.handle_exit, so ANY
+    in-process uvicorn shutdown (the MCP http-transport tests run one) sets
+    AppStatus.should_exit process-wide and permanently — after which every
+    later EventSourceResponse drains instantly and SSE tests in OTHER files
+    return empty streams. Reset the leaked global after every test."""
+    yield
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.should_exit = False
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     async with get_session_factory()() as s:

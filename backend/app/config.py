@@ -23,6 +23,22 @@ class AppConfig(BaseSettings):
     redis_url: str | None = None  # optional registry-cache backend (spec §7.3)
     otel_exporter_otlp_endpoint: str | None = None
     workspace_dir: str = "/workspace"
+    # ambient delivery channels (spec §18.4) — env-only, like all secrets
+    smtp_host: str | None = None
+    smtp_port: int = 25
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_to: str | None = None
+    ambient_webhook_url: str | None = None
+    # custom OpenAI-compatible gateway (spec §18.7) — env-only, like all keys;
+    # the comma-separated model list is env too (sync list_models() contract)
+    custom_gateway_base_url: str | None = None
+    custom_gateway_api_key: str | None = None
+    custom_gateway_models: str | None = None
+    # §18.8 auth & tenancy — dark by default: off ⇒ byte-identical
+    auth_enabled: bool = False
+    frontend_origin: str | None = None  # CORS pin when auth is on
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

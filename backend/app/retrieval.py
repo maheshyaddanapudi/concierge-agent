@@ -155,6 +155,38 @@ async def _query_vector(query: str) -> list[float] | None:
     return vec
 
 
+def apply_ambient_allowlist(
+    records: list[dict[str, Any]], *, kind: str
+) -> list[dict[str, Any]]:
+    """Narrowed registry projection for ambient runs (spec §17.4): a routine
+    with an allowlist sees only the named entries of each mentioned kind —
+    by id, name, or tool_key. Applied BEFORE ranking and regardless of the
+    retrieval settings; a kind the allowlist does not mention is unchanged.
+    Identity for every non-ambient run."""
+    from app.orchestrator.context import get_run_context
+
+    ctx = get_run_context()
+    if ctx is None or ctx.ambient_allowlist is None:
+        return records
+    allowed = ctx.ambient_allowlist.get(kind)
+    if allowed is None:
+        return records
+    allowed_set = {str(a) for a in allowed}
+    kept = [
+        r
+        for r in records
+        if {str(r.get("id")), str(r.get("name")), str(r.get("tool_key"))} & allowed_set
+    ]
+    if len(kept) != len(records):
+        logger.info(
+            "ambient_allowlist_narrowed",
+            kind=kind,
+            total=len(records),
+            shown=len(kept),
+        )
+    return kept
+
+
 async def apply_retrieval(
     records: list[dict[str, Any]],
     *,

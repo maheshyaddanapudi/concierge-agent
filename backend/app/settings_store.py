@@ -61,6 +61,25 @@ DEFAULTS: dict[str, Any] = {
     "memory_half_life_days": 30.0,
     "memory_idle_minutes": 10,
     "memory_digest_compact_days": 14,
+    # §18.6 community breadth: its own budget line; 0 disables the section
+    "memory_community_budget_tokens": 150,
+    # §17 ambient keys — dark by default
+    "ambient_enabled": False,
+    "ambient_max_routines": 10,
+    "ambient_runs_per_day": 50,
+    "ambient_routine_events_per_hour": 20,
+    "ambient_idle_minutes": 10,
+    "ambient_hitl_timeout_h": 24,
+    "ambient_digest_times": ["09:00", "17:00"],
+    "ambient_notification_budget_per_day": 3,
+    "ambient_quiet_hours": ["22:00", "07:00"],
+    "ambient_interrupt_threshold": 4,
+    "ambient_wakeups_per_routine_per_day": 100,
+    "ambient_escalation_budget_per_day": 10,
+    "ambient_learning_mode": "off",
+    # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
+    # empty ⇒ in-app only, byte-identical to M23–M25
+    "ambient_channels": {},
 }
 
 _MODEL_KEYS = {
@@ -90,6 +109,15 @@ _INT_KEYS = {
     "memory_recall_top_k",
     "memory_idle_minutes",
     "memory_digest_compact_days",
+    "ambient_max_routines",
+    "ambient_runs_per_day",
+    "ambient_routine_events_per_hour",
+    "ambient_idle_minutes",
+    "ambient_hitl_timeout_h",
+    "ambient_notification_budget_per_day",
+    "ambient_interrupt_threshold",
+    "ambient_wakeups_per_routine_per_day",
+    "ambient_escalation_budget_per_day",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -102,6 +130,7 @@ _BOOL_KEYS = {
     "memory_extraction_enabled",
     "memory_reflection_enabled",
     "procedural_learning_enabled",
+    "ambient_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
@@ -197,10 +226,48 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
         ):
             errors.append("memory_score_floor must be a number between 0 and 1")
+        elif key == "ambient_learning_mode" and value not in {"off", "auto", "propose"}:
+            errors.append("ambient_learning_mode must be one of: off, auto, propose")
+        elif key == "ambient_channels":
+            from app.ambient.channels import DELIVERY_MODES, registered_channels
+
+            if not isinstance(value, dict):
+                errors.append("ambient_channels must be an object of mode → channel list")
+            else:
+                known = registered_channels()
+                for mode, chans in value.items():
+                    if mode not in DELIVERY_MODES:
+                        errors.append(
+                            f"ambient_channels: unknown mode {mode!r} "
+                            f"(expected one of {sorted(DELIVERY_MODES)})"
+                        )
+                    elif not isinstance(chans, list) or not all(
+                        isinstance(c, str) for c in chans
+                    ):
+                        errors.append(f"ambient_channels[{mode!r}] must be a list of strings")
+                    else:
+                        unknown = set(chans) - known
+                        if unknown:
+                            errors.append(
+                                f"ambient_channels[{mode!r}]: unknown channel(s) "
+                                f"{sorted(unknown)} — registered: {sorted(known)}"
+                            )
+        elif key in {"ambient_digest_times", "ambient_quiet_hours"}:
+            import re as _re
+
+            ok = isinstance(value, list) and all(
+                isinstance(v, str) and _re.fullmatch(r"[0-2]\d:[0-5]\d", v) for v in value
+            )
+            if not ok:
+                errors.append(f"{key} must be a list of HH:MM strings")
         elif key == "memory_half_life_days" and (
             not isinstance(value, int | float) or float(value) <= 0
         ):
             errors.append("memory_half_life_days must be a positive number")
+        elif key == "memory_community_budget_tokens" and (
+            not isinstance(value, int) or value < 0
+        ):
+            errors.append("memory_community_budget_tokens must be an integer ≥ 0 (0 disables)")
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):

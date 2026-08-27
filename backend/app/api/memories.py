@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 
 from app.api.deps import SessionDep
+from app.auth import owns_row
 from app.memory import MemoryWriteError, hard_delete, recall, remember, supersede
 from app.memory.store import list_memories
 from app.models import Memory, MemoryEmbedding
@@ -112,7 +113,7 @@ async def recall_endpoint(
 @router.get("/{memory_id}", response_model=MemoryOut)
 async def get_one(memory_id: UUID, session: SessionDep) -> Memory:
     row = await session.get(Memory, memory_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "memory not found")
     return row
 
@@ -149,7 +150,7 @@ async def create(body: MemoryCreate) -> Memory:
 @router.patch("/{memory_id}", response_model=MemoryOut)
 async def patch(memory_id: UUID, body: MemoryPatch, session: SessionDep) -> Memory:
     row = await session.get(Memory, memory_id)
-    if row is None:
+    if row is None or not owns_row(row):
         raise HTTPException(404, "memory not found")
 
     # edit-as-supersede: text changes never mutate history (spec §16.1)

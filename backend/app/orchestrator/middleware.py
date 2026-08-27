@@ -153,7 +153,7 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
     async def _resolve(self) -> list[BaseTool]:
         from app.factory.worker import materialize_tool, sanitize_tool_name
         from app.registry_cache import get_cache
-        from app.retrieval import apply_retrieval
+        from app.retrieval import apply_ambient_allowlist, apply_retrieval
 
         mode = self._effective_mode()
         cache = get_cache()
@@ -161,6 +161,9 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             records = await cache.tools_by_ids([UUID(t) for t in self._scoped_tool_ids])
         else:
             records = await cache.tools(exposed_only=mode == "exposed")
+            # §17.4: the ambient allowlist narrows even the full-catalog
+            # escape hatch — scoped loops stay pinned contracts
+            records = apply_ambient_allowlist(records, kind="tools")
             if mode == "exposed":
                 # progressive disclosure (spec §7.4) applies to the orchestrator
                 # catalog only — scoped loops are pinned contracts, full-catalog
@@ -278,10 +281,11 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
     async def _snapshots(self) -> tuple[list[dict[str, Any]], int]:
         """Returns (snapshots, total-before-retrieval) for the catalog footer."""
         from app.registry_cache import get_cache
-        from app.retrieval import apply_retrieval
+        from app.retrieval import apply_ambient_allowlist, apply_retrieval
 
         full = self._effective_full()
         records = await get_cache().skills(exposed_only=not full)
+        records = apply_ambient_allowlist(records, kind="skills")
         total = len(records)
         if not full:
             records, _dropped = await apply_retrieval(records, kind="skills")
@@ -392,9 +396,10 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
 
     async def _cards(self) -> list[dict[str, Any]]:
         from app.registry_cache import get_cache
-        from app.retrieval import apply_retrieval
+        from app.retrieval import apply_ambient_allowlist, apply_retrieval
 
         cards = await get_cache().sub_agent_cards()
+        cards = apply_ambient_allowlist(cards, kind="sub_agents")
         cards, _dropped = await apply_retrieval(cards, kind="sub_agents")
         return cards
 

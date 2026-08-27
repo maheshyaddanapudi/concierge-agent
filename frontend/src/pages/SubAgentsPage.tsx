@@ -186,6 +186,7 @@ export function WorkflowPreview({ workflow }: { workflow: Workflow }) {
 function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => void }) {
   const { data: skills = [] } = useSkills()
   const invalidate = useInvalidate()
+  const navigate = useNavigate()
   const activeSkills = skills.filter((s) => s.status === 'active' && !s.deleted_at)
   const [name, setName] = useState(agent?.name ?? '')
   const [description, setDescription] = useState(agent?.description ?? '')
@@ -543,6 +544,11 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
           <span />
         )}
         <div className="flex gap-2">
+          {agent && (
+            <Button variant="ghost" onClick={() => navigate(`/evals?target=${agent.id}`)}>
+              Evals →
+            </Button>
+          )}
           {agent && <Button onClick={validate}>Validate (dry-run compile)</Button>}
           {!isStatic && (
             <Button variant="primary" onClick={save} disabled={!name}>

@@ -13,7 +13,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 from app.config import get_config
 
@@ -60,6 +60,16 @@ MEMORY_INJECTED_TOKENS = Histogram(
     "concierge_memory_injected_tokens", "Tokens injected from memory", ["surface"]
 )
 MEMORY_RECALL_SECONDS = Histogram("concierge_memory_recall_seconds", "Memory recall latency")
+# ambient mode (spec §17.6)
+AMBIENT_OPS = Counter("concierge_ambient_ops_total", "Ambient operations", ["kind", "status"])
+# §18.1: real token cost of tier-2 significance judgments
+AMBIENT_JUDGE_TOKENS = Counter(
+    "concierge_ambient_judge_tokens_total", "Ambient judge token usage", ["direction"]
+)
+# §18.9: 1 while this replica holds the ambient-tick leader lease
+AMBIENT_LEADER = Gauge(
+    "concierge_ambient_leader", "1 when this replica leads the ambient tick"
+)
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

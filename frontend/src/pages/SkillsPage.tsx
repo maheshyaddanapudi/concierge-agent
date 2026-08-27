@@ -202,6 +202,7 @@ function SkillEditor({
 }) {
   const { data: tools = [] } = useTools()
   const invalidate = useInvalidate()
+  const navigate = useNavigate()
   const [name, setName] = useState(skill?.name ?? '')
   const [description, setDescription] = useState(skill?.description ?? '')
   const [persona, setPersona] = useState(skill?.persona ?? '')
@@ -388,6 +389,13 @@ function SkillEditor({
         </div>
       </Field>
       <ErrorNote error={error} />
+      {isStatic && skill && (
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={() => navigate(`/evals?target=${skill.id}`)}>
+            Evals →
+          </Button>
+        </div>
+      )}
       {!isStatic && (
         <div className="flex justify-between">
           {skill ? (
@@ -409,9 +417,16 @@ function SkillEditor({
           ) : (
             <span />
           )}
-          <Button variant="primary" onClick={save} disabled={!name}>
-            {skill ? 'Save skill' : 'Create skill'}
-          </Button>
+          <span className="flex gap-2">
+            {skill && (
+              <Button variant="ghost" onClick={() => navigate(`/evals?target=${skill.id}`)}>
+                Evals →
+              </Button>
+            )}
+            <Button variant="primary" onClick={save} disabled={!name}>
+              {skill ? 'Save skill' : 'Create skill'}
+            </Button>
+          </span>
         </div>
       )}
     </div>

@@ -13,7 +13,7 @@ Orchestrator (planner + parallel dispatch)
 
 Every tier is backed by a registry with two write paths (static seed at startup, dynamic via admin UI) and one read path (the orchestrator reads registries only — it never distinguishes origin). Success criterion: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app.
 
-Non-goals: authentication/authorization (assumed safe), multi-tenancy, production hardening, rate limiting, secrets management beyond env vars.
+Non-goals *as originally scoped*: authentication/authorization, multi-tenancy, production hardening, rate limiting. **Promoted to in-scope by §18.8 (M34, dark by default)** — with `auth_enabled=false` (the default) the original single-user behavior is byte-identical. Secrets management stays env-only throughout; that non-goal stands.
 
 ## 2. Stack
 
@@ -137,7 +137,7 @@ Rules:
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
 
 ## 4. Registry API
 
@@ -336,6 +336,17 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 - Layer status: per-table counters, last-consolidation timestamps per job, and the eval axes (injected tokens, recall latency, store growth).
 - Every control maps to the §16 API; the page renders only when `memory_enabled` is on.
 
+### 8.9 Ambient (§17)
+
+Four tabs: **Routines** (CRUD, trigger editor with the filter-operator set,
+fire-token lifecycle, per-routine run history + auto-pause reasons),
+**Watches** (standing intents: original text + compiled rule echo, watermark,
+cadence/backoff state, expiry), **Inbox** (Notify · Question · Review items,
+digest preview, approval batch ranked by risk), **Ledger** (fire/hold audit
+with reasons, correlation-chain view for patterns, intervention-precision
+sparkline per category). Chat composer gains nothing — ambient never changes
+the interactive surface when dark. The page renders only when `ambient_enabled` is on.
+
 ## 9. Seed Data (static)
 
 Loaded idempotently at startup, all `source=static`:
@@ -383,12 +394,30 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M16 | Procedural learning (§16.5): routing stats, plan exemplars with vote lifecycle, planner few-shot block, fallback mining → `.skill.md` proposals through doclint + overlap judge | Measured drop in stage-30 fallback rate |
 | M17 | Consolidation + evals (§16.2/16.9): decay sweep, reflection, contradiction sweep, memory probe suite + ablation experiment harness (per-layer configs vs memory-off baseline, measuring accuracy/tokens/latency) | The memory experiment: which layers earn their keep |
 | M18 | Closed-loop refinement (§16.7): citation feedback (cited-vs-injected reinforcement), digest compaction (period digests, bounded episodic store), entity-hop recall + multi-hop probe, long-horizon time-warp simulation | Sharpen the winning layers with measured feedback |
+| M19 | OpenRouter gateway adapter (§2.1 custom-gateway scenario) + cross-provider retest matrix | Provider portability, measured |
+| M20 | Ambient substrate: all tables + migration, settings, webhook endpoint + token lifecycle, NOTIFY-wake drain, **real idle detector + presence states**, run `trigger`/`last_heartbeat_at`, byte-identity when dark | §14c-27; curl-able fire |
+| M21 | Trigger + decision planes: schedules with stagger, adaptive pollers, state conditions, internal events, three-tier gate + fire/hold ledger, caps/drops/auto-pause, **CEP-lite (sequence/conjunction/absence) with all four chaining guards** | scripted-event harness: tier precision, absence-timer slop, cascade guards |
+| M22 | Execution plane: routines end-to-end (both orchestrators, narrowed projection, budgets, abstain, progress monitor), standing intents (compile-echo-confirm → evaluate → fire), **agent wakeups with clamps/caps/done-guard**, watchdog + orphan rescue, HITL timeout semantics | §14c-20..25 |
+| M23 | Delivery plane + §8.9 UI: outbox tiers, digest builder + return-flush + supersede-collapse, budgets/quiet hours, approval batching, **feedback capture + reward computation substrate** (blended reward persisted per delivery), rule-based precision auto-downgrade; anticipation job with hit-rate metric | §14c-26 + stage-3x UI evidence campaign |
+| M24 | Ambient evals: simulated-clock event harness (fire/hold Set-F1 + false alarms, reaction time, cost) across gate ablations and delivery policies incl. cascade stress; multi-day live soak; experiment report | 07-style results doc |
+| M25 | Adaptive policy learning (§17.7): bandit learner over the M23 reward substrate — digest-time shifting + category auto-tiering, **auto mode first-class (no approval), propose mode optional**, clamps, ledgered revertible changes; measured against static policy on the M24 harness | learning-on ≥ static policy on intervention precision; zero learner-caused tier-0 escalations |
+| M26 | Ambient completeness pack (§18.1): per-routine `model_ref` honored at execution; near-due poller tightening; escalation-budget enforcement on digest approvals; per-item anticipation deliveries; learner threshold recovery; multi-time digest shifting; judge token accounting via `usage_metadata` | every §17 sentence has running code behind it |
+| M27 | Memory context pack (§18.2): routine `include_memories` + persistent per-routine conversation (cross-fire continuity); `project` memory scope end-to-end; remembered-context block in the graph aggregator | a routine's second fire demonstrably knows its first |
+| M28 | Real trigger sources (§18.3): parameterized poll-source contract; native `http_json` / `rss` / `mcp_tool` sources + native state probes, boot-registered; watch compiler lists live sources | §14c-29 |
+| M29 | Delivery channels (§18.4): channel adapter registry — email (SMTP, env-configured) + generic webhook push (SMS-gateway-shaped); per-tier channel routing setting; per-channel send ledger; global ambient SSE stream + in-app tier-0/1 toast | §14c-30: a digest lands in a real inbox |
+| M30 | Ambient UI completeness (§18.5): typed trigger/filter builder, ledger correlation-chain view + precision sparklines, per-routine run history, watch authoring (compile-echo-confirm from the page) | stage-4x UI evidence campaign |
+| M31 | Memory communities (§18.6): label-propagation communities over entity links as a consolidation job; generative community summaries; community-aware recall breadth | multi-entity probe answered via a community summary |
+| M32 | Evals feature (§15, promoted to in-scope): dataset upload (csv/xlsx), batch runner over skills + sub agents with `eval=true` labels and HITL auto-approve, graders (exact/contains/LLM-judge), results UI, LangSmith publish when configured | §14c-31 |
+| M33 | Custom gateway adapter (§18.7): `custom` provider — OpenAI-compatible, env base-url/key, model list from a validated setting; proves the §2.1 seam with zero consumer changes | adapter contract suite green + live call through the port |
+| M34 | Auth & tenancy (§18.8, dark by default): `auth_enabled` master switch; users + scrypt + bearer sessions + `admin\|member` roles; per-user scoping of conversations/runs/routines/watches/deliveries/presence; login UI; bootstrap admin; basic rate limiting | byte-identity with auth off; two users can't see each other's work |
+| M35 | Multi-replica coordination (§18.9): advisory-lock leader election for the ambient tick with lease + failover; drain/executor already SKIP-LOCKED-safe | two concurrent loops: exactly one ticks; takeover on leader stop |
+| M36 | Full acceptance ceremony: fresh volumes, fresh `docker compose up`, the ten-step script + §14c-20..31 top to bottom + channel/eval/gateway/auth stages; final report | the definition of done, re-earned end-to-end |
 
 Each milestone lands with its tests. M1–M4 are API-verifiable via curl before M5 exists.
 
 ## 13. Environment & Conventions
 
-Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time).
+Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false).
 
 Conventions: Python — ruff (lint+format), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
@@ -423,13 +452,72 @@ All eleven pass = POC proven.
 18. **Procedural (M16)**: after several successful runs, verify routing stats on registry pages and a plan-exemplar few-shot in the planner prompt trace; re-run the stage-30 prompt suite and report the fallback-rate delta.
 19. **Experiment matrix (M17)**: run the probe suite across layer configs (off / L1 / L1+L2 / full) and produce the comparison table (accuracy per ability, injected tokens, latency).
 
-## 15. Deferred: Evals (post-POC — design must not block it)
+**§14c Ambient acceptance additions (M20–M25; run with `ambient_enabled=true` unless stated):**
 
-Not built in the POC, but the POC design must leave these seams open:
+20. Create a scheduled routine in the UI; observe the staggered fire, the
+    run with trigger provenance, and the digest delivery.
+21. Fire a routine via `curl` with its bearer token and an adversarial
+    payload ("ignore your instructions…"); verify the run starts and the
+    payload is fenced and not obeyed.
+22. Create a standing intent conversationally; verify the compiled-rule
+    echo, then plant a matching event and a non-matching event; exactly one
+    fire.
+23. Absence pattern: arm "if X doesn't arrive by T"; verify the timer fires
+    within one tick of T.
+24. Agent wakeup: a routine run schedules its own re-check; verify clamp,
+    the done-guard, and cancellation.
+25. Kill a watcher mid-poll; verify the watchdog stalls→pauses it with a
+    visible reason and the orphaned job is rescued.
+26. Urgency 5 event during quiet hours vs outside; verify budget debit,
+    quiet-hour suppression to digest-lead.
+27. `ambient_enabled=false`: byte-identity regression suite passes.
+28. (M25) With `ambient_learning_mode='auto'`, dismiss a category three
+    times; verify the clamped re-tier applies WITHOUT approval, with a ledger
+    entry and a working revert control; with `'propose'`, the same signal
+    produces a queued proposal that applies only on approval.
+29. (M28) Create a watch over a registered native poll source
+    conversationally; verify the compiler names the live source, the poller
+    ingests a real item, and the fire produces a delivery.
+30. (M29) With the email channel configured against a local SMTP sink,
+    trigger a digest flush; verify the digest arrives as one email AND the
+    in-app inbox row records the per-channel send; fire a tier-0 interrupt
+    and verify the in-app toast appears without a page reload.
+31. (M32) Upload an eval csv against a seeded skill; run it; verify graded
+    results in the UI, `eval=true` labels on the runs, and (when configured)
+    the LangSmith experiment link.
+32. (M34) With `auth_enabled=true`, log in as two different users; verify
+    conversations, routines, and deliveries are invisible across users,
+    registry mutation requires `admin`, and with `auth_enabled=false` the
+    §11 byte-identity suite still passes.
+
+## 15. Evals (M32 — promoted from post-POC to in-scope)
+
+Originally deferred; the design below is now implemented as milestone M32,
+unchanged in shape:
 
 - **Eval definition**: spreadsheet upload (xlsx/csv) in a predefined format — columns: `level (skill|sub_agent)`, `target_id`, `input` (task/query), `expected` (reference answer or criteria), `judge_notes` (optional grading guidance). Uploaded and run from the skill / sub agent detail pages.
 - **Harness = existing machinery**: skill-level evals run the target as a single-skill ephemeral worker (the rung-4 factory path, unchanged); sub-agent-level evals invoke the full compiled agent. Config snapshots make every eval row reproducible against the exact definition evaluated; eval runs are ordinary runs tagged `eval=true` in the §10 label set, HITL nodes auto-approved in eval mode.
 - **Results publishing**: to LangSmith — local instance or remote. Endpoint and enable-toggle via `app_settings` (`langsmith_enabled`, endpoint key); **API key stays env-only** (`LANGSMITH_API_KEY`), consistent with the no-keys-in-DB/UI rule, even when the user supplies a remote key. With LangSmith disabled, eval runs are still fully recorded in Postgres run traces and structured logs — only the dataset/experiment publishing step is skipped.
+- **Invocation is admin-direct, not planner-routed**: the eval runner
+  builds the target worker directly by registry id (the same compile path
+  §4's save-time validation uses) or invokes the sub agent directly (§7.5
+  machinery). The §7.1 rung-4 "exposed skills only" rule governs
+  planner-initiated composition and does not gate admin-initiated eval
+  runs — hidden skills are evaluable.
+- **Graders**: per-case `grader ('exact'|'contains'|'llm_judge', default
+  'llm_judge')`. `exact` = normalized string equality; `contains` =
+  case-insensitive substring; `llm_judge` = one structured call on the
+  extraction-model role returning `{passed: bool, score: 0..1, reason}`,
+  with `judge_notes` injected as grading guidance. Judge failure grades
+  the case `error`, never silently passes.
+- **Storage + surfaces**: `eval_datasets` (id, name, level, target_id,
+  created_at), `eval_cases` (dataset_id, input, expected, judge_notes,
+  grader), `eval_runs` (dataset_id, status, config snapshot, totals,
+  langsmith_url nullable), `eval_results` (eval_run_id, case_id, run_id,
+  passed, score, grader_reason). Alembic migration per schema change, as
+  everywhere. UI: an Evals page (upload csv/xlsx, run, per-case results
+  table with pass/fail chips and grader reasons) plus a launcher on the
+  skill / sub agent detail drawers.
 - **Why the POC already supports this**: the factory builds arbitrary single-skill workers, snapshots freeze configs, settings hot-reload, and the trace label set carries tier/kind/entity — the eval feature is an upload parser, a batch runner, and a publisher. No schema or architecture change anticipated.
 
 ## 16. Memory Layers
@@ -474,3 +562,368 @@ Measured follow-ups from the M17 experiment (`docs/research/memory/07-experiment
 
 **Long-horizon simulation.** A deterministic time-warp experiment (`experiments/memory/longhorizon.py`) seeds a ~90-day backdated store and drives the decay, reflection, contradiction, and compaction jobs directly, asserting the equilibrium: untouched low-importance rows expire, rehearsed rows survive, pinned rows are immune, the episodic store stays bounded, reflection insights cite evidence. Results append to research doc 07.
 
+## 17. Ambient Mode
+
+Design rationale, evidence, and alternatives: `docs/research/ambient/` (research suite, 2026-08-25; sign-off decisions recorded in doc 06).
+
+### 17.0 Principles
+
+Ambient mode is an **initiation-and-governance mode, not an agent type**: the
+same registries, orchestrators, and run/step ledger execute all ambient work;
+what changes is who starts a run (a trigger, not a chat message) and the
+envelope it runs in (narrowed capability projection, budgets, autonomy
+ceiling, delivery policy). Principles carried from §16: **dark by default**
+(`ambient_enabled=false` ⇒ byte-identical); **registry citizenship** (ambient
+tools/routines behind the same exposure discipline); **deterministic code at
+the boundaries** (typed triggers, clamps, caps, timers) with the LLM only
+inside framed judgments (significance, rule compilation, content); **the
+action gate is the security boundary** (event payloads are untrusted input;
+they may start runs, never steer them); **no new services**; **§7.0
+middleware precedence untouched** (ambient logic lives in schedulers, stores,
+and prompt assembly). Ambient work spans **any registry capability** —
+consolidation is one job class, not the mode.
+
+### 17.1 Storage
+
+Tables (Alembic, one migration): `ambient_events` (append-only: kind, source
+('schedule'|'webhook'|'poll'|'internal'|'wakeup'|'presence'|'pattern'|'manual'),
+payload jsonb UNTRUSTED, dedupe_key, occurred_at, causation_id, correlation_id,
+depth smallint default 0, verdict ('fired'|'held'|'expired'|'dropped'),
+verdict_reason, routine_id?, intent_id?), `routines` (trusted prompt, triggers
+jsonb, capability allowlist as registry refs, model_ref?, autonomy
+('propose'|'act_reversible'), budgets jsonb, fire_token_hash, stagger_offset_s,
+status, consecutive_failures, last_fired_at), `standing_intents` (text,
+condition_type ('event'|'state'|'time'), compiled jsonb, semantic_predicate?,
+window jsonb, watermark, cadence_s, current_interval_s + backoff columns,
+expires_at, budget jsonb, delivery pref, status), `ambient_wakeups` (run_id?,
+routine_id?, due_at, reason, payload jsonb, created_by
+('agent'|'system'|'user'), status ('pending'|'fired'|'cancelled')),
+`pattern_instances` (rule ref, partition_key, state
+('armed'|'matched'|'expired'), a_event_id, deadline_at; unique armed instance
+per rule+key), `deliveries` (run_id?, intent_id?, category, tier smallint
+0=interrupt/1=notify/2=digest/3=silent, urgency 1-5, title, body,
+deliver_no_later_than, delivered_at?, channel?, superseded_by?, feedback
+('accepted'|'dismissed'|'ignored')?), `user_presence` (state
+('active'|'idle'|'away'|'offline'), last_activity_at, last_heartbeat_at,
+visible, updated_at). `runs` gains `trigger jsonb` provenance and
+`last_heartbeat_at` (liveness). Invariants: events append-only; routine
+definitions immutable for static seeds (status/exposure toggles only, §4
+discipline); fire tokens stored hashed, shown once.
+
+### 17.2 Trigger plane
+
+The closed, typed taxonomy (doc 05 FR-T1..T11): schedules (cron/interval/
+one-shot, stored UTC, per-routine stagger), webhook fires
+(`POST /api/v1/routines/{id}/fire`, per-routine revocable bearer token,
+payload always untrusted-fenced at prompt time), pollers (cursor + lookback +
+early termination over MCP/native sources, **adaptive cadence**: on quiet
+`current = min(current × 1.5, 3600s)`, reset to base 300s on activity;
+near-due timers tighten the interval), internal platform events, state
+conditions (evaluated on the tick; **state ≠ event at the schema level**),
+presence events (idle/returned edges), **agent wakeups** (17.4), manual
+fires, NOTIFY pings, MCP subscriptions where available, and composite
+patterns (17.3a). Ingestion never blocks a request path; `NOTIFY` is a
+wake-up ping only — the drain reads `ambient_events` with `FOR UPDATE SKIP
+LOCKED`; the 60s tick sweeps missed pings.
+
+### 17.3 Decision plane
+
+Three tiers strictly ordered by cost: (1) typed matchers — field operators
+(equals/contains/starts_with/one_of/regex), event-vs-state semantics, dedupe,
+rate caps (per-routine hourly; excess **dropped and counted**, never queued);
+(2) significance judge — one structured-output call, defaulting to the
+extraction-model role with a per-intent model override for high-stakes
+watches; returns
+`{significant, urgency 1-5, reason}`; failure ⇒ **held** (silence default);
+(3) the run. Every decision writes a fire/hold record `{value, urgency,
+attention_state, decision, reason}`. **No LLM call per raw event, ever**
+(evidence: doc 03 rule 2). Intervention precision per category is computed
+from delivery feedback and surfaces in the UI; persistently low precision
+auto-downgrades the category one tier.
+
+#### 17.3a Composite patterns (CEP-lite)
+
+Exactly three composite kinds — `sequence` (A then B within T), `conjunction`
+(A and B within T), `absence` (A without B by T) — as `pattern_instances`
+keyed by partition. **Absence is a timer, not a query**: arming inserts an
+instance with `deadline_at`; the tick fires expired armed instances (≤60s
+slop). Chaining guards, all four: derived events carry
+`causation_id/correlation_id/depth`; `depth ≥ 4` rejected; a rule never fires
+if its own id appears in its causation chain (**no self-trigger**); kill
+switch at 50 fires/rule/hour (auto-disable + ledger + notification); per
+(rule, partition) cooldown default 300s. Routines may not wake themselves
+except via the capped wakeup tool.
+
+### 17.4 Execution plane
+
+A fire creates an **ordinary run** (either orchestrator mode) with `trigger`
+provenance, the routine's narrowed registry projection, per-run budgets
+(max steps/tokens/wall-clock/side-effects) enforced by the runner, a
+tokens-without-progress monitor, and the **abstain instruction** — the
+abstained outcome is a first-class result. Autonomy: `propose` (default —
+consequential output queues for review) and `act_reversible` (irreversible
+action classes still gate). Ambient HITL pauses expire gracefully after
+`ambient_hitl_timeout_h` — the question rides the digest, the checkpoint
+stays resumable from the inbox.
+
+**Heartbeats, three senses** (doc 05 D3): the 60s advisory-locked tick (H1,
+exists); **agent-scheduled wakeups** (H2) via native tools
+`ambient.wakeup(delay_or_at, reason)` and `ambient.cancel_wakeup(id)` —
+platform clamps delays to [60s, 24h], caps 5 pending + 100/day per routine,
+and applies a done-guard at fire time (the routine's last run superseding the
+reason ⇒ wakeup expires); on tool failure inside an ambient run the runner
+schedules one immediate self-wake with the error in context (Letta pattern)
+instead of dying silently; **liveness watchdog** (H3) — ambient runs and
+watchers refresh `last_heartbeat_at` each tick; the reaper marks rows stale
+past 5 min (3–5× cadence) as `stalled`, auto-pauses the owning routine with a
+visible reason, and rescues or fails the orphaned work.
+
+**Standing intents** compile once at creation (NL → typed rule via the LLM,
+interpretation echoed back for confirmation) and are evaluated by the
+scheduler on their cadence — never remembered in model context (doc 03
+rule 6). **Idle work**: the real idle detector (no active runs + no chat for
+`ambient_idle_minutes`) triggers consolidation, plus the anticipation job —
+predict likely next asks from episodic memory + intents, pre-compute
+briefing material, record per-item used/unused, self-prune below the
+hit-rate floor.
+
+### 17.5 Delivery plane
+
+All ambient output flows through the `deliveries` outbox with four tiers:
+**0 interrupt** (immediate regardless of presence; reserved for run-blocking
+gates and hard failures; debited from `ambient_notification_budget_per_day`,
+default 3; over budget ⇒ leads next digest), **1 notify** (flush on the next
+user-returned edge, bounded deferral `deliver_no_later_than = created + 30
+min` enforced by the tick — Horvitz bounded deferral), **2 digest** (default;
+flushed at `ambient_digest_times`, default 2/day, and on return from absence
+> 1h as one collapsed "while you were away" card stack; micro-absences < 5
+min flush tier 1 only), **3 silent** (ledger only — silence is an explicit,
+logged decision). `superseded_by` collapses stale items. Quiet hours
+absolute. Agents must justify tier ≤ 1 in the run record; the default is
+digest (the Gmail-nudge bias: conservative keeps trust). Presence comes from
+the client (visibility + throttled activity + 30s heartbeat with immediate
+beat on foreground): active / idle (5–30 min) / away / offline (>30 min);
+the away→active edge emits `user_returned` into the event stream.
+Approvals batch into the digest ranked by risk under a daily escalation
+budget. Feedback (accepted/dismissed/ignored) is captured per item.
+
+### 17.6 Governance, observability, evaluation
+
+Master switch + caps as validated settings (below); `consecutive_failures ≥
+3` auto-pauses a routine with reason; run-status honesty distinguishes
+infrastructure success / task success / did-something, and "why did my
+routine do nothing?" resolves from ledger + fire/hold records. Trust labels
+end-to-end; consolidation promotions screened for secrets/PII. §10 gains
+tier `ambient`, kinds {ingest, match, judge, fire, hold, wakeup, pattern,
+deliver, digest, expire, stall, pause}; counters and histograms per plane;
+no payload content in logs. §11 gains: byte-identity with ambient off,
+clamp/cap/guard enforcement, absence-timer semantics, watchdog rescue,
+tier/budget delivery policy, untrusted-payload fencing. Evaluation: a
+simulated-clock scripted-event harness (`experiments/ambient/`) scoring
+fire/hold Set-F1 with false-alarm accounting, reaction time, and token cost
+per configuration, plus a live multi-day soak.
+
+### 17.7 Adaptive policy learning (M25)
+
+The delivery feedback substrate (accepted/dismissed/ignored per item, doc 05
+FR-V4) feeds a bandit-style learner that proposes policy adjustments:
+shifting `ambient_digest_times` toward observed acceptance windows,
+re-tiering categories (a chronically dismissed interrupt category down; a
+consistently accepted digest category up), and tuning per-intent judge
+thresholds. Governed by `ambient_learning_mode`: `off` (default — collect
+only, dark-by-default discipline), `auto` (**the primary mode**: adjustments
+apply immediately with no approval step, within hard clamps — digest times
+move ≤ 2h from configured, tiers move one step at a time, never into tier 0
+— every change ledgered and one-click revertible), `propose` (optional
+cautious mode: each adjustment lands in the review queue and activates on
+approval — the §16.2 quarantine pattern). Both modes are fully implemented;
+auto is not gated behind propose. The reward
+is a blend: acceptance + downstream usefulness (the delivered item's run/
+memory was later referenced) − explicit-dismissal penalty, with a
+repetition-decay term (recovering-bandit shape); pure acceptance optimization
+is forbidden by construction. Learner runs as a consolidation-class job;
+byte-identical when `off`.
+
+
+## 18. Completion Wave (M26–M36)
+
+Everything the M13–M25 campaigns consciously deferred, promoted to
+in-scope. Discipline unchanged: dark-by-default for anything that changes
+observable behavior, registry citizenship, env-only secrets, no new compose
+services, tests first, live milestone proofs on a real model. Every schema
+change in this section lands with its own Alembic migration (§13), named
+in the milestone that introduces it.
+
+### 18.1 Ambient completeness (M26)
+
+- **Per-routine model**: `routines.model_ref` (exists since M20) is honored
+  at execution — `prepare_run` copies it into `trigger.model_ref`; the
+  runner overlays it onto the settings snapshot's `default_model` for that
+  run only. Validated against the provider registry at routine save.
+- **Near-due tightening** (§17.2 sentence, now real): a poller whose intent
+  `expires_at` falls within 2× the current adaptive interval polls at
+  `base_interval_s` for the remainder — deadlines are never missed because
+  AIMD had backed off.
+- **Escalation budget** (§17.5 sentence, now real): digest items in
+  approval categories (`hitl`, `learning`) are ranked by urgency — the
+  judge's 1–5 urgency IS the POC's risk signal, so "ranked by risk"
+  (§17.5, §8.9) resolves to urgency ranking here — and only
+  `ambient_escalation_budget_per_day` of them flush per day; the overflow
+  stays pending for the next digest. The debit is counted from flushed
+  approval items that day.
+- **Per-item anticipation**: each predicted ask is its OWN tier-2 delivery
+  (shared `skey` prefix per idle window), so used/unused feedback and the
+  hit-rate floor operate per item, as §17.4 always said.
+- **Learner threshold recovery**: `budget.min_urgency` moves DOWN one step
+  (never below the default 2) when a watch's mean reward clears the promote
+  threshold over the promote sample — thresholds are a dial, not a ratchet.
+- **Multi-time digest shifting**: accepted digest deliveries are assigned
+  to their nearest configured digest time; each time shifts independently
+  toward its own cluster mean, each under its own ±2h anchor clamp.
+- **Judge cost accounting**: the significance judge runs
+  `with_structured_output(include_raw=True)`; `usage_metadata` from the raw
+  message feeds a dedicated `ambient_judge_tokens` counter (§10), the
+  structured log line, and a registerable usage hook the M24 harness uses
+  to report real token cost per configuration.
+
+### 18.2 Memory context (M27)
+
+- **Cross-fire continuity**: `routines.include_memories` (default false) +
+  `routines.conversation_id`. When set, every fire reuses ONE persistent
+  conversation for that routine (created on first fire). The continuity
+  mechanism is conversation history + rollups accruing across beats;
+  §16.3 memory injection for graph/agentic surfaces remains governed by
+  `memory_enabled` exactly as for interactive runs. The run rows carry
+  `include_memories=true` (consumed by the §7.5 direct-run surface and
+  recorded as provenance). Fresh-conversation-per-fire stays the default.
+- **`project` scope**: `memories.project_key` (nullable);
+  `scope='project'` requires it. Conversations gain an optional
+  `project_key`; chat accepts it at conversation creation; recall filters
+  and injection include project-scoped memories for matching conversations.
+  Memory tools accept `scope='project', project=<key>`.
+- **Aggregator surface**: the graph-mode aggregator prompt gains the same
+  fenced, budgeted remembered-context block the planner has (§16.3), with
+  the same abstention line and citation-id tracking.
+
+### 18.3 Real trigger sources (M28)
+
+Poll-source contract becomes `fn(watermark, config) -> (items, watermark)`;
+a standing intent's `compiled.poll` is `{source, config}`. Native sources
+registered at boot: `http_json` (URL + items JSON-path + id field;
+watermark = last id/hash; egress via the normal client), `rss`
+(RSS/Atom via stdlib XML; watermark = newest entry id/date), `mcp_tool`
+(server + tool + args + items path — polls through the MCP manager,
+"MCP subscriptions where available" in its POC form). State-probe contract:
+`fn(config) -> float`; a state intent's `compiled` is `{probe, config, op,
+value}`. Native probes registered at boot: `workspace_disk_pct` (config:
+path, default the workspace volume), `pending_hitl_count`,
+`runs_failed_last_hour`. The watch compiler's prompt lists both live
+registries with their config shapes, and its structured output gains
+`poll_config`/`probe_config`. A broken source still never kills the tick.
+
+### 18.4 Delivery channels (M29)
+
+A channel adapter registry (`in_app` always; `email`, `webhook`) behind
+`ambient_channels` — per-tier routing, e.g. `{"interrupt": ["in_app",
+"webhook"], "digest": ["in_app", "email"]}`, validated against registered
+adapters. Email renders a digest batch as ONE message over SMTP
+(`SMTP_HOST/PORT/USER/PASSWORD/FROM/TO` env-only, consistent with the
+no-secrets-in-DB rule); `webhook` POSTs a JSON envelope to
+`AMBIENT_WEBHOOK_URL` (the SMS/push-gateway shape — any provider bridge
+terminates there). Sends are recorded per channel on the delivery row
+(`external` jsonb: channel → ok/error + timestamp); a channel failure logs
+and never blocks the in-app outbox. **Toast**: a global
+`/api/v1/ambient/stream` SSE endpoint broadcasts delivery events; it
+exists only while `ambient_enabled` is true (409 when dark, mirroring the
+fire endpoint) and the UI subscribes only when the settings snapshot says
+ambient is on — with ambient dark there is no stream, no subscription, no
+toast. With ambient on but NO external channel configured, delivery
+behavior (tiers, budgets, outbox rows) is byte-identical to M23–M25; the
+toast is a rendering of flush events that already occur.
+
+### 18.5 Ambient UI completeness (M30)
+
+M23 delivered §8.9's four tabs functionally; M30 closes the remaining
+letter of §8.9 — the pieces below replace their POC stand-ins (JSON
+textareas, flat ledger rows, chat-only watch authoring) without changing
+the M23 information architecture. Routines: a typed trigger builder (schedule kind pickers, webhook filter
+rows with the §17.3 operator set) alongside the raw-JSON escape hatch, and
+the drawer shows the routine's run history (`GET /runs?routine_id=`).
+M30 also closes the decision-plane gap those rows exposed: webhook fires
+are matched against the ROUTINE's stored webhook-trigger filters (schedule
+events already embed theirs), so a filter authored in the builder is
+actually evaluated on every fire. Ledger: rows expand into a correlation-chain view (events grouped by
+`correlation_id`, indented by depth, cause → effect); each category's
+precision renders as an inline sparkline over its judged window. Watches:
+author from the page — `POST /watches/compile` reuses the `ambient.watch`
+compiler (NL → typed rule + echo), the user confirms in the UI, and typed
+event-filter watches can also be built directly with the filter rows.
+
+### 18.6 Memory communities (M31)
+
+The Zep-style upgrade deferred at M13: a consolidation-class job runs label
+propagation over `memory_entity_links` (deterministic tie-breaks), stores
+`memory_communities` (members, label, generative summary via the extraction
+model, updated incrementally), and recall gains community breadth — when a
+recalled entity belongs to a community, the community summary is eligible
+for injection under its own budget line. Communities are rebuilt
+incrementally on entity-link changes, never per-query. Dark unless
+`memory_enabled`; empty-graph ⇒ no-op.
+
+### 18.7 Custom gateway adapter (M33)
+
+The §2.1 rationale made real: a `custom` provider adapter — OpenAI-
+compatible chat-completions gateway, `CUSTOM_GATEWAY_BASE_URL` +
+`CUSTOM_GATEWAY_API_KEY` env-only, model list from the validated
+`CUSTOM_GATEWAY_MODELS` env var (comma-separated ids — env keeps the sync
+`list_models()` port contract, §13; the "its own gateway, its own model
+list" scenario). Registered like every provider, passes the shared adapter
+contract suite, zero changes outside `app/llm/`.
+
+### 18.8 Auth & tenancy (M34 — dark by default)
+
+`auth_enabled` (env `AUTH_ENABLED`, default false): off ⇒ byte-identical
+single-user behavior, the whole §11 suite untouched. On ⇒ `users` table
+(scrypt password hashes, `admin|member` roles, and a `prefs jsonb` column),
+bearer session tokens (`POST /auth/login`, hashed at rest, TTL), a FastAPI
+dependency guarding `/api/v1` (exempt: health, metrics, `POST /auth/login`,
+and `POST /routines/{id}/fire` — the fire endpoint keeps its own hashed
+fire-token auth, §17.2, which is not a user session), and a bootstrap
+admin whose one-time password prints to the boot log. Tenancy boundary: **registries are shared
+and admin-writable** (members read + invoke); **work is per-user** —
+conversations, runs, memories, routines, watches, deliveries, presence,
+and quiet hours carry `user_id` and are invisible across users. Ambient
+scoping follows ownership end-to-end: a routine fires runs as its owner;
+digests/budgets/learning are computed per user. Per-user quiet hours and
+digest times live in `users.prefs` as OVERRIDES of the global §3.7 keys
+(`{"ambient_quiet_hours": [...], "ambient_digest_times": [...]}`); the
+global settings remain the defaults and the only values when auth is off —
+§3.7 and §17.5 read unchanged in the single-user regime. Basic hardening: per-user
+token-bucket rate limit, security headers, CORS pinned to the frontend
+origin. Passwords/keys never leave env or hashed columns.
+
+### 18.9 Multi-replica coordination (M35)
+
+The ambient tick elects a leader via a Postgres advisory lock (dedicated
+classid) with heartbeat lease renewal; non-leaders LISTEN and drain (the
+`FOR UPDATE SKIP LOCKED` drain and executor were replica-safe by
+construction) but skip the evaluators; on leader death the lease lapses and
+another replica takes over within one tick. Registry-cache invalidation
+already rides LISTEN/NOTIFY (M8b). Compose stays three services — scale is
+`docker compose up --scale backend=N` behind any port mapping the operator
+chooses; correctness is proven in-process with two concurrent loops.
+
+
+### 18.10 Acceptance ceremony (M36)
+
+Fresh volumes (`./decom.sh -y`), fresh `docker compose up`, default model
+`openrouter:qwen/qwen3.8-max` for all roles unless a stage names another
+provider. Scope, in order: the original §14 ten-step script; §14c steps
+20–32 (ambient, channels, evals, auth); a custom-gateway smoke (§18.7 —
+one live chat run through the `custom` provider pointed at a real
+OpenAI-compatible endpoint); and the §11 byte-identity suites with
+`ambient_enabled=false`, `memory_enabled=false`, `auth_enabled=false`.
+Evidence lands in `docs/acceptance/ceremony_m36/` (curl transcripts + UI
+frames), and a closing report updates the README status line. The ceremony
+re-earns the definition of done end-to-end; nothing ships from this wave
+without it.

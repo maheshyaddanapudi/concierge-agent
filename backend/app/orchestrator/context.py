@@ -105,6 +105,12 @@ class RunContext:
     used_exemplar_ids: list[Any] = field(default_factory=list)
     # §16.7: memory ids injected into any surface this run (citation feedback)
     injected_memory_ids: list[str] = field(default_factory=list)
+    # §17.4: the owning routine's narrowed registry projection — None for
+    # interactive runs and for routines without an allowlist
+    ambient_allowlist: dict[str, Any] | None = None
+    # §18.1: the routine's model_ref — replaces the default_model FALLBACK
+    # everywhere this run resolves a model; explicit role/skill models win
+    ambient_model_ref: str | None = None
 
     def next_worker_callsign(self) -> str:
         n = self.worker_count
@@ -112,6 +118,12 @@ class RunContext:
         name = WORKER_CALLSIGNS[n % len(WORKER_CALLSIGNS)]
         suffix = n // len(WORKER_CALLSIGNS)
         return f"worker-{name}" if suffix == 0 else f"worker-{name}-{suffix + 1}"
+
+
+def ambient_default_override() -> str | None:
+    """The current run's ambient model override, if any (§18.1)."""
+    ctx = get_run_context()
+    return ctx.ambient_model_ref if ctx is not None else None
 
 
 _CURRENT: ContextVar[RunContext | None] = ContextVar("run_context", default=None)

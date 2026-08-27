@@ -14,7 +14,11 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     title: Mapped[str] = mapped_column(String(255), default="New conversation")
+    # §18.2: opt-in project scoping — project memories inject only here
+    project_key: Mapped[str | None] = mapped_column(String(128), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -27,11 +31,14 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
     chat_message: Mapped[str] = mapped_column(Text)
     plan: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
+    # | 'stalled' (§17.4 — reaped ambient run whose heartbeat went silent)
     status: Mapped[str] = mapped_column(String(16), default="running")
     # 'graph' | 'agentic' | 'direct' (spec §7.5)
     orchestrator_mode: Mapped[str] = mapped_column(String(16), default="graph")
@@ -41,6 +48,16 @@ class Run(Base):
     include_history_summary: Mapped[bool] = mapped_column(default=False)
     # §16.3 opt-in: inject the remembered-context block into a direct run
     include_memories: Mapped[bool] = mapped_column(default=False)
+    # §17.4 ambient provenance: {routine_id, event_id, source} — NULL for chat runs
+    trigger: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # §15 eval provenance: ordinary runs tagged eval=true (HITL auto-approved
+    # by the eval runner); eval_skill_id set ⇒ admin-direct single-skill worker
+    is_eval: Mapped[bool] = mapped_column(default=False)
+    eval_skill_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    # §17.4 liveness (heartbeat sense H3): refreshed by the runner each tick
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
     # the formatter's structured artifact (spec §7.1 answer_ui) — carries its
     # own presentation + coverage so history renders by run-time facts

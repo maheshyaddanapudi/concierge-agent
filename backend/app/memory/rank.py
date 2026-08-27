@@ -24,7 +24,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import bindparam, update
+from sqlalchemy import bindparam, select, update
 from sqlalchemy import text as sql_text
 
 from app.db import get_session_factory
@@ -36,6 +36,12 @@ _RRF_K = 60
 _CANDIDATES_PER_LEG = 40
 W_REL, W_REC, W_IMP = 1.0, 0.8, 0.6
 DEFAULT_HALF_LIFE_HOURS = 30.0 * 24
+
+
+def _auth_uid() -> Any:
+    from app.auth import current_user_id
+
+    return current_user_id()
 
 
 @dataclass
@@ -69,6 +75,17 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     if kinds:
         parts.append("m.kind = ANY(:kinds)")
     parts.append("(m.scope != 'conversation' OR m.conversation_id = :conversation_id)")
+    # §18.2: project rows are visible only under their own key; without a
+    # key the equality is NULL ⇒ false — projects never leak sideways
+    parts.append("(m.scope != 'project' OR m.project_key = CAST(:project_key AS text))")
+    # §18.8 tenancy: another user's memories are invisible; unowned
+    # (pre-auth / system) rows stay visible to everyone
+    from app.auth import auth_enabled
+
+    if auth_enabled():
+        parts.append(
+            "(m.user_id = CAST(:auth_user_id AS uuid) OR m.user_id IS NULL)"
+        )
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 
@@ -78,6 +95,7 @@ async def recall(
     scopes: list[str] | None = None,
     kinds: list[str] | None = None,
     conversation_id: UUID | None = None,
+    project_key: str | None = None,
     k: int = 6,
     floor: float = 0.35,
     as_of: datetime | None = None,
@@ -97,7 +115,9 @@ async def recall(
         "scopes": scopes,
         "kinds": kinds,
         "conversation_id": conversation_id,
+        "project_key": project_key,
         "as_of": as_of,
+        "auth_user_id": str(_auth_uid()) if _auth_uid() else None,
     }
     where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)
 
@@ -145,22 +165,18 @@ async def recall(
             return []
         max_rrf = max(rrf.values())
 
-        rows = (
-            (
-                await session.execute(
-                    sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
-                        *Memory.__table__.c
-                    ),
-                    {"ids": list(rrf.keys())},
-                )
-            )
-            .mappings()
+        # ORM load by id — NEVER a raw `SELECT *` with positional column
+        # mapping: a migrated DB's column order can differ from the model's
+        # (found live in M31: project_key appended last shifted every later
+        # column onto the wrong result processor)
+        mem_rows = list(
+            (await session.execute(select(Memory).where(Memory.id.in_(list(rrf.keys())))))
+            .scalars()
             .all()
         )
         now = datetime.now(UTC)
         hits: list[RecallHit] = []
-        for row in rows:
-            mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+        for mem in mem_rows:
             relevance = rrf[mem.id] / max_rrf
             half_life_h = (
                 float(mem.half_life_days) * 24 if mem.half_life_days else DEFAULT_HALF_LIFE_HOURS
@@ -214,20 +230,12 @@ async def recall(
             hop_ids = [r[0] for r in hop_rows]
             if hop_ids:
                 hop_score = round(min(h.score for h in hits) * 0.8, 4)
-                hop_mem_rows = (
-                    (
-                        await session.execute(
-                            sql_text("SELECT * FROM memories WHERE id = ANY(:ids)").columns(
-                                *Memory.__table__.c
-                            ),
-                            {"ids": hop_ids},
-                        )
-                    )
-                    .mappings()
+                hop_mems = list(
+                    (await session.execute(select(Memory).where(Memory.id.in_(hop_ids))))
+                    .scalars()
                     .all()
                 )
-                for row in hop_mem_rows:
-                    mem = Memory(**{k_: v for k_, v in row.items() if k_ != "fts"})
+                for mem in hop_mems:
                     hits.append(
                         RecallHit(
                             memory=mem,

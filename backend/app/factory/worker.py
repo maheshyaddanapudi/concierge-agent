@@ -292,6 +292,11 @@ async def resolve_node_model(
         if source.get("model"):
             raw = source.get("model_params")
             return str(source["model"]), ModelParams.model_validate(raw) if raw else None
+    from app.orchestrator.context import ambient_default_override
+
+    override = ambient_default_override()
+    if override:
+        return override, None
     async with get_session_factory()() as session:
         ref = str(await get_setting(session, "default_model"))
         raw = await get_setting(session, "default_model_params")

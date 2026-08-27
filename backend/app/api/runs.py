@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SessionDep
+from app.auth import owns_row, scope_to_user
 from app.models import Run, RunStep
 from app.orchestrator.runner import cancel_run, forget_run_events, retry_run
 
@@ -67,6 +68,8 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
         "target_sub_agent_id": str(run.target_sub_agent_id) if run.target_sub_agent_id else None,
         "include_history_summary": run.include_history_summary,
         "include_memories": run.include_memories,
+        # §17.4 ambient provenance — None for interactive runs
+        "trigger": run.trigger,
         "plan": run.plan,
         "snapshot": run.snapshot,
         "final_answer": run.final_answer,
@@ -84,8 +87,12 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_runs(session: SessionDep) -> list[dict[str, Any]]:
-    runs = list((await session.execute(select(Run).order_by(Run.started_at.desc()))).scalars())
+async def list_runs(session: SessionDep, routine_id: UUID | None = None) -> list[dict[str, Any]]:
+    query = scope_to_user(select(Run).order_by(Run.started_at.desc()), Run)
+    if routine_id is not None:
+        # §18.5: the routine drawer's run history — trigger provenance match
+        query = query.where(Run.trigger["routine_id"].astext == str(routine_id))
+    runs = list((await session.execute(query)).scalars())
     return [_run_out(r) for r in runs]
 
 
@@ -103,7 +110,7 @@ async def purge_runs(session: SessionDep) -> None:
 @router.get("/{run_id}")
 async def get_run(run_id: UUID, session: SessionDep) -> dict[str, Any]:
     run = await session.get(Run, run_id)
-    if run is None:
+    if run is None or not owns_row(run):
         raise HTTPException(status_code=404, detail="run not found")
     return _run_out(run, with_steps=True)
 
@@ -129,7 +136,7 @@ async def retry(run_id: UUID) -> dict[str, Any]:
 @router.delete("/{run_id}", status_code=204)
 async def delete_run(run_id: UUID, session: SessionDep) -> None:
     run = await session.get(Run, run_id)
-    if run is None:
+    if run is None or not owns_row(run):
         raise HTTPException(status_code=404, detail="run not found")
     if run.status == "running":
         raise HTTPException(status_code=409, detail="cancel the run before deleting it")

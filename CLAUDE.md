@@ -22,6 +22,10 @@
 - TypeScript: eslint + prettier, strict tsconfig, TanStack Query, no Redux.
 - Conventional commits.
 
+## Testing models
+- Unit/integration suites run on the fake provider (`FAKE_LLM_ENABLED=1`) — deterministic, key-free (spec §11).
+- Live acceptance / milestone proofs ALWAYS use a real LLM; prefer `openrouter:qwen/qwen3.8-max` as `default_model` (all roles) unless a stage specifically tests another provider.
+
 ## Commands
 - Backend tests: `cd backend && pytest`
 - Lint: `cd backend && ruff check . && mypy app && python -m app.doclint`

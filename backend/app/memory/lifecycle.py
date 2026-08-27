@@ -26,6 +26,7 @@ JOB_REFLECT = 2
 JOB_CONTRADICT = 3
 JOB_MINE = 4
 JOB_COMPACT = 5
+JOB_COMMUNITIES = 6  # §18.6 label-propagation rebuild
 
 # GA-style reflection trigger: summed importance of unreflected memories
 REFLECTION_IMPORTANCE_TRIGGER = 150
@@ -40,6 +41,7 @@ _INTERVALS_S = {
     JOB_CONTRADICT: 24 * 3600,
     JOB_MINE: 12 * 3600,
     JOB_COMPACT: 6 * 3600,
+    JOB_COMMUNITIES: 3600,
 }
 _LAST_RUN: dict[int, float] = {}
 
@@ -212,6 +214,7 @@ async def run_due_jobs() -> dict[str, int]:
         return {}
     results: dict[str, int] = {}
     now = asyncio.get_event_loop().time()
+    from app.memory.communities import rebuild_communities
     from app.memory.episodic import compact_digests
 
     jobs = {
@@ -219,6 +222,7 @@ async def run_due_jobs() -> dict[str, int]:
         JOB_REFLECT: ("reflect", reflection),
         JOB_CONTRADICT: ("contradict", contradiction_sweep),
         JOB_COMPACT: ("compact", compact_digests),
+        JOB_COMMUNITIES: ("communities", rebuild_communities),
     }
     for job_id, (name, fn) in jobs.items():
         if not await _due(job_id, now):

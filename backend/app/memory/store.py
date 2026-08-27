@@ -29,7 +29,7 @@ from app.models import Memory, MemoryEmbedding
 logger = structlog.get_logger("memory")
 
 KINDS = {"fact", "preference", "entity", "relation", "instruction"}
-SCOPES = {"global", "conversation"}
+SCOPES = {"global", "conversation", "project"}
 SOURCES = {"extracted", "user_stated", "user_edited", "hitl_note", "inferred"}
 MACHINE_SOURCES = {"extracted", "inferred", "hitl_note"}
 
@@ -161,9 +161,17 @@ async def remember(
     via_tool: bool = False,
     entities: list[str] | None = None,
     session: AsyncSession | None = None,
+    project_key: str | None = None,
+    user_id: UUID | None = None,
 ) -> Memory:
     """Insert one memory row under the §16.2 rules. Raises MemoryWriteError."""
     _validate(kind, scope, source)
+    if user_id is None:
+        from app.auth import current_user_id
+
+        user_id = current_user_id()  # §18.8: memories belong to the requester
+    if scope == "project" and not project_key:
+        raise MemoryWriteError("scope 'project' requires project_key")
     # inferred memories may cite other memories instead of a run — the
     # evidence list IS their provenance (spec §16.2 reflection)
     cites_evidence = source == "inferred" and bool(payload and payload.get("evidence"))
@@ -180,12 +188,14 @@ async def remember(
         status = "quarantined"  # behavior-changing writes gate through review
 
     row = Memory(
+        user_id=user_id,
         text=text,
         kind=kind,
         scope=scope,
         source=source,
         status=status,
         conversation_id=conversation_id,
+        project_key=project_key if scope == "project" else None,
         payload=payload,
         entity_key=entity_key,
         importance=max(1, min(10, importance)),
@@ -451,8 +461,12 @@ async def list_memories(
     q: str | None = None,
     limit: int = 100,
 ) -> list[Memory]:
+    from app.auth import scope_to_user
+
     async with get_session_factory()() as session:
-        stmt = select(Memory).order_by(Memory.recorded_at.desc()).limit(limit)
+        stmt = scope_to_user(select(Memory).order_by(Memory.recorded_at.desc()), Memory).limit(
+            limit
+        )
         if scope:
             stmt = stmt.where(Memory.scope == scope)
         if kind:

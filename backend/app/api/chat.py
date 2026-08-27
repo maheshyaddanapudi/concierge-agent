@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import SessionDep
+from app.auth import owns_row, scope_to_user
 from app.models import Conversation, Run
 from app.orchestrator.context import EVENT_BUS
 from app.orchestrator.runner import create_run, resume_run, start_run_task
@@ -31,6 +32,9 @@ class ChatRequest(ApiModel):
     # §7.5 opt-in, target-only: summarize history into the worker's context
     include_history_summary: bool = False
     include_memories: bool = False
+    # §18.2: tag the NEW conversation with a project key (ignored when
+    # continuing an existing conversation)
+    project: str | None = None
 
 
 class HitlRequest(ApiModel):
@@ -66,7 +70,11 @@ def _run_out(run: Run) -> dict[str, Any]:
 async def list_conversations(session: SessionDep) -> list[dict[str, Any]]:
     conversations = list(
         (
-            await session.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
+            await session.execute(
+                scope_to_user(
+                    select(Conversation).order_by(Conversation.updated_at.desc()), Conversation
+                )
+            )
         ).scalars()
     )
     return [
@@ -83,7 +91,9 @@ async def list_conversations(session: SessionDep) -> list[dict[str, Any]]:
 
 @router.post("/conversations", status_code=201)
 async def create_conversation(body: ConversationCreate, session: SessionDep) -> dict[str, Any]:
-    conversation = Conversation(title=body.title or "New conversation")
+    from app.auth import current_user_id
+
+    conversation = Conversation(title=body.title or "New conversation", user_id=current_user_id())
     session.add(conversation)
     await session.commit()
     return {"id": str(conversation.id), "title": conversation.title}
@@ -92,7 +102,7 @@ async def create_conversation(body: ConversationCreate, session: SessionDep) -> 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[str, Any]:
     conversation = await session.get(Conversation, conversation_id)
-    if conversation is None:
+    if conversation is None or not owns_row(conversation):
         raise HTTPException(status_code=404, detail="conversation not found")
     runs = sorted(conversation.runs, key=lambda r: r.started_at)
     messages: list[dict[str, Any]] = []
@@ -165,9 +175,10 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             target_sub_agent_id=agent.id,
             include_history_summary=body.include_history_summary,
             include_memories=body.include_memories,
+            project_key=body.project,
         )
     else:
-        run = await create_run(body.conversation_id, body.message)
+        run = await create_run(body.conversation_id, body.message, project_key=body.project)
     start_run_task(run.id)
     return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
 

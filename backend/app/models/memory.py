@@ -42,11 +42,14 @@ class Memory(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # 'global' | 'conversation' ('project' reserved for multi-user)
+    # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    # 'global' | 'conversation' | 'project' (§18.2 — key-partitioned)
     scope: Mapped[str] = mapped_column(String(16), default="global")
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), default=None
     )
+    project_key: Mapped[str | None] = mapped_column(String(128), default=None)
     # 'fact' | 'preference' | 'entity' | 'relation' | 'instruction'
     kind: Mapped[str] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)
@@ -128,6 +131,25 @@ class MemoryEntityLink(Base):
     )
     entity_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("memory_entities.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class MemoryCommunity(Base):
+    """§18.6: a label-propagation community over the entity graph. `label`
+    is the deterministic representative (min member entity id); `signature`
+    hashes the member set so unchanged communities keep their summary."""
+
+    __tablename__ = "memory_communities"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    label: Mapped[str] = mapped_column(String(64), unique=True)
+    member_entity_ids: Mapped[list[Any] | None] = mapped_column(default=None)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    signature: Mapped[str] = mapped_column(String(64), default="")
+    summary: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 

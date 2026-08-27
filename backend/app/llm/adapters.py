@@ -275,3 +275,61 @@ class OpenRouterProvider(ModelProviderBase):
             kwargs["extra_body"] = extra_body
         model_obj: BaseChatModel = chat_cls(model=model, **kwargs)
         return model_obj
+
+
+@model_provider
+class CustomGatewayProvider(ModelProviderBase):
+    """The enterprise scenario from §2.1, implemented per §18.7: an
+    OpenAI-compatible chat-completions gateway behind env-only
+    CUSTOM_GATEWAY_BASE_URL / CUSTOM_GATEWAY_API_KEY, with the model list
+    from CUSTOM_GATEWAY_MODELS (comma-separated — env keeps list_models()
+    sync). Effort is declared unsupported: a generic gateway has no unified
+    reasoning knob — an EXPLICIT effort in saved model_params is rejected at
+    validation, while the internal role-default effort hints (judge,
+    extraction, summaries pass effort='low') are dropped at call time so a
+    custom model can serve every role.
+    Chat-only — no embeddings API (consumers degrade per §7.4)."""
+
+    provider_id = "custom"
+
+    def is_configured(self) -> bool:
+        config = get_config()
+        return bool(config.custom_gateway_base_url) and bool(config.custom_gateway_api_key)
+
+    def list_models(self) -> list[ModelInfo]:
+        raw = get_config().custom_gateway_models or ""
+        ids = [m.strip() for m in raw.split(",") if m.strip()]
+        if not ids:
+            # port shape: the list is never empty — the placeholder documents
+            # how to configure and is rejected by get_chat_model anyway
+            return [
+                ModelInfo(
+                    "gateway-model",
+                    "custom gateway (set CUSTOM_GATEWAY_MODELS)",
+                    supports_effort=False,
+                )
+            ]
+        return [ModelInfo(i, i, supports_effort=False) for i in ids]
+
+    def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:
+        from langchain_openai import ChatOpenAI
+
+        config = get_config()
+        if not self.is_configured():
+            raise ProviderNotConfiguredError(
+                "custom: CUSTOM_GATEWAY_BASE_URL / CUSTOM_GATEWAY_API_KEY not set"
+            )
+        if params is not None and params.effort is not None:
+            params = params.model_copy(update={"effort": None})
+        _check_params(self, model, params)
+        kwargs: dict[str, Any] = {
+            "base_url": config.custom_gateway_base_url,
+            "api_key": config.custom_gateway_api_key,
+        }
+        if params:
+            if params.temperature is not None:
+                kwargs["temperature"] = params.temperature
+            if params.max_output_tokens is not None:
+                kwargs["max_tokens"] = params.max_output_tokens
+        model_obj: BaseChatModel = ChatOpenAI(model=model, **kwargs)
+        return model_obj
