@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useInvalidate, useRemoteAgents } from '../api/hooks'
-import type { RemoteAgent } from '../api/types'
+import type { A2ATask, RemoteAgent } from '../api/types'
 import { RegistryTable } from '../components/RegistryTable'
 import {
   Button,
@@ -213,6 +214,100 @@ function RegisterForm({ onDone }: { onDone: () => void }) {
   )
 }
 
+function TasksSection({ agent }: { agent: RemoteAgent }) {
+  // spec §19.6 — open/parked/recent remote tasks; reply continues an
+  // input-required task, cancel propagates tasks/cancel
+  const invalidate = useInvalidate()
+  const { data: tasks = [] } = useQuery({
+    queryKey: ['remote-agents', agent.id, 'tasks'],
+    queryFn: () => api.get<A2ATask[]>(`/remote-agents/${agent.id}/tasks`),
+    refetchInterval: 5000,
+  })
+  const [reply, setReply] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
+
+  const act = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(label)
+    setError(null)
+    try {
+      await fn()
+      invalidate('remote-agents', 'deliveries')
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!tasks.length) {
+    return <span className="text-xs text-slate-500">no remote tasks yet</span>
+  }
+  return (
+    <div className="space-y-2" data-testid="a2a-tasks">
+      {tasks.map((t) => (
+        <div key={t.id} className="rounded-md border border-slate-800 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <StatusPill status={t.state} />
+            <span className="font-mono text-[10px] text-slate-500">
+              {t.remote_task_id ? t.remote_task_id.slice(0, 8) : '—'}
+            </span>
+            {t.delivered && <Chip tone="muted">delivered</Chip>}
+            <span className="ml-auto font-mono text-[10px] text-slate-600">
+              {timeAgo(t.updated_at)}
+            </span>
+          </div>
+          {t.question && t.state === 'input-required' && (
+            <div className="mt-2 space-y-1.5">
+              <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-200">
+                asks (untrusted): {t.question}
+              </div>
+              <div className="flex gap-1.5">
+                <TextInput
+                  placeholder="reply to the remote agent…"
+                  value={reply[t.id] ?? ''}
+                  onChange={(e) => setReply({ ...reply, [t.id]: e.target.value })}
+                  className="flex-1"
+                />
+                <Button
+                  variant="primary"
+                  disabled={busy !== null || !(reply[t.id] ?? '').trim()}
+                  onClick={() =>
+                    void act(`reply-${t.id}`, () =>
+                      api.post(`/remote-agents/${agent.id}/tasks/${t.id}/reply`, {
+                        text: (reply[t.id] ?? '').trim(),
+                      }),
+                    )
+                  }
+                >
+                  {busy === `reply-${t.id}` ? 'Sending…' : 'Reply'}
+                </Button>
+              </div>
+            </div>
+          )}
+          {t.error && <div className="mt-1 font-mono text-[10px] text-rose-300">{t.error}</div>}
+          {(t.state === 'parked' || t.state === 'input-required' || t.state === 'working') && (
+            <div className="mt-2">
+              <Button
+                variant="ghost"
+                disabled={busy !== null}
+                onClick={() =>
+                  void act(`cancel-${t.id}`, () =>
+                    api.post(`/remote-agents/${agent.id}/tasks/${t.id}/cancel`),
+                  )
+                }
+              >
+                {busy === `cancel-${t.id}` ? 'Cancelling…' : 'Cancel remote task'}
+              </Button>
+            </div>
+          )}
+        </div>
+      ))}
+      <ErrorNote error={error} />
+    </div>
+  )
+}
+
 interface CardSkill {
   id?: string
   name?: string
@@ -277,6 +372,10 @@ function AgentDetail({ agent, onClose }: { agent: RemoteAgent; onClose: () => vo
           ))}
           {!skills.length && <span className="text-xs text-slate-500">card declares no skills</span>}
         </div>
+      </Field>
+
+      <Field label="Remote tasks (§19.6)">
+        <TasksSection agent={agent} />
       </Field>
 
       <Field

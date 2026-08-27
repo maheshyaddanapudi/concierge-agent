@@ -78,6 +78,15 @@ class ScriptedExecutor(AgentExecutor):
             await updater.add_artifact([Part(root=TextPart(text=f"stub-slow-done: {delay}"))])
             await updater.complete()
             return
+        if text.startswith("slowask:"):
+            # sleeps, then asks — the parked-then-input-required path (§19.6)
+            _, delay_s, question = text.split(":", 2)
+            self.stub.slow_started.set()
+            await asyncio.sleep(float(delay_s or 1))
+            await updater.requires_input(
+                updater.new_agent_message([Part(root=TextPart(text=question or "proceed?"))])
+            )
+            return
         if text.startswith("fail:"):
             await updater.failed(
                 updater.new_agent_message([Part(root=TextPart(text=text[5:] or "boom"))])

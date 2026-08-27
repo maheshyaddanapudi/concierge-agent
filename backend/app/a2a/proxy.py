@@ -34,6 +34,10 @@ from app.models import RemoteAgent
 
 logger = structlog.get_logger("a2a")
 
+from app.models import A2A_TERMINAL_STATES  # noqa: E402
+
+_SETTLED_STATES = A2A_TERMINAL_STATES | {"input-required", "auth-required"}
+
 
 def _ops(kind: str, status: str) -> None:
     from app import obs
@@ -100,21 +104,35 @@ def make_a2a_proxy(row: dict[str, Any], sanitized_name: str) -> BaseTool:
                 question=o.question,
             )
 
+        async def _settle(first: RemoteOutcome) -> RemoteOutcome:
+            """A send may legitimately end with a still-open task (polling
+            transports, servers that detach execution) — poll tasks/get until
+            a settle point; the surrounding asyncio.timeout owns the budget."""
+            outcome = first
+            while (  # noqa: ASYNC110 - polling a REMOTE server, no event exists
+                outcome.state not in _SETTLED_STATES and outcome.task_id is not None
+            ):
+                await asyncio.sleep(1.0)
+                outcome = await client_port.get_task_outcome(agent_uuid, outcome.task_id)
+            return outcome
+
         try:
             if open_task is None:
                 async with asyncio.timeout(timeout_s):
-                    outcome = await client_port.send_text(
-                        agent_uuid,
-                        message,
-                        data=data,
-                        skill_id=skill_id,
-                        on_task=on_first_task,
+                    outcome = await _settle(
+                        await client_port.send_text(
+                            agent_uuid,
+                            message,
+                            data=data,
+                            skill_id=skill_id,
+                            on_task=on_first_task,
+                        )
                     )
             elif open_task.remote_task_id:
                 # replay adoption — recheck the live remote state, never re-send
                 async with asyncio.timeout(timeout_s):
-                    outcome = await client_port.get_task_outcome(
-                        agent_uuid, open_task.remote_task_id
+                    outcome = await _settle(
+                        await client_port.get_task_outcome(agent_uuid, open_task.remote_task_id)
                     )
             else:
                 outcome = RemoteOutcome(state=open_task.state, text="", question=open_task.question)
@@ -165,12 +183,14 @@ def make_a2a_proxy(row: dict[str, Any], sanitized_name: str) -> BaseTool:
                 )
                 _ops("hitl", "replied")
                 async with asyncio.timeout(timeout_s):
-                    outcome = await client_port.send_text(
-                        agent_uuid,
-                        reply,
-                        task_id=outcome.task_id,
-                        context_id=outcome.context_id,
-                        skill_id=skill_id,
+                    outcome = await _settle(
+                        await client_port.send_text(
+                            agent_uuid,
+                            reply,
+                            task_id=outcome.task_id,
+                            context_id=outcome.context_id,
+                            skill_id=skill_id,
+                        )
                     )
 
             if outcome.state == "completed":

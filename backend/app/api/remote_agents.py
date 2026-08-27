@@ -1,9 +1,10 @@
-"""Remote agents registry API (spec §19.2/§19.3, §4).
+"""Remote agents registry API (spec §19.2/§19.3/§19.6, §4).
 
 Writes 409 while `a2a_enabled` is false (the §17 dark pattern); reads stay
 200. Credentials are accepted on create/patch and NEVER serialized outward
 — `_to_out` computes per-scheme configured flags only."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -20,6 +21,7 @@ from app.api.deps import (
     reject_static_delete,
 )
 from app.models import A2ATask, RemoteAgent, Skill, Tool, skill_tools
+from app.schemas.common import ApiModel
 from app.schemas.remote_agent import (
     A2ATaskOut,
     RemoteAgentCreate,
@@ -215,3 +217,78 @@ async def list_tasks(agent_id: UUID, session: SessionDep) -> list[A2ATaskOut]:
         )
     ).scalars()
     return [_task_out(t) for t in rows]
+
+
+async def _get_agent_task(session: SessionDep, agent_id: UUID, task_id: UUID) -> A2ATask:
+    agent = await fetch_or_404(session, RemoteAgent, agent_id)
+    task = await session.get(A2ATask, task_id)
+    if task is None or task.remote_agent_id != agent.id:
+        raise HTTPException(404, "task not found")
+    return task
+
+
+class TaskReply(ApiModel):
+    text: str
+
+
+@router.post("/{agent_id}/tasks/{task_id}/reply", response_model=A2ATaskOut)
+async def reply_task(
+    agent_id: UUID, task_id: UUID, body: TaskReply, session: SessionDep
+) -> A2ATaskOut:
+    """Answer an input-required task from the drawer (spec §19.6): terminal
+    outcomes deliver through the outbox; still-working tasks re-park so the
+    poller resumes watching."""
+    await _a2a_on()
+    task = await _get_agent_task(session, agent_id, task_id)
+    if task.state != "input-required" or not task.remote_task_id:
+        raise HTTPException(409, f"task is {task.state} — reply needs input-required")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "reply text is required")
+    from app.a2a import client_port
+    from app.a2a import tasks as task_store
+    from app.a2a.poller import deliver_outcome
+    from app.registry_cache import get_cache
+
+    timeout_s = max(int(await get_cache().setting("a2a_task_timeout_s")), 1)
+    agent_name = (await session.get(RemoteAgent, agent_id)).name  # type: ignore[union-attr]
+    try:
+        async with asyncio.timeout(timeout_s):
+            outcome = await client_port.send_text(
+                agent_id, text, task_id=task.remote_task_id, context_id=task.context_id
+            )
+    except TimeoutError:
+        await task_store.update_task(task_id, parked=True)
+        await session.refresh(task)
+        return _task_out(task)
+    except Exception as exc:
+        raise HTTPException(502, f"reply failed: {exc}") from exc
+    from app.models import A2A_TERMINAL_STATES
+
+    if outcome.state in A2A_TERMINAL_STATES:
+        await deliver_outcome(task_id, agent_id, agent_name, outcome, run_id=task.run_id)
+    elif outcome.state == "input-required":
+        await task_store.update_task(task_id, state="input-required", question=outcome.question)
+    else:
+        await task_store.update_task(task_id, parked=True)
+    await session.refresh(task)
+    return _task_out(task)
+
+
+@router.post("/{agent_id}/tasks/{task_id}/cancel", response_model=A2ATaskOut)
+async def cancel_agent_task(agent_id: UUID, task_id: UUID, session: SessionDep) -> A2ATaskOut:
+    await _a2a_on()
+    task = await _get_agent_task(session, agent_id, task_id)
+    from app.a2a import client_port
+    from app.a2a import tasks as task_store
+
+    if task.remote_task_id:
+        try:
+            await client_port.cancel_task(agent_id, task.remote_task_id)
+        except Exception as exc:
+            raise HTTPException(502, f"remote cancel failed: {exc}") from exc
+    await task_store.update_task(
+        task_id, state="canceled", error="cancelled from the task drawer", delivered=True
+    )
+    await session.refresh(task)
+    return _task_out(task)

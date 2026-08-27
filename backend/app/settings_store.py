@@ -127,7 +127,6 @@ _INT_KEYS = {
     "a2a_card_refresh_interval_s",
     "a2a_task_timeout_s",
     "a2a_poll_interval_s",
-    "a2a_max_parked",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -231,6 +230,8 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int) or not 1 <= value <= 100
         ):
             errors.append("formatter_coverage_flag_threshold must be an integer 1–100")
+        elif key == "a2a_max_parked" and (not isinstance(value, int) or value < 0):
+            errors.append("a2a_max_parked must be a non-negative integer (0 disables parking)")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
         elif key == "memory_score_floor" and (
@@ -252,9 +253,7 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
                             f"ambient_channels: unknown mode {mode!r} "
                             f"(expected one of {sorted(DELIVERY_MODES)})"
                         )
-                    elif not isinstance(chans, list) or not all(
-                        isinstance(c, str) for c in chans
-                    ):
+                    elif not isinstance(chans, list) or not all(isinstance(c, str) for c in chans):
                         errors.append(f"ambient_channels[{mode!r}] must be a list of strings")
                     else:
                         unknown = set(chans) - known
@@ -275,9 +274,7 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int | float) or float(value) <= 0
         ):
             errors.append("memory_half_life_days must be a positive number")
-        elif key == "memory_community_budget_tokens" and (
-            not isinstance(value, int) or value < 0
-        ):
+        elif key == "memory_community_budget_tokens" and (not isinstance(value, int) or value < 0):
             errors.append("memory_community_budget_tokens must be an integer ≥ 0 (0 disables)")
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
