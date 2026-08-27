@@ -491,3 +491,49 @@ async def test_direct_tool_rung_cannot_pause_clear_error_and_drawer_continues(
     assert resp.json()["state"] == "completed"
     rows = await a2a_task_rows()
     assert "stub-answered: use staging" in (rows[0].result or {}).get("text", "")
+
+
+async def test_inline_skill_interrupt_surfaces_clear_error_not_repr(
+    client: AsyncClient, a2a_manager: A2AManager, stub: StubA2AServer
+) -> None:
+    """Rung-2 INLINE skill loops (direct_exposure skills) run without a
+    checkpointer — a remote `input-required` cannot pause there. The
+    GraphInterrupt must surface as the same clear drawer-pointing contract
+    rung 1 uses, never a raw Interrupt repr (caught live in §14d)."""
+    agent, tools = await register_stub_agent(client, stub)
+    research = next(t for t in tools if t["tool_key"] == "stub-agent.research")
+    from app.models import Tool
+
+    async with get_session_factory()() as db:
+        tool_row = await db.get(Tool, research["id"])
+        assert tool_row is not None
+    skill = await create_skill(name=f"inline-remote-{uuid4().hex[:4]}", tools=[tool_row])
+    resp = await client.patch(f"{API}/skills/{skill.id}", json={"direct_exposure": True})
+    assert resp.status_code == 200, resp.text
+
+    plan_call(
+        entries=[
+            {
+                "id": "s1",
+                "capability": {"type": "direct_skill", "id": str(skill.id)},
+                "task": "ask the remote agent which environment",
+                "depends_on": [],
+            }
+        ]
+    )
+    a2a_tool_call("stub-agent_research", "ask:Which environment should I target?")
+    fake_llm.push_ai("Aggregated: the remote agent needs input; see the task drawer.")
+
+    run_id = await send_chat(client, "remote ask through an inline skill")
+    run = await wait_run(client, run_id, {"completed", "failed"})
+    assert run["status"] == "completed", run["error"]
+
+    skill_steps = [s for s in run["steps"] if s["step_type"] == "skill"]
+    assert skill_steps and skill_steps[-1]["status"] == "failed"
+    err = str(skill_steps[-1].get("error") or "")
+    assert "inline skill call cannot pause" in err and "task drawer" in err
+    assert "Which environment should I target?" in err
+    assert "Interrupt(" not in err and "GraphInterrupt" not in err
+
+    rows = await a2a_task_rows()
+    assert len(rows) == 1 and rows[0].state == "input-required"

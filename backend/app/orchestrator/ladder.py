@@ -283,6 +283,28 @@ async def run_inline_skill(
                 emit_dispatch=True,
             )
         return output
+    except GraphInterrupt as gi:
+        # like rung 1, the INLINE skill loop runs without a checkpointer —
+        # a tool-raised gate (a2a `input-required`, spec §19.5) cannot pause
+        # here. Never leak the raw Interrupt repr (caught live in the §14d
+        # campaign): surface the same clear contract rung 1 uses. The a2a
+        # task row stays `input-required`, so the §19.6 task drawer carries
+        # the reply; checkpointed paths (sub agents, workers) pause normally.
+        prompt_text = ""
+        interrupts = gi.args[0] if gi.args else ()
+        for intr in interrupts:
+            value = getattr(intr, "value", None)
+            if isinstance(value, dict) and value.get("prompt"):
+                prompt_text = str(value["prompt"])
+                break
+        msg = (
+            "tool paused for human input, but an inline skill call cannot pause"
+            + (f": {prompt_text}" if prompt_text else "")
+            + " — reply from the Remote Agents task drawer, or route via a sub agent"
+        )
+        if step_id is not None:
+            await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
+        return {"status": "error", "error": msg}
     except Exception as exc:  # noqa: BLE001
         if step_id is not None:
             await ctx.recorder.finish_step(
