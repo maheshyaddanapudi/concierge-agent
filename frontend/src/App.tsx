@@ -4,6 +4,7 @@ import { AmbientPage } from './pages/AmbientPage'
 import { ChatPage } from './pages/ChatPage'
 import { EvalsPage } from './pages/EvalsPage'
 import { McpServersPage } from './pages/McpServersPage'
+import { RemoteAgentsPage } from './pages/RemoteAgentsPage'
 import { ToolsPage } from './pages/ToolsPage'
 import { SkillsPage } from './pages/SkillsPage'
 import { SubAgentsPage } from './pages/SubAgentsPage'
@@ -19,9 +20,11 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 })
 
-const NAV: { to: string; label: string; glyph: string; ambientOnly?: boolean }[] = [
+const NAV: { to: string; label: string; glyph: string; ambientOnly?: boolean; a2aOnly?: boolean }[] = [
   { to: '/', label: 'Chat', glyph: '⌘' },
   { to: '/mcp-servers', label: 'MCP Servers', glyph: '⇌' },
+  // Remote Agents (spec §8.10) appears only while a2a_enabled — see NavItems
+  { to: '/remote-agents', label: 'Remote Agents', glyph: '⇄', a2aOnly: true },
   { to: '/tools', label: 'Tools', glyph: '⚒' },
   { to: '/skills', label: 'Skills', glyph: '§' },
   { to: '/sub-agents', label: 'Sub Agents', glyph: '⬡' },
@@ -36,9 +39,10 @@ const NAV: { to: string; label: string; glyph: string; ambientOnly?: boolean }[]
 function NavItems() {
   const { data: settings } = useSettings()
   const ambientOn = Boolean(settings?.ambient_enabled)
+  const a2aOn = Boolean(settings?.a2a_enabled)
   return (
     <>
-      {NAV.filter((item) => !item.ambientOnly || ambientOn).map((item) => (
+      {NAV.filter((item) => (!item.ambientOnly || ambientOn) && (!item.a2aOnly || a2aOn)).map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
@@ -100,6 +104,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<ChatPage />} />
               <Route path="/mcp-servers" element={<McpServersPage />} />
+              <Route path="/remote-agents" element={<RemoteAgentsPage />} />
               <Route path="/tools" element={<ToolsPage />} />
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/sub-agents" element={<SubAgentsPage />} />

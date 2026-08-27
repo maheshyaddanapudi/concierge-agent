@@ -93,6 +93,7 @@ async def snapshot_skill(session: AsyncSession, skill: Skill) -> dict[str, Any]:
                 "tool_name": t.tool_name,
                 "tool_key": t.tool_key,
                 "mcp_server_id": str(t.mcp_server_id) if t.mcp_server_id else None,
+                "remote_agent_id": str(t.remote_agent_id) if t.remote_agent_id else None,
                 "native_ref": t.native_ref,
                 "status": t.status,
                 "description": t.description,

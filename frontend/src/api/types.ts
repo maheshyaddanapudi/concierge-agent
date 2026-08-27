@@ -25,8 +25,33 @@ export interface McpServer extends RegistryRecord {
   tool_count: number
 }
 
+export interface RemoteAgent extends RegistryRecord {
+  card_url: string
+  card: Record<string, unknown> | null
+  card_fetched_at: string | null
+  last_error: string | null
+  tool_count: number
+  auth: Record<string, { type: string; supported: boolean; configured: boolean }>
+  auth_status: 'ok' | 'unconfigured' | 'unsupported' | 'open'
+}
+
+export interface A2ATask {
+  id: string
+  remote_agent_id: string
+  run_id: string | null
+  remote_task_id: string | null
+  state: string
+  question: string | null
+  error: string | null
+  parked_at: string | null
+  delivered: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface Tool extends RegistryRecord {
-  kind: 'mcp' | 'native'
+  kind: 'mcp' | 'native' | 'a2a'
+  remote_agent_id: string | null
   mcp_server_id: string | null
   tool_name: string
   native_ref: string | null

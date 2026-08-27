@@ -80,6 +80,12 @@ DEFAULTS: dict[str, Any] = {
     # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
     # empty ⇒ in-app only, byte-identical to M23–M25
     "ambient_channels": {},
+    # §19 a2a keys — dark by default
+    "a2a_enabled": False,
+    "a2a_card_refresh_interval_s": 300,
+    "a2a_task_timeout_s": 120,
+    "a2a_poll_interval_s": 60,
+    "a2a_max_parked": 20,
 }
 
 _MODEL_KEYS = {
@@ -118,6 +124,10 @@ _INT_KEYS = {
     "ambient_interrupt_threshold",
     "ambient_wakeups_per_routine_per_day",
     "ambient_escalation_budget_per_day",
+    "a2a_card_refresh_interval_s",
+    "a2a_task_timeout_s",
+    "a2a_poll_interval_s",
+    "a2a_max_parked",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -131,6 +141,7 @@ _BOOL_KEYS = {
     "memory_reflection_enabled",
     "procedural_learning_enabled",
     "ambient_enabled",
+    "a2a_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
