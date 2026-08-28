@@ -170,7 +170,17 @@ function CacheStatusPanel() {
   )
 }
 
-function IntSetting({ label, k, hint }: { label: string; k: string; hint?: string }) {
+function IntSetting({
+  label,
+  k,
+  hint,
+  min = 1,
+}: {
+  label: string
+  k: string
+  hint?: string
+  min?: number
+}) {
   const { data: settings } = useSettings()
   const patch = usePatchSettings()
   if (!settings) return null
@@ -182,9 +192,78 @@ function IntSetting({ label, k, hint }: { label: string; k: string; hint?: strin
         className="max-w-28"
         onBlur={(e) => {
           const v = Number(e.target.value)
-          if (v >= 1 && v !== Number(settings[k])) patch.mutate({ [k]: v })
+          // only nonsense is blocked here — spec-range checks stay server-side
+          // so an out-of-range write surfaces its 422 inline (§14e-42)
+          if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
         }}
       />
+    </Field>
+  )
+}
+
+// ── M40 section helpers (exported for tests) ─────────────────────
+
+/** Comma list → trimmed entries; server-side validation owns the format. */
+export const csvOut = (text: string): string[] =>
+  text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+/** One mode's channel list edited → the full §18.4 routing map to PATCH
+ * (empty list drops the mode: `{}` means in-app only). */
+export const channelRoutingOut = (
+  routing: Record<string, string[]>,
+  mode: string,
+  text: string,
+): Record<string, string[]> => {
+  const next = { ...routing }
+  const chans = csvOut(text)
+  if (chans.length) next[mode] = chans
+  else delete next[mode]
+  return next
+}
+
+function ListSetting({ label, k, hint }: { label: string; k: string; hint?: string }) {
+  const { data: settings } = useSettings()
+  const patch = usePatchSettings()
+  if (!settings) return null
+  return (
+    <Field label={label} hint={hint}>
+      <TextInput
+        defaultValue={((settings[k] as string[]) ?? []).join(', ')}
+        onBlur={(e) => patch.mutate({ [k]: csvOut(e.target.value) })}
+      />
+    </Field>
+  )
+}
+
+function ChannelRouting() {
+  const { data: settings } = useSettings()
+  const patch = usePatchSettings()
+  if (!settings) return null
+  const routing = (settings.ambient_channels as Record<string, string[]>) ?? {}
+  return (
+    <Field
+      label="Delivery channels (§18.4)"
+      hint="per-mode routing — in_app always renders; add email / webhook (env-configured). Empty everywhere = in-app only"
+    >
+      <div className="grid grid-cols-3 gap-2">
+        {(['interrupt', 'notify', 'digest'] as const).map((mode) => (
+          <div key={mode}>
+            <div className="mb-1 font-mono text-[9px] uppercase tracking-widest text-slate-600">
+              {mode}
+            </div>
+            <TextInput
+              placeholder="e.g. in_app, email"
+              defaultValue={(routing[mode] ?? []).join(', ')}
+              onBlur={(e) =>
+                patch.mutate({ ambient_channels: channelRoutingOut(routing, mode, e.target.value) })
+              }
+            />
+          </div>
+        ))}
+      </div>
     </Field>
   )
 }
@@ -317,6 +396,17 @@ export function SettingsPage() {
             label="Direct-exposure cap warning"
             k="direct_exposure_cap_warning"
             hint="Tools/Skills pages warn above this"
+          />
+          <IntSetting
+            label="Overlap-guard threshold (%)"
+            k="overlap_threshold_percent"
+            min={0}
+            hint="saves at or above this overlap raise the confirm dialog — 100 effectively disables it, 0 flags every save (§4, M40)"
+          />
+          <IntSetting
+            label="Agentic recursion limit"
+            k="agentic_recursion_limit"
+            hint="LangGraph recursion budget for the agentic loop (10–500); the model-call limit stays derived from max tool iterations"
           />
         </div>
       </Section>
@@ -484,6 +574,130 @@ export function SettingsPage() {
           >
             {busy === 'refresh-all' ? 'Refreshing…' : 'Refresh all tools'}
           </Button>
+        </div>
+      </Section>
+
+      <Section title="Ambient (§17)">
+        <BoolSetting
+          label="Ambient mode"
+          k="ambient_enabled"
+          hint="master switch — the Ambient page appears in the nav while on; off is byte-identical"
+        />
+        {Boolean(settings.ambient_enabled) && (
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              <IntSetting
+                label="Tick interval (s)"
+                k="ambient_tick_interval_s"
+                hint="scheduler cadence (min 15) — evaluators, drain heartbeat, and the parked-task poller all ride it"
+              />
+              <IntSetting
+                label="Stall reaper window (s)"
+                k="run_stall_after_s"
+                hint="an ambient run silent longer than this is marked stalled (min 60, §17.4)"
+              />
+              <IntSetting label="Idle minutes" k="ambient_idle_minutes" />
+              <IntSetting label="Max routines" k="ambient_max_routines" />
+              <IntSetting label="Runs per day" k="ambient_runs_per_day" />
+              <IntSetting label="Routine events / hour" k="ambient_routine_events_per_hour" />
+              <IntSetting
+                label="Wakeups / routine / day"
+                k="ambient_wakeups_per_routine_per_day"
+              />
+              <IntSetting label="HITL timeout (h)" k="ambient_hitl_timeout_h" />
+              <IntSetting
+                label="Notification budget / day"
+                k="ambient_notification_budget_per_day"
+              />
+              <IntSetting label="Escalation budget / day" k="ambient_escalation_budget_per_day" />
+              <IntSetting
+                label="Interrupt threshold"
+                k="ambient_interrupt_threshold"
+                hint="urgency at or above this may break quiet hours"
+              />
+              <Field
+                label="Learning mode"
+                hint="§17.7 — auto applies policy tweaks itself, propose queues them for approval"
+              >
+                <Select
+                  value={String(settings.ambient_learning_mode)}
+                  onChange={(e) => patch.mutate({ ambient_learning_mode: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'auto', 'propose'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <ListSetting
+                label="Digest times"
+                k="ambient_digest_times"
+                hint="comma-separated HH:MM — when tier-2 digests flush"
+              />
+              <ListSetting
+                label="Quiet hours"
+                k="ambient_quiet_hours"
+                hint="HH:MM start, HH:MM end — non-urgent delivery holds in between"
+              />
+            </div>
+            <ChannelRouting />
+          </>
+        )}
+      </Section>
+
+      <Section title="A2A — remote agents (§19)">
+        <BoolSetting
+          label="A2A"
+          k="a2a_enabled"
+          hint="master switch — the Remote Agents page appears in the nav while on; off is byte-identical"
+        />
+        {Boolean(settings.a2a_enabled) && (
+          <div className="grid grid-cols-3 gap-4">
+            <IntSetting label="Card refresh interval (s)" k="a2a_card_refresh_interval_s" />
+            <IntSetting
+              label="Task timeout (s)"
+              k="a2a_task_timeout_s"
+              hint="in-run wait budget before park-or-error (§19.5)"
+            />
+            <IntSetting
+              label="Poll interval (s)"
+              k="a2a_poll_interval_s"
+              hint="parked-task recheck cadence — tick-bounded, effective max(tick, interval)"
+            />
+            <IntSetting
+              label="Max parked"
+              k="a2a_max_parked"
+              min={0}
+              hint="0 disables parking — budget expiry becomes a plain tool error"
+            />
+            <IntSetting
+              label="HTTP timeout (s)"
+              k="a2a_http_timeout_s"
+              hint="shared A2A client — applies on the manager's next client build"
+            />
+            <IntSetting
+              label="Fence cap (chars)"
+              k="a2a_fence_max_chars"
+              hint="max chars of fenced remote output reaching model context (min 500, §19.5)"
+            />
+          </div>
+        )}
+      </Section>
+
+      <Section title="API guardrails">
+        <div className="grid grid-cols-2 gap-4">
+          <IntSetting
+            label="Rate-limit burst"
+            k="rate_limit_burst"
+            hint="§18.8 token-bucket size per user — enforced while auth is on"
+          />
+          <IntSetting
+            label="Rate-limit refill (/s)"
+            k="rate_limit_per_s"
+            hint="tokens restored per second per user"
+          />
         </div>
       </Section>
 
