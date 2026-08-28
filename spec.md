@@ -137,7 +137,7 @@ Rules:
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6; tick-bounded: the ambient leader tick invokes the poller, which no-ops until this interval has elapsed since its last poll, so the effective cadence is max(tick, interval))`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`, plus the M40 config-hardening keys: `ambient_tick_interval_s (default 60, min 15 — the ambient scheduler tick cadence; evaluators, drain heartbeat, and the parked-task poller all ride it)`, `rate_limit_burst (default 120)` / `rate_limit_per_s (default 10)` (the §18.8 token bucket, read live per refill), `overlap_threshold_percent (default 70, range 0–100 — the §4 overlap-guard gate; 100 effectively disables the dialog, 0 flags every save)`, `run_stall_after_s (default 300, min 60 — the §17.4 H3 reaper window before a silent ambient run is marked stalled)`, `agentic_recursion_limit (default 100, range 10–500 — the agentic loop's LangGraph recursion budget; the model-call limit stays derived from max_tool_iterations)`, `a2a_http_timeout_s (default 15, min 1 — the shared A2A HTTP client timeout, applied on the manager's next client build)`, `a2a_fence_max_chars (default 8000, min 500 — cap on fenced remote output, §19.5)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, `ambient_pursuit ('off'|'away'|'always', default 'always' — whether the external channels named by that routing actually fire for a batch whose in-app broadcast reached nobody, §18.4/§17.5; 'always' is the pre-M41 presence-blind behavior, so the default is byte-identical)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6; tick-bounded: the ambient leader tick invokes the poller, which no-ops until this interval has elapsed since its last poll, so the effective cadence is max(tick, interval))`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`, plus the M40 config-hardening keys: `ambient_tick_interval_s (default 60, min 15 — the ambient scheduler tick cadence; evaluators, drain heartbeat, and the parked-task poller all ride it)`, `rate_limit_burst (default 120)` / `rate_limit_per_s (default 10)` (the §18.8 token bucket, read live per refill), `overlap_threshold_percent (default 70, range 0–100 — the §4 overlap-guard gate; 100 effectively disables the dialog, 0 flags every save)`, `run_stall_after_s (default 300, min 60 — the §17.4 H3 reaper window before a silent ambient run is marked stalled)`, `agentic_recursion_limit (default 100, range 10–500 — the agentic loop's LangGraph recursion budget; the model-call limit stays derived from max_tool_iterations)`, `a2a_http_timeout_s (default 15, min 1 — the shared A2A HTTP client timeout, applied on the manager's next client build)`, `a2a_fence_max_chars (default 8000, min 500 — cap on fenced remote output, §19.5)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
 
 ## 4. Registry API
 
@@ -321,7 +321,7 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 - **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
 - **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, **declarative answer UI on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner — plus (M40) the **overlap-guard threshold** (`overlap_threshold_percent`) and the **agentic recursion limit**.
 - **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
-- **Ambient (§17, M40)**: master `ambient_enabled` toggle (hint: the Ambient page appears in the nav when on), tick interval, run/routine/wakeup budgets, idle minutes, HITL timeout, digest times, quiet hours, notification/escalation budgets, interrupt threshold, learning mode, stall-reaper window (`run_stall_after_s`), channels routing — the same live-PATCH pattern as every section; the master switch here mirrors exactly what the API accepts.
+- **Ambient (§17, M40)**: master `ambient_enabled` toggle (hint: the Ambient page appears in the nav when on), tick interval, run/routine/wakeup budgets, idle minutes, HITL timeout, digest times, quiet hours, notification/escalation budgets, interrupt threshold, learning mode, stall-reaper window (`run_stall_after_s`), channels routing, and (M41) the **pursuit select** (`ambient_pursuit`: off | away | always) sitting with the channel routing it modifies, hinted as "external channels fire only when the in-app toast reached nobody" — the same live-PATCH pattern as every section; the master switch here mirrors exactly what the API accepts.
 - **A2A (§19, M40)**: master `a2a_enabled` toggle (hint: the Remote Agents page appears in the nav when on), card refresh interval, task timeout, poll interval, max parked (0 disables parking), HTTP timeout, fence cap.
 - **API guardrails (M40)**: rate-limit burst + refill per second (`rate_limit_burst` / `rate_limit_per_s`) — admin-gated like every settings write.
 - **Registry cache (§7.3)**: mode select (`bypass` | `memory` | `redis` — redis offered only when `REDIS_URL` is set, save pings it), per-registry status readout (records, generation, loaded-at), **Refresh all caches** button.
@@ -430,6 +430,7 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M41 | Ambient pursuit (§17.5/§18.4): `ambient_pursuit` ('off'\|'away'\|'always', default 'always' = pre-M41 behavior) gates the external half of `dispatch_delivered` on whether the in-app half reached anyone; the presence oracle is the SSE subscriber set sampled at dispatch — the literal audience of the toast just sent, correct per-process under §18.9 — never the idle timer; strictly subordinate to quiet hours, tiers, and the notification budget; Settings control beside the channel routing it modifies | tri-state matrix green + §14f-45..47 live against local SMTP and SMS-gateway-shaped webhook sinks |
 | M40 | Config hardening + per-chat target pin: the §7.5 composer pin (and history-summary checkbox) become per-conversation state; `a2a_poll_interval_s` wired (tick-bounded watermark); Ambient + A2A + API-guardrail sections on the Settings page; hardcoded constants promoted to live settings (`ambient_tick_interval_s`, `rate_limit_burst`/`rate_limit_per_s`, `overlap_threshold_percent`, `run_stall_after_s`, `agentic_recursion_limit`, `a2a_http_timeout_s`, `a2a_fence_max_chars`) each with validation, defaults equal to the previous constants; auth session TTL moves to env (`AUTH_SESSION_TTL_H`) | byte-identity at defaults; §14e-41..44 |
 
 Each milestone lands with its tests. M1–M4 are API-verifiable via curl before M5 exists.
@@ -559,6 +560,26 @@ unless stated):**
 44. (M40) Byte-identity at defaults: with every new key left at its
     default, the §11 suites pass untouched and a fresh boot behaves
     exactly as before the milestone.
+
+**§14f Ambient pursuit acceptance additions (M41; `ambient_enabled=true`,
+`ambient_channels` routing `interrupt` at both a local SMTP sink and an
+SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
+
+45. (M41) **Pursuit `away`, someone watching**: with a browser holding
+    `/api/v1/ambient/stream`, a tier-0 delivery fires the in-app toast and
+    the external channels do NOT send — the row's `external` ledger stays
+    empty, and neither sink receives anything.
+46. (M41) **Pursuit `away`, nobody watching**: with no subscriber, the
+    same tier-0 delivery reaches both sinks — the email lands in the SMTP
+    sink, the SMS-shaped envelope lands in the webhook sink, and the row's
+    `external` ledger records `ok` per channel. The delivery is otherwise
+    identical (same tier, same budget debit, same Inbox row).
+47. (M41) **Subordination and the tri-state**: inside quiet hours the same
+    tier-0 is demoted to digest and NEITHER a toast nor an external send
+    occurs (pursuit escalates the channel, never the hour); with
+    `'off'` and nobody watching, nothing external fires; with `'always'`
+    and someone watching, the external channels fire exactly as they did
+    pre-M41 — the byte-identity leg.
 
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
@@ -777,6 +798,21 @@ the away→active edge emits `user_returned` into the event stream.
 Approvals batch into the digest ranked by risk under a daily escalation
 budget. Feedback (accepted/dismissed/ignored) is captured per item.
 
+**Pursuit (M41).** The tier machinery decides *whether and when* a row is
+delivered; pursuit decides *which channels carry it once that decision is
+already made*. `ambient_pursuit` is `'off'` (in-app only — external
+channels never fire), `'away'` (external channels fire only for a batch
+whose in-app broadcast reached nobody, §18.4), or `'always'` (default —
+external channels fire whenever the routing names them; the pre-M41
+presence-blind behavior). Pursuit is strictly **subordinate** to the tier
+machinery: it never resurrects a row that quiet hours or an exhausted
+notification budget demoted, never re-tiers a row, never debits and never
+bypasses `ambient_notification_budget_per_day`, and never changes which
+rows flush. A tier-0 failure while you are away at 03:00 is therefore
+still demoted by quiet hours and still leads the next digest — **pursuit
+escalates the channel, never the hour**. It is a routing modifier, not a
+second delivery policy.
+
 ### 17.6 Governance, observability, evaluation
 
 Master switch + caps as validated settings (below); `consecutive_failures ≥
@@ -910,6 +946,27 @@ ambient is on — with ambient dark there is no stream, no subscription, no
 toast. With ambient on but NO external channel configured, delivery
 behavior (tiers, budgets, outbox rows) is byte-identical to M23–M25; the
 toast is a rendering of flush events that already occur.
+
+**Pursuit and the presence oracle (M41).** Routing alone is
+presence-blind: a configured `email` on `interrupt` sends whether or not
+the toast already landed in front of you. `ambient_pursuit` (§17.5, §3.7)
+gates the external half of the dispatch on whether the in-app half reached
+anyone. The oracle is **the SSE subscriber set itself, sampled at
+dispatch**: `_publish` fans out to exactly the subscribers registered in
+this process, so "the broadcast reached zero subscribers" is not an
+estimate of presence — it is the literal audience of the toast just sent.
+This keeps the rule correct with no second source of truth, and it stays
+correct under §18.9 multi-replica: the hub is per-process, so a tick on
+replica A can only ever toast A's subscribers, and A's count is exactly
+what A delivered to. The `ambient_idle_minutes` presence timer (§17.5) is
+deliberately **not** the oracle — it answers "has the user been clicking",
+not "did the toast land", and would escalate against an open, actively
+watched tab that simply had not been clicked inside the idle window.
+Known and accepted: a forgotten background tab counts as watching, biasing
+pursuit toward fewer external sends — the conservative direction, since
+the row is in the Inbox either way. The per-channel `external` ledger
+records what actually fired, so a suppressed escalation is visible as an
+absent entry rather than a silent one.
 
 ### 18.5 Ambient UI completeness (M30)
 
