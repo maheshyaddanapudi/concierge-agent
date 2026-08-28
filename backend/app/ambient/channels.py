@@ -152,6 +152,15 @@ def unsubscribe_stream(sub_id: int) -> None:
     _subscribers.pop(sub_id, None)
 
 
+def stream_subscriber_count() -> int:
+    """The §18.4 pursuit presence oracle: how many subscribers `_publish`
+    would fan out to right now. Not an estimate of presence — it IS the
+    audience of the toast, which is exactly the question pursuit asks.
+    Per-process by construction, and correct that way: under §18.9 a tick
+    on this replica can only ever toast this replica's subscribers."""
+    return len(_subscribers)
+
+
 def _publish(mode: str, rows: list[Delivery]) -> None:
     if not _subscribers:
         return
@@ -190,17 +199,49 @@ async def _record_send(rows: list[Delivery], channel: str, entry: dict[str, Any]
         await session.commit()
 
 
+def _pursue(pursuit: str, watchers: int) -> bool:
+    """Should the external channels fire for a batch the in-app hub just
+    reached `watchers` subscribers with? (spec §17.5/§18.4, M41)
+
+    - `always` — presence-blind, the pre-M41 behavior and the default
+    - `away`   — only when the toast reached nobody
+    - `off`    — never; in-app is the whole delivery
+    """
+    if pursuit == "off":
+        return False
+    if pursuit == "away":
+        return watchers == 0
+    return True  # 'always', and any unknown value fails safe to it
+
+
 async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
     """Fan a just-delivered batch out: SSE stream always, external channels
     per the `ambient_channels` routing. Failures are ledgered, logged, and
     never raised — the in-app outbox is already the source of truth."""
     if not rows:
         return
+    # sample the oracle BEFORE publishing: this count is precisely the
+    # audience `_publish` is about to reach (spec §18.4, M41)
+    watchers = stream_subscriber_count()
     _publish(mode, rows)
     from app.registry_cache import get_cache
 
     routing = dict(await get_cache().setting("ambient_channels") or {})
     names = [str(n) for n in (routing.get(mode) or []) if n != "in_app"]
+    # §17.5 pursuit: a routing modifier over the EXTERNAL half only — the
+    # in-app outbox row and its toast above are already decided and sent
+    pursuit = str(await get_cache().setting("ambient_pursuit") or "always")
+    if names and not _pursue(pursuit, watchers):
+        logger.info(
+            "ambient_pursuit_held",
+            tier="ambient",
+            kind="deliver",
+            mode=mode,
+            pursuit=pursuit,
+            watchers=watchers,
+            channels=names,
+        )
+        return
     for name in names:
         adapter = _ADAPTERS.get(name)
         entry: dict[str, Any] = {"at": datetime.now(UTC).isoformat()}

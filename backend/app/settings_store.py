@@ -80,6 +80,9 @@ DEFAULTS: dict[str, Any] = {
     # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
     # empty ⇒ in-app only, byte-identical to M23–M25
     "ambient_channels": {},
+    # M41 pursuit: 'always' is the pre-M41 presence-blind behavior, so the
+    # default leaves external dispatch byte-identical
+    "ambient_pursuit": "always",
     # §19 a2a keys — dark by default
     "a2a_enabled": False,
     "a2a_card_refresh_interval_s": 300,
@@ -265,6 +268,10 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
         ):
             errors.append("memory_score_floor must be a number between 0 and 1")
+        elif key == "ambient_pursuit" and (
+            not isinstance(value, str) or value not in {"off", "away", "always"}
+        ):
+            errors.append("ambient_pursuit must be one of: off, away, always")
         elif key == "ambient_learning_mode" and value not in {"off", "auto", "propose"}:
             errors.append("ambient_learning_mode must be one of: off, auto, propose")
         elif key == "ambient_channels":
