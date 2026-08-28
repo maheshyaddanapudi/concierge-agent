@@ -31,6 +31,7 @@ campaigns and fixed on their branches with regression tests (details below)
 | `26` | Ambient §17/§18 lifecycle: typed routine builder, real webhook fire, ledger chain + precision, watch compile (NL + typed), digest delivery to live SMTP/webhook sinks, feedback, evals page |
 | `27-a2a` | The A2A wave — below |
 | `28-config-hardening` | M40 (spec §14e steps 41–44) — below |
+| `29-ambient-pursuit` | M41 (spec §14f steps 45–47) — below |
 
 ## Stage 27 — A2A (spec §14d steps 33–40)
 
@@ -82,6 +83,40 @@ ambient tick. Stage 28c's own A2A delivery could never have exercised it
 (completed remote tasks deliver at tier 2, and the toaster drops
 `tier > 1` to the inbox by design), so the broadcast path was re-proven
 directly.
+
+## Stage 29 — Ambient pursuit (spec §14f steps 45–47, M41)
+
+Channel routing was presence-blind: a configured `email` on `interrupt`
+sent whether or not the toast had already landed in front of you.
+`ambient_pursuit` gates the external half of the dispatch on whether the
+in-app half reached anyone, with the SSE subscriber set — the literal
+audience of the toast just sent — as the oracle.
+
+Run on the rebuilt M41 images against **live sinks**: the M29 local SMTP
+sink on `:8025` and the SMS-gateway-shaped webhook sink on `:8026`, both
+reached over the compose bridge, with `ambient_channels` routing
+`interrupt` to `["in_app", "email", "webhook"]`. Every scenario inserts a
+tier-0 delivery server-side and lets **the app's own ambient tick** flush
+it — the flush must happen inside the running process, since that is where
+the SSE subscribers live and therefore the only place the toast and the
+oracle both see reality.
+
+| Frames | Step | Proof |
+|---|---|---|
+| `00` | §8.7 | The pursuit select rendered beside the channel routing it modifies, with its subordination hint |
+| `01` | §14f-45 | **away + watching**: browser holding the stream, tier-0 flushes → toast fires and the external channels are **held** — machine-checked: SMTP sink +0, webhook sink +0, `external` ledger `null` |
+| `03` | §14f-46 | **away + nobody watching**: browser closed, 25s for the stream to unregister, same tier-0 → **both sinks receive**. The transcript quotes what actually landed: the SMTP message (`Subject: [concierge] ambient interrupt: 1 item(s)`) and the webhook envelope (`{"kind":"ambient_delivery","mode":"interrupt","items":[…]}`), with `external` recording `ok:true` per channel |
+| `03` | §14f-47a | **Quiet hours beat pursuit**: with quiet hours spanning the current hour, the same tier-0 is demoted to tier 2, `delivered_at` stays null, and **neither** a toast nor an external send occurs — pursuit escalates the channel, never the hour |
+| `03` | §14f-47b | **`off` + nobody watching**: delivered in-app, nothing external, ledger empty |
+| `02`, `03` | §14f-47c | **`always` + watching**: external fires anyway — the pre-M41 byte-identity leg — and the Inbox shows the pursued deliveries |
+
+All five scenarios passed in one run (`5/5` in the transcript). Two honest
+notes: the notification budget was raised to 20 for the stage so five
+interrupts fit in one day (budget behavior itself is proven by §14c-26 and
+the M41 unit suite), and the deliveries were synthetic tier-0 `ops` rows
+inserted server-side rather than driven from a natural producer — the
+dispatch path is what stage 29 exercises, and the producers that reach it
+are covered by their own tests.
 
 ### Frames replaced in place (M40 surgical refresh)
 
