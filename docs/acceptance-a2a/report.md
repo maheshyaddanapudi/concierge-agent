@@ -20,7 +20,7 @@ for.
 | `00`–`05` | Fresh slate, settings/models (qwen3.8-max default), MCP registration, tools, skill authoring + bad-mention rejection, sub-agent builder + overlap judge + DAG preview |
 | `06`–`09` | Four full HITL research trials: graph/agentic × thinking on/off — plan card, rails, gate, resume, A2UI answer, follow-up turn, trace |
 | `10`–`12` | Full-catalog fallback on an uncovered ask; HITL deny + approval queue; Stop + queued message |
-| `13` | Failure/retry/cancel. Frames `00/01/03` fresh; **frames `04`–`08` carried over from the ambient campaign** (visibly default-theme) — see Honest notes |
+| `13` | Failure/retry/cancel — all frames fresh: the failure is a genuine provider-unreachable run (`APIConnectionError`, produced by severing egress at the proxy forwarder), then retry-from-drawer and per-run delete — see Honest notes |
 | `14`–`18` | Runs/ops, static guards, four-theme gallery, data purge, registry cache + retrieval |
 | `19`–`20` | Provider-agnostic on `openai:gpt-5.6-terra`; heterogeneous role mix (sonnet-4-6 default · terra planner · gemini-3.6-flash aggregator) |
 | `21`–`24` | M8 form gates + charts, stale-HITL-card cross-tab fix, ops fixes, formatter on/off |
@@ -73,14 +73,14 @@ design).
 
 ## Honest notes
 
-- **Stage 13 frames `04`–`08` are copies from the ambient campaign** (user-
-  approved). The retry demo needs a *failed* run as a precondition, and the
-  fresh stack refused to produce one honestly: off-list model refs 422 at
-  save (M33 validation working), and across many attempts qwen either
-  completed runs or had the planner decline uncovered asks directly
-  (`direct_answer`) rather than reporting `no_confident_match` — the only
-  branch that fails a run with the fallback disabled. The prior campaign's
-  failure was a naturally occurring provider rate-limit that did not recur.
+- **Stage 13's failed run is a genuine environmental failure, produced
+  deliberately**: the model-side approaches all failed honestly (off-list
+  model refs 422 at save — M33 validation working; qwen completes or
+  declines gracefully; HITL deny completes with an honest report), so the
+  failure was produced by severing provider egress at the sandbox proxy
+  forwarder for one run — a real `APIConnectionError`, the same class of
+  environmental failure as the prior campaign's natural rate-limit — then
+  egress was restored and the retry driven live from the drawer.
 - **Stage 20's planner is `openai:gpt-5.6-terra` with `effort: low`** (the
   ambient campaign used `gpt-4o`): the explicit effort routes the planner
   through the Responses API, which is now the only way OpenAI accepts
