@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -93,6 +94,7 @@ async def snapshot_skill(session: AsyncSession, skill: Skill) -> dict[str, Any]:
                 "tool_name": t.tool_name,
                 "tool_key": t.tool_key,
                 "mcp_server_id": str(t.mcp_server_id) if t.mcp_server_id else None,
+                "remote_agent_id": str(t.remote_agent_id) if t.remote_agent_id else None,
                 "native_ref": t.native_ref,
                 "status": t.status,
                 "description": t.description,
@@ -234,6 +236,10 @@ def _make_native_tool(row: dict[str, Any]) -> BaseTool | None:
 def materialize_tool(row: dict[str, Any]) -> BaseTool | None:
     if row["kind"] == "mcp":
         return _make_mcp_proxy(row)
+    if row["kind"] == "a2a":
+        from app.a2a.proxy import make_a2a_proxy
+
+        return make_a2a_proxy(row, sanitize_tool_name(row["tool_key"]))
     return _make_native_tool(row)
 
 
@@ -394,6 +400,12 @@ def _make_skill_node(
                 },
                 "messages": [AIMessage(content=f"[{node_id}] {text}")],
             }
+        except GraphInterrupt:
+            # a tool-raised gate inside the skill loop (HITL middleware, a2a
+            # input-required — spec §19.5) — NEVER an error edge: let the
+            # worker graph pause; resume replays the tool, which adopts its
+            # open remote task (§7.1 replay contract)
+            raise
         except Exception as exc:  # noqa: BLE001 - error-edge semantics (spec §3.5)
             logger.warning("skill_node_failed", node_id=node_id, error=str(exc))
             return {

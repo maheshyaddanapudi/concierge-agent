@@ -45,7 +45,7 @@ _buckets: dict[str, tuple[float, float]] = {}  # user/ip → (tokens, last_ts)
 _EXEMPT = re.compile(r"^/api/v1/(auth/login$|routines/[0-9a-f-]+/fire$)")
 # writes to these resources require the admin role; /invoke and /overlap*
 # are member actions (read + invoke), not definition writes
-_ADMIN_WRITE = re.compile(r"^/api/v1/(mcp-servers|tools|skills|sub-agents|settings)")
+_ADMIN_WRITE = re.compile(r"^/api/v1/(mcp-servers|remote-agents|tools|skills|sub-agents|settings)")
 
 
 def auth_enabled() -> bool:

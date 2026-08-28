@@ -12,6 +12,7 @@ from uuid import UUID
 
 import structlog
 from langchain_core.messages import HumanMessage
+from langgraph.errors import GraphInterrupt
 from langgraph.types import Command, interrupt
 from sqlalchemy import select
 
@@ -282,6 +283,28 @@ async def run_inline_skill(
                 emit_dispatch=True,
             )
         return output
+    except GraphInterrupt as gi:
+        # like rung 1, the INLINE skill loop runs without a checkpointer —
+        # a tool-raised gate (a2a `input-required`, spec §19.5) cannot pause
+        # here. Never leak the raw Interrupt repr (caught live in the §14d
+        # campaign): surface the same clear contract rung 1 uses. The a2a
+        # task row stays `input-required`, so the §19.6 task drawer carries
+        # the reply; checkpointed paths (sub agents, workers) pause normally.
+        prompt_text = ""
+        interrupts = gi.args[0] if gi.args else ()
+        for intr in interrupts:
+            value = getattr(intr, "value", None)
+            if isinstance(value, dict) and value.get("prompt"):
+                prompt_text = str(value["prompt"])
+                break
+        msg = (
+            "tool paused for human input, but an inline skill call cannot pause"
+            + (f": {prompt_text}" if prompt_text else "")
+            + " — reply from the Remote Agents task drawer, or route via a sub agent"
+        )
+        if step_id is not None:
+            await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
+        return {"status": "error", "error": msg}
     except Exception as exc:  # noqa: BLE001
         if step_id is not None:
             await ctx.recorder.finish_step(
@@ -300,10 +323,14 @@ async def run_direct_tool(
     if not tools:
         return {"status": "error", "error": f"tool {tool_id} is not active"}
     tool = tools[0]
+    from app.registry_cache import get_cache
+
+    records = await get_cache().tools_by_ids([UUID(tool_id)])
+    record_kind = records[0]["kind"] if records else "mcp"
     step_id = await ctx.recorder.start_step(
         "tool_call",
         tier="tool",
-        kind="mcp",
+        kind=record_kind,
         source="dynamic",
         entity_id=tool_id,
         entity_name=tool.name,
@@ -334,6 +361,27 @@ async def run_direct_tool(
             emit_dispatch=True,
         )
         return output
+    except GraphInterrupt as gi:
+        # rung 1 executes OUTSIDE any graph — there is no checkpointer to
+        # pause on, so a tool-raised gate (a2a `input-required`, spec §19.5)
+        # cannot pause a direct-tool run. Never swallow the interrupt into a
+        # raw repr: surface a clear error. The tool's own bookkeeping stands
+        # (the a2a task row stays `input-required`), so the §19.6 Remote
+        # Agents task drawer carries the reply from here.
+        prompt_text = ""
+        interrupts = gi.args[0] if gi.args else ()
+        for intr in interrupts:
+            value = getattr(intr, "value", None)
+            if isinstance(value, dict) and value.get("prompt"):
+                prompt_text = str(value["prompt"])
+                break
+        msg = (
+            "tool paused for human input, but a direct tool call cannot pause"
+            + (f": {prompt_text}" if prompt_text else "")
+            + " — reply from the Remote Agents task drawer, or route via a skill"
+        )
+        await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
+        return {"status": "error", "error": msg}
     except Exception as exc:  # noqa: BLE001
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}

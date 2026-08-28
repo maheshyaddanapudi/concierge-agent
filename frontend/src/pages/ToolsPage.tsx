@@ -147,7 +147,7 @@ export function ToolsPage() {
       <RegistryTable
         rows={tools}
         loading={isLoading}
-        kinds={['mcp', 'native']}
+        kinds={['mcp', 'native', 'a2a']}
         onRowClick={setSelected}
         filterRow={(t, q, source, kind) =>
           (!q ||

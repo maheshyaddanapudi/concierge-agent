@@ -31,7 +31,7 @@
 
 ## 5 — Pivot to standalone POC "concierge agent"
 
-**Mahesh:** Why not create this as a standalone generic POC? Call it concierge agent, no custom or proprietary libraries, assume auth is safe (POC), include all features discussed. Ask me all your questions; then create a spec.md and we'll do spec-driven development with Claude Code. Be creative in the UI layer — MCP registration, tools registry with badges showing which skill a tool is tagged to and vice versa on skills and sub agents registries — everything viewable/editable/updatable like a well-defined admin UI.
+**Mahesh:** Why not create this as a standalone generic POC? Call it concierge agent, no custom or Workday libraries, assume auth is safe (POC), include all features discussed. Ask me all your questions; then create a spec.md and we'll do spec-driven development with Claude Code. Be creative in the UI layer — MCP registration, tools registry with badges showing which skill a tool is tagged to and vice versa on skills and sub agents registries — everything viewable/editable/updatable like a well-defined admin UI.
 
 **Claude:** Posed 15 questions with proposed defaults across Stack (FastAPI+LangGraph+React/Vite/Tailwind, SQLite-vs-Postgres, Anthropic API, per-agent model override), Runtime (MCP transports, workflow sequential vs DAG, routing single-pick vs planner, persona merge order, HITL), Product surface (chat tab, trace view, CRUD semantics, seed data), Delivery (monorepo layout, test scope).
 
@@ -89,7 +89,7 @@
 
 ## 17–18 — Provider agnosticism → non-negotiable port
 
-**Mahesh:** Ensure it's model and provider agnostic — later I'll want to run it behind an enterprise model gateway that offers Claude or Gemini etc. … For the agnostic interface we must create that layer and use it even for Claude/Gemini. Non-negotiable — we'll eventually add an enterprise-gateway provider with its own model choices.
+**Mahesh:** Ensure it's model and provider agnostic — later I'll use it within Workday, which offers Claude or Gemini etc. … For the agnostic interface we must create that layer and use it even for Claude/Gemini. Non-negotiable — we'll eventually add a Workday adaptive provider with its own model choices.
 
 **Claude:** First pass: `init_chat_model` + `provider:model` strings. Second pass (your escalation was right): a real **`ModelProvider` port** (`provider_id`, `is_configured`, `list_models`, `get_chat_model`) + decorator-registered **adapter registry**; anthropic/google_genai/openai as thin built-in adapters; reserved slot for the custom gateway adapter — implement four methods, register, zero consumer changes. Common currency = `BaseChatModel`. **Shared adapter contract test suite** makes future adapters safe to drop in. Key-gated provider availability; provider-neutral prompts; `usage_metadata` token accounting. `[→ spec.md §2.1 + CLAUDE.md updated]`
 
@@ -105,9 +105,9 @@
 
 **Claude:** Skills become **documents**: frontmatter (name/description/persona/tools/exposure) + markdown `instructions` body (multi-step). Native = `.skill.md` files scanned at startup; custom = same shape authored in a UI template editor (`{tool:...}` mentions validated against bindings). **Soft vs hard workflow line**: steps inside a skill guide the LLM within one node (a step need not tie a tool); the machine-executed workflow is the sub agent DAG. Sub agents deliberately stay structured jsonb — prose can't be validated or compiled. Tool tagging = availability; instructions = usage. `[→ spec.md updated]`
 
-## 21 — Enterprise planning walkthrough + failure modes
+## 21 — Workday Adaptive walkthrough + failure modes
 
-**Mahesh:** Scenario: plug a planning MCP server → tools (metadata, reports, flows) → skill "financial metadata analyst" (persona + metadata tools + step instructions with planning-domain keywords) → repeat for reports and flow analysts → sub agent "flow admin" (metadata + flow skills, DAG, persona). Default tools available to all sub agents; skills exposed to orchestrator. What happens on "why is our revenue down in FY2024"? What if sub agent description/persona is bad? What if skill description/persona is bad?
+**Mahesh:** Scenario: plug a planning MCP server → tools (metadata, reports, APFlow) → skill "adaptive financial metadata analyst" (persona + metadata tools + step instructions with Adaptive keywords) → repeat for reports and flow analysts → sub agent "flow admin" (metadata + flow skills, DAG, persona). Default tools available to all sub agents; skills exposed to orchestrator. What happens on "why is our revenue down in FY2024"? What if sub agent description/persona is bad? What if skill description/persona is bad?
 
 **Claude:** Correction first: no ambient default tools — tools reach workers only through skills. Noted flow-admin lacks the reports skill the question needs. Scenario 1 (all good): planner picks the two exposed skills at **rung 1** (inline loops, isolated tools); flow-admin correctly unused. Scenario 2: bad **description** breaks stage-1 selection (probabilistic misrouting; oversell = wrong dispatch; structural rung-3 matching ignores descriptions entirely); bad **persona** never affects selection, softly degrades execution. Scenario 3: bad skill description → skipped at rung 1 / empty plan; bad skill instructions → confidently wrong output flows downstream; error edges don't catch semantic wrongness. Posture: **structure is validated, semantics are observed** — route steps + snapshots tell you which prose to fix.
 

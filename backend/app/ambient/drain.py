@@ -199,6 +199,11 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
                     from app.ambient.learn import run_learner
 
                     await run_learner()
+                    # §19.6 parked A2A tasks — leader-only recheck; a no-op
+                    # while a2a_enabled is off
+                    from app.a2a.poller import poll_parked_tasks
+
+                    await poll_parked_tasks()
                 else:
                     # non-leaders LISTEN + drain only (spec §18.9): the
                     # SKIP-LOCKED drain and the executor are replica-safe

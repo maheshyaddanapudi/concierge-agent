@@ -24,6 +24,7 @@ export function SourceBadge({ source }: { source: Source }) {
 export function KindBadge({ kind }: { kind: string }) {
   const tones: Record<string, string> = {
     mcp: 'bg-violet-500/15 text-violet-400',
+    a2a: 'bg-cyan-500/15 text-cyan-400',
     native: 'bg-emerald-500/15 text-emerald-400',
     custom: 'bg-blue-500/15 text-blue-400',
     dynamic: 'bg-fuchsia-500/15 text-fuchsia-400',

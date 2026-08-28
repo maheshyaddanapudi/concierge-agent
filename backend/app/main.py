@@ -56,6 +56,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_manager(manager)
     # connect persisted servers without blocking app readiness
     startup_task = asyncio.create_task(manager.start())
+    # A2A manager (spec §19.2) — card refresh loop no-ops while a2a is dark
+    from app.a2a.manager import A2AManager
+    from app.a2a.manager import set_manager as set_a2a_manager
+
+    a2a_manager = A2AManager()
+    set_a2a_manager(a2a_manager)
+    a2a_startup_task = asyncio.create_task(a2a_manager.start())
     # retrieval (spec §7.4): embed stale records without blocking readiness
     backfill_task = asyncio.create_task(backfill_embeddings())
     # memory consolidation loop (spec §16.2) — cheap ticks when memory is off
@@ -96,6 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     startup_task.cancel()
     await manager.stop()
     set_manager(None)
+    a2a_startup_task.cancel()
+    await a2a_manager.stop()
+    set_a2a_manager(None)
     await close_checkpointer()
 
 

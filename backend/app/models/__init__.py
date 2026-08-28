@@ -24,6 +24,12 @@ from app.models.memory import (
     RoutingStat,
     RunDigest,
 )
+from app.models.remote_agent import (
+    A2A_OPEN_STATES,
+    A2A_TERMINAL_STATES,
+    A2ATask,
+    RemoteAgent,
+)
 from app.models.run import Conversation, Run, RunStep
 from app.models.setting import AppSetting
 from app.models.skill import Skill, skill_tools
@@ -41,6 +47,9 @@ __all__ = [
     "AmbientEvent",
     "AmbientPolicy",
     "AmbientWakeup",
+    "A2ATask",
+    "A2A_OPEN_STATES",
+    "A2A_TERMINAL_STATES",
     "AppSetting",
     "Base",
     "Conversation",
@@ -55,6 +64,7 @@ __all__ = [
     "PatternInstance",
     "PlanExemplar",
     "RegistryRecord",
+    "RemoteAgent",
     "Routine",
     "RoutingStat",
     "Run",
