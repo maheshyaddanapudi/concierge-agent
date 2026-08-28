@@ -1,6 +1,6 @@
-# Acceptance campaign — A2A wave (`docs/acceptance-a2a/`)
+# Acceptance campaign — A2A wave (`docs/acceptance/`)
 
-Full 1:1 re-run of the [ambient acceptance campaign](../acceptance_ambient/report.md)
+Full 1:1 re-run of the [ambient acceptance campaign](./report-ambient.md)
 — every stage, every frame name — **plus stage 27, the A2A wave (spec §19,
 §14d steps 33–40)**. Captured end-to-end in the **anthropic theme** on live
 **`openrouter:qwen/qwen3.8-max`** (all roles unless a stage tests another
@@ -102,6 +102,6 @@ design).
 
 Fresh `docker compose up` (with the sandbox proxy override), then the
 `camp-a2a/` scripts in session scratch: `campaign-00-01 … campaign-26b`,
-`a2a-27a … a2a-27e` with `OUT=docs/acceptance-a2a`. Counterparties:
+`a2a-27a … a2a-27e` with `OUT=docs/acceptance`. Counterparties:
 `python -m tests.a2a_counterparty --port 8027|8028|8029|8030 …` from
 `backend/` (see the module docstring).
