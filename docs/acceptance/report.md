@@ -70,7 +70,18 @@ bridge for the poll-interval proof.
 | `15`–`18` | §14e-43 | **Poll interval is tick-bounded**: tick 15s, task budget 2s, `a2a_poll_interval_s=3600` → a parked remote task stays parked across 40s (>2 ticks, machine-checked: no recheck, no delivery); PATCH the interval to 1 → the next tick settles it and the fenced result lands in the Inbox |
 | `19`–`20` | §14e-43 | **Overlap threshold is live**: at `overlap_threshold_percent=10`, a loose cousin of `web-research` ("web-brief-writer") raises the §4 dialog on save — judged 85%, threshold 10 shown in the dialog — cancelled, registry unchanged |
 | `21`–`22` | §14e-43 | **Rate-limit boundary moves**: guardrails section at burst 5; then with `AUTH_ENABLED=1`, the curl transcript shows 429 from request 5 of 8 at `burst=5/refill=1`, and 8×200 after PATCHing back to `120/10` |
+| `23`–`24` | §18.4 | **In-app ambient toast, live**: Runs page held open (ambient on, tick 15s, outside quiet hours), a tier-0 delivery inserted **server-side** — no click, no navigation — then the tick's flush dispatched it as an interrupt, `/ambient/stream` broadcast it, and the toast rendered bottom-right ("AMBIENT INTERRUPT · OPS — TOAST PROOF (M40) …"). **No reload**: a `window` marker planted before the insert was still present after the toast appeared (a navigation would have cleared it), and the delivery row reads `{tier: 0, channel: "interrupt", delivered: true}` |
 | — | §14e-44 | **Byte-identity at defaults**: fresh boot on the rebuilt images shows every M40 key at exactly the constant it replaced; the full backend suite (735 passed, 1 skipped) runs on those defaults untouched |
+
+The toast was added here because it was the one ambient surface with no
+anthropic-theme frame — its only prior runtime proof is
+`ambient_channels_m29/02-toast-visible.png` (M29, default theme, preserved
+as an archive) — and because it sits one step downstream of a knob M40
+changed: the delivery flush that broadcasts it rides the now-configurable
+ambient tick. Stage 28c's own A2A delivery could never have exercised it
+(completed remote tasks deliver at tier 2, and the toaster drops
+`tier > 1` to the inbox by design), so the broadcast path was re-proven
+directly.
 
 ### Frames replaced in place (M40 surgical refresh)
 
