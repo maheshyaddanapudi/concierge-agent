@@ -34,6 +34,7 @@ const SETTINGS: Record<string, unknown> = {
   a2a_fence_max_chars: 8000,
 }
 let settings: Record<string, unknown> = SETTINGS
+let patchError: Error | null = null
 
 vi.mock('../api/hooks', () => ({
   useSettings: () => ({ data: settings }),
@@ -42,7 +43,7 @@ vi.mock('../api/hooks', () => ({
   useHitlPending: () => ({ data: [] }),
   useCacheStatus: () => ({ data: null }),
   useRefreshCache: () => ({ mutate: vi.fn(), isPending: false }),
-  usePatchSettings: () => ({ mutate: vi.fn(), error: null }),
+  usePatchSettings: () => ({ mutate: vi.fn(), error: patchError }),
   useInvalidate: () => vi.fn(),
 }))
 
@@ -69,6 +70,7 @@ describe('csvOut / channelRoutingOut (§18.4 routing serializers)', () => {
 describe('SettingsPage M40 sections (spec §8.7)', () => {
   afterEach(() => {
     settings = SETTINGS
+    patchError = null
   })
 
   it('renders the three new sections and the new Orchestrator knobs', () => {
@@ -86,6 +88,15 @@ describe('SettingsPage M40 sections (spec §8.7)', () => {
     render(<SettingsPage />)
     expect(screen.queryByText('Tick interval (s)')).not.toBeInTheDocument()
     expect(screen.queryByText('Poll interval (s)')).not.toBeInTheDocument()
+  })
+
+  it('a rejected PATCH surfaces its 422 detail inline (§14e-42)', () => {
+    settings = { ...SETTINGS, ambient_enabled: true }
+    patchError = new Error('ambient_tick_interval_s must be an integer >= 15')
+    render(<SettingsPage />)
+    expect(
+      screen.getAllByText('ambient_tick_interval_s must be an integer >= 15').length,
+    ).toBeGreaterThan(0)
   })
 
   it('masters on → ambient and a2a knobs appear', () => {

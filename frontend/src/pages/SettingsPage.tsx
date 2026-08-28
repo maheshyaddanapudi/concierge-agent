@@ -186,17 +186,20 @@ function IntSetting({
   if (!settings) return null
   return (
     <Field label={label} hint={hint}>
-      <TextInput
-        type="number"
-        defaultValue={Number(settings[k])}
-        className="max-w-28"
-        onBlur={(e) => {
-          const v = Number(e.target.value)
-          // only nonsense is blocked here — spec-range checks stay server-side
-          // so an out-of-range write surfaces its 422 inline (§14e-42)
-          if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
-        }}
-      />
+      <div className="space-y-1">
+        <TextInput
+          type="number"
+          defaultValue={Number(settings[k])}
+          className="max-w-28"
+          onBlur={(e) => {
+            const v = Number(e.target.value)
+            // only nonsense is blocked here — spec-range checks stay server-side
+            // so an out-of-range write surfaces its 422 inline (§14e-42)
+            if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
+          }}
+        />
+        <ErrorNote error={patch.error} />
+      </div>
     </Field>
   )
 }
@@ -230,10 +233,13 @@ function ListSetting({ label, k, hint }: { label: string; k: string; hint?: stri
   if (!settings) return null
   return (
     <Field label={label} hint={hint}>
-      <TextInput
-        defaultValue={((settings[k] as string[]) ?? []).join(', ')}
-        onBlur={(e) => patch.mutate({ [k]: csvOut(e.target.value) })}
-      />
+      <div className="space-y-1">
+        <TextInput
+          defaultValue={((settings[k] as string[]) ?? []).join(', ')}
+          onBlur={(e) => patch.mutate({ [k]: csvOut(e.target.value) })}
+        />
+        <ErrorNote error={patch.error} />
+      </div>
     </Field>
   )
 }
@@ -264,6 +270,7 @@ function ChannelRouting() {
           </div>
         ))}
       </div>
+      <ErrorNote error={patch.error} />
     </Field>
   )
 }
