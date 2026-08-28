@@ -81,6 +81,11 @@ design).
   forwarder for one run — a real `APIConnectionError`, the same class of
   environmental failure as the prior campaign's natural rate-limit — then
   egress was restored and the retry driven live from the drawer.
+- **The agentic plan-card frames (`08/09 …/01-plan-card-live.png`) are
+  intentionally absent**: the transient "plan · agentic todos" card never
+  surfaced across eight live attempts (both efforts, simple and multi-step
+  prompts) — current qwen agentic runs answer without emitting todos, so the
+  frame is not applicable in current behavior and was not carried over.
 - **Stage 20's planner is `openai:gpt-5.6-terra` with `effort: low`** (the
   ambient campaign used `gpt-4o`): the explicit effort routes the planner
   through the Responses API, which is now the only way OpenAI accepts
