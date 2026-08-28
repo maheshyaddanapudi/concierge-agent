@@ -7,6 +7,7 @@ import type {
   HitlPending,
   McpServer,
   ProviderInfo,
+  RemoteAgent,
   Run,
   Settings,
   Skill,
@@ -18,6 +19,14 @@ export function useServers(params = '') {
   return useQuery({
     queryKey: ['mcp-servers', params],
     queryFn: () => api.get<McpServer[]>(`/mcp-servers${params}`),
+    refetchInterval: 5000,
+  })
+}
+
+export function useRemoteAgents(params = '') {
+  return useQuery({
+    queryKey: ['remote-agents', params],
+    queryFn: () => api.get<RemoteAgent[]>(`/remote-agents${params}`),
     refetchInterval: 5000,
   })
 }

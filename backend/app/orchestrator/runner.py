@@ -342,8 +342,9 @@ async def _run_graph(
             "then retry"
         ) from exc
     if state.get("__interrupt__"):
-        if resume is not None:
-            await _emit_pending_hitl(graph, config, ctx)
+        # announce every live gate (see _run_agentic: fresh tool-level gates
+        # have no inline announcer; duplicates are benign, newest wins)
+        await _emit_pending_hitl(graph, config, ctx)
         return {"paused": True}
     return {"paused": False, "answer": state.get("answer", "")}
 
@@ -397,6 +398,7 @@ async def _emit_pending_hitl(graph: Any, config: dict[str, Any], ctx: RunContext
             {
                 "prompt": value.get("prompt"),
                 "node_id": value.get("node_id"),
+                "questions": value.get("questions"),
                 "step_id": value.get("dispatch_step_id"),
             },
         )
@@ -479,8 +481,9 @@ async def _run_direct(
 
     state = await graph.ainvoke(graph_input, config=cast(RunnableConfig, config))
     if state.get("__interrupt__"):
-        if resume is not None:
-            await _emit_pending_hitl(graph, config, ctx)
+        # announce every live gate (see _run_agentic: fresh tool-level gates
+        # have no inline announcer; duplicates are benign, newest wins)
+        await _emit_pending_hitl(graph, config, ctx)
         return {"paused": True}
     return {"paused": False, "answer": state.get("answer", "")}
 
@@ -533,8 +536,11 @@ async def _run_agentic(
             "repeatedly; check the run trace, then narrow the ask or retry"
         ) from exc
     if interrupted:
-        if resume is not None:
-            await _emit_pending_hitl(agent, config, ctx)
+        # tool-level gates (a2a input-required, spec §19.5) have no inline
+        # announcer on a FRESH pause — worker dispatch announces via
+        # invoke_worker_with_hitl, but a direct tool interrupt does not;
+        # announce every live gate here (duplicates are benign, newest wins)
+        await _emit_pending_hitl(agent, config, ctx)
         return {"paused": True}
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])

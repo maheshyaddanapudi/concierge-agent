@@ -191,8 +191,10 @@ class OpenAIProvider(ModelProviderBase):
             ModelInfo("gpt-5.4-mini", "GPT-5.4 mini", supports_temperature=False),
             ModelInfo("gpt-5", "GPT-5", supports_temperature=False),
             ModelInfo("gpt-5-mini", "GPT-5 mini", supports_temperature=False),
-            # non-reasoning: temperature supported, effort not applicable
-            ModelInfo("gpt-4o", "GPT-4o", supports_effort=False),
+            # gpt-4o removed: OpenAI's /v1/chat/completions now rejects
+            # function tools for it outright when reasoning params appear,
+            # and it cannot ride the Responses-API path (no effort knob) —
+            # every remaining entry can
         ]
 
     def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:

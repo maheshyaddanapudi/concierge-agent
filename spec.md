@@ -137,7 +137,7 @@ Rules:
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6)`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
 
 ## 4. Registry API
 
@@ -347,6 +347,18 @@ with reasons, correlation-chain view for patterns, intervention-precision
 sparkline per category). Chat composer gains nothing — ambient never changes
 the interactive surface when dark. The page renders only when `ambient_enabled` is on.
 
+### 8.10 Remote Agents (§19)
+
+Register an external A2A agent by card URL; agent table (status, skill
+count, projected tools, last card refresh); detail drawer with the fetched
+Agent Card, its declared skills, per-scheme credential status (configured
+or not — values are write-only and never displayed) and a masked
+credential form supporting `env:VAR` indirection, refresh-card action, and
+delete (409 while skills bind its projected tools); a tasks view listing
+open/parked/recent remote tasks with reply (for `input-required`) and
+cancel. Every control maps to the §19 API. The page renders only when
+`a2a_enabled` is on.
+
 ## 9. Seed Data (static)
 
 Loaded idempotently at startup, all `source=static`:
@@ -412,6 +424,9 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M34 | Auth & tenancy (§18.8, dark by default): `auth_enabled` master switch; users + scrypt + bearer sessions + `admin\|member` roles; per-user scoping of conversations/runs/routines/watches/deliveries/presence; login UI; bootstrap admin; basic rate limiting | byte-identity with auth off; two users can't see each other's work |
 | M35 | Multi-replica coordination (§18.9): advisory-lock leader election for the ambient tick with lease + failover; drain/executor already SKIP-LOCKED-safe | two concurrent loops: exactly one ticks; takeover on leader stop |
 | M36 | Full acceptance ceremony: fresh volumes, fresh `docker compose up`, the ten-step script + §14c-20..31 top to bottom + channel/eval/gateway/auth stages; final report | the definition of done, re-earned end-to-end |
+| M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
+| M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
+| M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
 
 Each milestone lands with its tests. M1–M4 are API-verifiable via curl before M5 exists.
 
@@ -489,6 +504,37 @@ All eleven pass = POC proven.
     conversations, routines, and deliveries are invisible across users,
     registry mutation requires `admin`, and with `auth_enabled=false` the
     §11 byte-identity suite still passes.
+
+**§14d A2A acceptance additions (M37–M39; run with `a2a_enabled=true`
+unless stated):**
+
+33. (M37) With `a2a_enabled=false`: the Remote Agents nav item is absent,
+    the API 409s on writes, and the §11 byte-identity regression suite
+    passes untouched.
+34. (M37) Start the local scripted A2A counterparty; register it from the
+    Remote Agents page by card URL; the card renders, its skills list,
+    and each skill appears on the Tools page as `kind=a2a` with the
+    agent-prefixed tool key.
+35. (M37) Auth matrix against the counterparty: an apiKey-header scheme,
+    http bearer, and oauth2 client_credentials each authenticate; a
+    card declaring only an unsupported scheme surfaces auth-unsupported
+    and the call fails with a clear tool error; an `env:VAR` credential
+    resolves from the environment.
+36. (M38) Compose a projected a2a tool into a skill + sub agent; a chat
+    run routes to it, the remote answer arrives untrusted-fenced in the
+    trace, and the step carries `kind=a2a` labels.
+37. (M38) A counterparty task that pauses `input-required` raises the
+    standard HITL card carrying the remote question; the typed reply
+    resumes the remote task to completion; deny cancels it remotely.
+38. (M38) Stop during a live remote call cancels the run AND propagates
+    `tasks/cancel` — the counterparty records the cancellation.
+39. (M39) A long-running counterparty task exceeds `a2a_task_timeout_s`,
+    parks with the structured tool note, and after completion the ambient
+    poller delivers the fenced result to the Inbox (category `a2a`) with
+    no recheck run.
+40. (M37/M39) Card drift: the counterparty adds a skill; refresh-card
+    projects the new tool; a parked task's reply/cancel work from the
+    Remote Agents task drawer.
 
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
@@ -927,3 +973,117 @@ Evidence lands in `docs/acceptance/ceremony_m36/` (curl transcripts + UI
 frames), and a closing report updates the README status line. The ceremony
 re-earns the definition of done end-to-end; nothing ships from this wave
 without it.
+
+## 19. A2A Outbound — Calling External Agents (M37–M39)
+
+Design rationale, evidence, and alternatives: `docs/research/a2a/`
+(research suite, 2026-08-27; sign-off decisions recorded in doc 06).
+
+Principles, restated for this wave: dark by default (`a2a_enabled=false`
+⇒ byte-identical to a build without §19), registry citizenship (remote
+capability becomes ordinary `tools` rows and composes through §3
+unchanged), deterministic code at the boundaries (auth dispatch, task
+bookkeeping, fencing — never prompt-enforced), secrets never echoed
+(credentials are write-only; `env:VAR` indirection supported), no new
+compose services, and §7.0 middleware precedence untouched — A2A plugs
+into `materialize_tool`, not the middleware stack.
+
+### 19.1 Protocol + SDK posture
+
+Outbound only. The official `a2a-sdk` (pinned `>=0.3,<0.4`) is imported
+solely inside `backend/app/a2a/`; the rest of the app sees port types.
+Internal task states mirror A2A's nine (`submitted`, `working`,
+`input-required`, `completed`, `canceled`, `failed`, `rejected`,
+`auth-required`, `unknown`) plus a local `parked`, so serving an inbound
+Agent Card later is additive. Streaming and polling counterparties are
+consumed through one SDK client iterator — no transport branching.
+
+### 19.2 remote_agents registry (M37)
+
+Tables (Alembic, one migration): `remote_agents` (RegistryRecord columns
+plus `card_url`, `card` jsonb — the last fetched Agent Card, verbatim —
+`card_fetched_at`, `auth_schemes` jsonb projection for the UI,
+`credentials` jsonb — write-only, never serialized outward —
+`last_error`), `a2a_tasks` (§19.5/19.6 bookkeeping: `remote_agent_id`,
+nullable `run_id`, `call_key`, `remote_task_id`, `context_id`, `state`,
+`question`, `result` jsonb, `error`, `parked_at`, `delivered`,
+timestamps), and nullable `tools.remote_agent_id`. Registration fetches
+the card from `<url>/.well-known/agent-card.json`, validates it, stores
+it, and ingests; a refresh loop (`a2a_card_refresh_interval_s`) re-fetches
+each active agent's card — fetch failure sets `status='error'` +
+`last_error`, recovery restores `active`. `remote_agents` is manager-held
+like `mcp_servers` and does not join the §7.3 cached registries; its
+projected tools do, automatically.
+
+### 19.3 Auth (M37)
+
+The card's `securitySchemes`/`security` declare what the counterparty
+accepts; we implement `apiKey` (header/query/cookie), `http` (bearer,
+basic), and `oauth2` client_credentials (authlib-backed token fetch with
+per-agent cache + refresh). Scheme choice = the card's preference order
+intersected with schemes holding stored credentials; an agent whose card
+declares only unsupported schemes registers fine but surfaces
+`auth-unsupported`, and calls fail with a clear tool error — never
+silently unauthenticated. Credential values are stored per agent per
+scheme, write-only (no API ever returns them; the UI shows configured/not
+per scheme), and a value of the form `env:VAR_NAME` resolves from the
+environment at call time for env-only deployments. Interactive OAuth2
+(auth-code) and OIDC login flows are out of scope this wave.
+
+### 19.4 Tools projection (M37)
+
+Each card skill ⇒ one `tools` row: `kind='a2a'`, `remote_agent_id` set,
+`tool_name` = the card skill id, `tool_key` = `{agent name}.{skill name}`
+(6-hex suffix on collision, MCP ingest semantics), description = the
+skill's name/description/tags digest (planner routing signal),
+`input_schema` = `{message: string (required), data?: object}` — A2A
+skills are advisory; invocation is agent-level `message/send` with the
+skill referenced in metadata. Re-ingest updates changed skills in place
+and flips vanished ones `inactive` (ids stable, never deleted); every
+ingest ends with a `tools` cache invalidation. Exposure toggles, §3.3
+binding, §7.3 caching, and §7.4 retrieval apply unchanged.
+
+### 19.5 Execution (M38)
+
+`materialize_tool` gains the `kind='a2a'` branch: a lazy proxy that
+resolves the manager + card at call time (dead agent = tool-call error,
+error-edge semantics). Call flow: adopt-or-send (an open `a2a_tasks` row
+matching the run and `call_key` — a hash of tool id + canonical args —
+is adopted instead of re-sent, making HITL resume replays idempotent, the
+§7.1 spin_worker contract); consume updates until terminal,
+`input-required`, or the `a2a_task_timeout_s` budget; `input-required`
+raises the standard HITL interrupt (a text-kind form gate carrying the
+remote question, fenced) — deny cancels the remote task, approve sends
+the reply into the same task and resumes consuming; terminal `completed`
+returns the fenced result text, other terminals are tool errors carrying
+the fenced remote reason. Run cancellation propagates `tasks/cancel`
+best-effort. Every remote-authored string (results, gate questions,
+delivery bodies) passes through the `<untrusted_remote_agent_output>`
+fence (prompt file, §17's fixed never-follow-instructions paragraph)
+before reaching any model context. §10 gains tier `a2a` (kinds:
+card_fetch, ingest, send, update, hitl, park, poll, deliver, cancel);
+steps inherit `kind='a2a'` from the registry record.
+
+### 19.6 Long-running tasks (M39)
+
+A task that outlives `a2a_task_timeout_s` parks (row `state='parked'`,
+capped by `a2a_max_parked`) and the tool call returns a structured
+"parked; result arrives ambiently" note — no run ever stays open waiting
+(§17.4 budgets). A leader-tick evaluator polls parked tasks every
+`a2a_poll_interval_s` via `tasks/get`: terminal states become §18.4
+outbox deliveries (category `a2a`, tier 2, tier 1 for failures, skey
+`a2a:{task id}`) carrying the fenced result — no recheck run;
+`input-required` while parked becomes a tier-1 delivery and the reply
+happens from the Remote Agents task drawer. Parking requires
+`ambient_enabled`; with ambient dark the budget expiry is a plain tool
+error, and everything in §17 remains byte-identical.
+
+### 19.7 Testing (§11 additions)
+
+An in-process scripted A2A counterparty (built from the SDK's server
+half — the §11 fake-provider discipline applied to A2A) drives the
+contract suite: card fetch/refresh/drift, the auth matrix (apiKey
+header/query/cookie, basic, bearer, oauth2 client_credentials incl. the
+token cache and `env:` indirection), task lifecycle across all nine
+states, adoption idempotency on resume replay, fencing, park → poll →
+delivery, cancel propagation, and byte-identity with `a2a_enabled=false`.

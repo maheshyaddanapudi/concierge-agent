@@ -15,8 +15,9 @@ class ToolPatch(ApiModel):
 
 
 class ToolOut(RegistryOut):
-    kind: Literal["mcp", "native"]
+    kind: Literal["mcp", "native", "a2a"]
     mcp_server_id: UUID | None
+    remote_agent_id: UUID | None
     tool_name: str
     native_ref: str | None
     tool_key: str

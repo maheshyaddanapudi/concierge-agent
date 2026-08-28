@@ -12,9 +12,12 @@ from app.models.base import RegistryRecord
 class Tool(RegistryRecord):
     __tablename__ = "tools"
 
-    kind: Mapped[str] = mapped_column(String(16))  # 'mcp' | 'native'
+    kind: Mapped[str] = mapped_column(String(16))  # 'mcp' | 'native' | 'a2a'
     mcp_server_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("mcp_servers.id"), default=None
+    )
+    remote_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("remote_agents.id"), default=None
     )
     tool_name: Mapped[str] = mapped_column(String(255))
     native_ref: Mapped[str | None] = mapped_column(String(512), default=None)

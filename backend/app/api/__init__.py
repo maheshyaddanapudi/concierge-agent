@@ -11,6 +11,7 @@ from app.api import (
     fake_llm,
     mcp_servers,
     memories,
+    remote_agents,
     routines,
     runs,
     seed,
@@ -24,6 +25,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(cache.router)
 api_router.include_router(mcp_servers.router)
+api_router.include_router(remote_agents.router)
 api_router.include_router(tools.router)
 api_router.include_router(skills.router)
 api_router.include_router(sub_agents.router)
