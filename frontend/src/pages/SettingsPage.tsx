@@ -650,6 +650,20 @@ export function SettingsPage() {
               />
             </div>
             <ChannelRouting />
+            <Field
+              label="Pursuit (§17.5)"
+              hint="when the external channels above actually fire — away = only when the in-app toast reached nobody; always = whenever routed (pre-M41); off = in-app only. Never overrides quiet hours, tiers, or the budget"
+            >
+              <Select
+                value={String(settings.ambient_pursuit)}
+                onChange={(e) => patch.mutate({ ambient_pursuit: e.target.value })}
+                className="max-w-36"
+              >
+                {['off', 'away', 'always'].map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
+              </Select>
+            </Field>
           </>
         )}
       </Section>

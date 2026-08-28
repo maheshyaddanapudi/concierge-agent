@@ -20,6 +20,7 @@ const SETTINGS: Record<string, unknown> = {
   ambient_digest_times: ['09:00', '17:00'],
   ambient_quiet_hours: ['22:00', '07:00'],
   ambient_channels: {},
+  ambient_pursuit: 'always',
   ambient_tick_interval_s: 60,
   run_stall_after_s: 300,
   overlap_threshold_percent: 70,
@@ -105,6 +106,9 @@ describe('SettingsPage M40 sections (spec §8.7)', () => {
     expect(screen.getByText('Tick interval (s)')).toBeInTheDocument()
     expect(screen.getByText('Stall reaper window (s)')).toBeInTheDocument()
     expect(screen.getByText('Delivery channels (§18.4)')).toBeInTheDocument()
+    // M41: pursuit sits with the routing it modifies
+    expect(screen.getByText('Pursuit (§17.5)')).toBeInTheDocument()
+    expect(screen.getByText(/only when the in-app toast reached nobody/)).toBeInTheDocument()
     expect(screen.getByText('Poll interval (s)')).toBeInTheDocument()
     expect(screen.getByText(/0 disables parking/)).toBeInTheDocument()
     expect(screen.getByText('Fence cap (chars)')).toBeInTheDocument()
