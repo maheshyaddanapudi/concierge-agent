@@ -16,6 +16,7 @@ Start with **[report.md](./report.md)** — the latest campaign's full report
 |---|---|
 | `00-…` – `26-…` | The latest campaign: 27 base stages at exact 1:1 frame parity with the prior ambient campaign — fresh slate → registries → four HITL trials → fallback/deny/stop → ops/themes/purge → cache/providers → M8 features → formatter → memory sweep → ambient sweep |
 | `27-a2a/` | The A2A stage (spec §14d steps 33–40): dark gate, card registration, write-only credentials, tools projection, skill + ExComm authoring, organic routing with fenced traces, HITL approve/deny with counterparty-side cancel proofs, Stop propagation, park→leader-tick→Inbox, drawer reply, card drift, auth matrix |
+| `28-config-hardening/` | The M40 stage (spec §14e steps 41–44): per-conversation composer pin, Settings-page Ambient/A2A/API-guardrail sections with live nav toggling and inline 422s, tick-bounded poll-interval throttle proof, live overlap threshold, rate-limit 429-boundary transcript — plus the surgical in-place refresh of the settings frames the new sections changed (changelog in `report.md`) |
 | `report.md` | The latest campaign's report |
 | `a2a-14d/` | The first A2A acceptance campaign (39 frames + transcripts + its report) — the §14d steps proven immediately after M37–M39 landed |
 | `report-ambient.md` | The prior ambient campaign's report (its frames are superseded 1:1 by the stage dirs above) |

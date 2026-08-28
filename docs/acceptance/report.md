@@ -9,9 +9,12 @@ images with the a2a-sdk/authlib dependencies, seeds from scratch.
 
 **Verdict: pass.** All 27 base stages at exact frame parity with the ambient
 campaign, both feature sweeps green, and the eight §14d A2A steps proven
-live. Two real product defects were found by this campaign and fixed on the
-branch with regression tests (details below) — exactly what a live re-run is
-for.
+live. **Stage 28 (M40 config hardening, §14e steps 41–44) was added on the
+`config_hardening` branch** — per-chat pin, settings completeness, wired-knob
+behavior, byte-identity — with the affected settings frames surgically
+recaptured in place. Four real product defects were found across these
+campaigns and fixed on their branches with regression tests (details below)
+— exactly what a live re-run is for.
 
 ## Layout
 
@@ -27,6 +30,7 @@ for.
 | `25` | Memory §16 lifecycle: quick-add, chat-taught fact + quarantined instruction, extraction, review, supersede, pin, cross-conversation recall, hard delete |
 | `26` | Ambient §17/§18 lifecycle: typed routine builder, real webhook fire, ledger chain + precision, watch compile (NL + typed), digest delivery to live SMTP/webhook sinks, feedback, evals page |
 | `27-a2a` | The A2A wave — below |
+| `28-config-hardening` | M40 (spec §14e steps 41–44) — below |
 
 ## Stage 27 — A2A (spec §14d steps 33–40)
 
@@ -53,6 +57,43 @@ design).
 | `32`–`33` | §14d-40 | Card drift: counterparty added `proofread` live; Refresh card projected the new `kind=a2a` tool |
 | `34`–`39` | §14d-35 | Auth matrix: apiKey resolved from **`env:STUB_A2A_KEY`** (auth ok chip + authenticated echo round-trip), oauth2 client_credentials (**exactly one token minted** at the stub's `/token`, then an authenticated echo round-trip), mutualTLS-only card → `auth-unsupported` chip; the call sends no credentials (nothing supported to place) and fails as a clean `401 Unauthorized` tool step, with the run completing and reporting it honestly |
 
+## Stage 28 — Config hardening (spec §14e steps 41–44, M40)
+
+Captured on the same fresh stack (rebuilt M40 images, qwen3.8-max all
+roles, anthropic theme), with the polyglot counterparty back on the
+bridge for the poll-interval proof.
+
+| Frames | Step | Proof |
+|---|---|---|
+| `00`–`06` | §14e-41 | **Per-chat pin**: research-concierge pinned in conversation A (badge + `mode='direct'` run); new conversation B opens at Orchestrator (auto) — machine-checked empty picker — and runs planner-routed (`graph`); back in A the pin **and** the history-summary checkbox are restored, and the next message runs direct with `+ctx`. The API run list closes the loop: A's runs `direct`, B's `graph` |
+| `07`–`14` | §14e-42 | **Settings completeness**: Ambient master toggled ON from the page → the Ambient nav entry appears live, every §17 knob + §18.4 channel routing renders; tick interval PATCHed to 45 and read back after reload; tick=5 → the **422 detail renders inline under the control**; A2A master ON → Remote Agents nav appears + all six §19 knobs (max-parked shows the "0 disables parking" hint); the always-visible API-guardrails pair; Orchestrator's new overlap-threshold + recursion-limit knobs |
+| `15`–`18` | §14e-43 | **Poll interval is tick-bounded**: tick 15s, task budget 2s, `a2a_poll_interval_s=3600` → a parked remote task stays parked across 40s (>2 ticks, machine-checked: no recheck, no delivery); PATCH the interval to 1 → the next tick settles it and the fenced result lands in the Inbox |
+| `19`–`20` | §14e-43 | **Overlap threshold is live**: at `overlap_threshold_percent=10`, a loose cousin of `web-research` ("web-brief-writer") raises the §4 dialog on save — judged 85%, threshold 10 shown in the dialog — cancelled, registry unchanged |
+| `21`–`22` | §14e-43 | **Rate-limit boundary moves**: guardrails section at burst 5; then with `AUTH_ENABLED=1`, the curl transcript shows 429 from request 5 of 8 at `burst=5/refill=1`, and 8×200 after PATCHing back to `120/10` |
+| — | §14e-44 | **Byte-identity at defaults**: fresh boot on the rebuilt images shows every M40 key at exactly the constant it replaced; the full backend suite (735 passed, 1 skipped) runs on those defaults untouched |
+
+### Frames replaced in place (M40 surgical refresh)
+
+The Settings page grew three sections (Ambient, A2A, API guardrails) and
+two Orchestrator knobs, so the archived frames whose visible region
+includes the changed area were recaptured on the M40 build — same claim,
+same settings state, same theme:
+
+- `01-settings-models/02-formatter-section-default-on.png`
+- `24-formatter/00-settings-on-a2ui-first.png`, `24-formatter/03-settings-off-options-hidden.png`
+- `23-ops-fixes/02-otlp-endpoint-set.png`, `23-ops-fixes/03-debug-selected-visible.png`
+  (the two paused `workspace-reporter` gates recreated live for fidelity)
+- `17-data-purge/00-purged-settings.png`
+- `25-memory/00-settings-memory-layers.png`
+- `26-ambient/00-settings-no-ambient-toggle.png` → **renamed**
+  `26-ambient/00-settings-ambient-section.png`: its claim inverted — the
+  ambient master switch (with every §17 knob) now lives on the Settings
+  page (spec §8.7, M40) instead of being API-only.
+
+Frames whose visible region is unaffected (e.g. `01-settings-models/00`,
+`01`, the stage-18 cache/retrieval frames) were left untouched; milestone
+archive directories are never retouched.
+
 ## Defects found by this campaign (fixed on the branch)
 
 1. **Inline skill loop swallowed GraphInterrupt** (`run_inline_skill`,
@@ -70,6 +111,19 @@ design).
    gpt-5.x entries ride the adapter's Responses-API path (explicit `effort`),
    but gpt-4o has no effort knob and no escape route. Caught when stage 20's
    planner leg 400'd. Commit `fix(llm): drop gpt-4o from the openai model list`.
+3. **Per-control settings 422s failed silently** (stage 28, §14e-42). Every
+   numeric/list/channel control on the Settings page runs its own
+   `usePatchSettings` mutation, so a rejected out-of-bounds write never
+   reached the page-level ErrorNote — the value just didn't stick. Each
+   control now renders its own inline ErrorNote.
+   Commit `fix(settings-ui): surface per-control PATCH errors inline`.
+4. **The §4 skill overlap guard was silently dead in the editor** (stage 28,
+   §14e-43). The editor's pre-save `check-overlap` payload included
+   `max_tool_iterations`, which `SkillOverlapCheck` rejects
+   (`extra_forbidden`); the advisory catch swallowed the 422 and every save
+   fell straight through — the duplicate dialog could never fire from the
+   skill editor. Payload now matches the schema.
+   Commit `fix(skills-ui): overlap-guard check sent a field its schema forbids`.
 
 ## Honest notes
 
