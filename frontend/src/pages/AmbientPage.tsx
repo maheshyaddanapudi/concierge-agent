@@ -5,6 +5,7 @@ import { useInvalidate, useSettings } from '../api/hooks'
 import {
   Button,
   Chip,
+  cx,
   Drawer,
   EmptyState,
   Field,
@@ -72,6 +73,8 @@ interface DeliveryRow {
   delivered_at: string | null
   superseded_by: string | null
   feedback: string | null
+  seen_at?: string | null
+  salience?: { verdict: string; reason: string; confidence: number; applied: boolean } | null
   reward: number | null
   created_at: string | null
 }
@@ -809,8 +812,23 @@ function FeedbackButtons({ row, onDone }: { row: DeliveryRow; onDone: () => void
 }
 
 function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
+  // M42 §18.4: opening an item stamps seen_at — attention becomes a fact.
+  // Only delivered items can be "seen"; pending ones are not yet news.
+  const unseen = Boolean(row.delivered_at) && !row.seen_at
+  const markSeen = async () => {
+    if (!unseen) return
+    await api.post(`/deliveries/${row.id}/seen`).catch(() => {})
+    onDone()
+  }
   return (
-    <div className="rounded-lg border border-slate-800 bg-void-950/50 px-4 py-3">
+    <div
+      data-testid={unseen ? 'delivery-unseen' : 'delivery-seen'}
+      onMouseEnter={() => void markSeen()}
+      className={cx(
+        'rounded-lg border px-4 py-3',
+        unseen ? 'border-amber-500/40 bg-amber-500/[0.04]' : 'border-slate-800 bg-void-950/50',
+      )}
+    >
       <div className="flex items-center gap-2">
         <TierBadge tier={row.tier} />
         <Chip>{row.category}</Chip>
@@ -825,6 +843,18 @@ function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void })
       <div className="mt-1 text-sm text-slate-200">{row.title}</div>
       {row.body && (
         <div className="mt-1 whitespace-pre-wrap text-xs text-slate-400">{row.body.slice(0, 600)}</div>
+      )}
+      {row.salience && (
+        <div
+          data-testid="salience-verdict"
+          className="mt-2 rounded-md border border-slate-800 bg-void-900/60 px-2.5 py-1.5 font-mono text-[10px] text-slate-400"
+        >
+          <span className="uppercase tracking-widest text-accent-300">
+            salience · {row.salience.verdict}
+          </span>
+          {row.salience.applied ? '' : ' · proposed'} · confidence{' '}
+          {row.salience.confidence.toFixed(2)} — {row.salience.reason}
+        </div>
       )}
     </div>
   )

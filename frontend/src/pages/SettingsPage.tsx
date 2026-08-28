@@ -651,6 +651,29 @@ export function SettingsPage() {
             </div>
             <ChannelRouting />
             <Field
+              label="Salience (§17.5)"
+              hint="re-judges what an unseen alert actually SAID: lead the next digest, remember the fact, or drop it on the record. Never re-interrupts and never overrides quiet hours"
+            >
+              <div className="flex items-end gap-3">
+                <Select
+                  value={String(settings.ambient_salience_mode)}
+                  onChange={(e) => patch.mutate({ ambient_salience_mode: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'propose', 'auto'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+                <div className="w-40">
+                  <IntSetting
+                    label="Min urgency"
+                    k="ambient_salience_min_urgency"
+                    hint="prefilter floor (1-5) before a model is called; a recurring alert clears it anyway"
+                  />
+                </div>
+              </div>
+            </Field>
+            <Field
               label="Pursuit (§17.5)"
               hint="when the external channels above actually fire — away = only when the in-app toast reached nobody; always = whenever routed (pre-M41); off = in-app only. Never overrides quiet hours, tiers, or the budget"
             >

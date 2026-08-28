@@ -83,6 +83,11 @@ DEFAULTS: dict[str, Any] = {
     # M41 pursuit: 'always' is the pre-M41 presence-blind behavior, so the
     # default leaves external dispatch byte-identical
     "ambient_pursuit": "always",
+    # M42 salience: off is byte-identical — the pass does not run at all
+    "ambient_salience_mode": "off",
+    "ambient_salience_min_urgency": 3,
+    "ambient_salience_model": None,
+    "ambient_salience_model_params": None,
     # §19 a2a keys — dark by default
     "a2a_enabled": False,
     "a2a_card_refresh_interval_s": 300,
@@ -107,6 +112,7 @@ _MODEL_KEYS = {
     "aggregator_model",
     "formatter_model",
     "memory_extraction_model",
+    "ambient_salience_model",
 }
 _PARAMS_KEYS = {
     "default_model_params",
@@ -114,6 +120,7 @@ _PARAMS_KEYS = {
     "aggregator_model_params",
     "formatter_model_params",
     "memory_extraction_model_params",
+    "ambient_salience_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -268,6 +275,14 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
         ):
             errors.append("memory_score_floor must be a number between 0 and 1")
+        elif key == "ambient_salience_mode" and (
+            not isinstance(value, str) or value not in {"off", "propose", "auto"}
+        ):
+            errors.append("ambient_salience_mode must be one of: off, propose, auto")
+        elif key == "ambient_salience_min_urgency" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 5
+        ):
+            errors.append("ambient_salience_min_urgency must be an integer 1-5")
         elif key == "ambient_pursuit" and (
             not isinstance(value, str) or value not in {"off", "away", "always"}
         ):

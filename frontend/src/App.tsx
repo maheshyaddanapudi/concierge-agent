@@ -11,7 +11,7 @@ import { SubAgentsPage } from './pages/SubAgentsPage'
 import { MemoryPage } from './pages/MemoryPage'
 import { RunsPage } from './pages/RunsPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { useSettings } from './api/hooks'
+import { useSettings, useUnreadDeliveries } from './api/hooks'
 import { AmbientToaster } from './components/AmbientToaster'
 import { LoginGate } from './components/LoginGate'
 import { cx } from './components/ui'
@@ -40,6 +40,9 @@ function NavItems() {
   const { data: settings } = useSettings()
   const ambientOn = Boolean(settings?.ambient_enabled)
   const a2aOn = Boolean(settings?.a2a_enabled)
+  // M42 §18.4: unread = delivered but never opened. Attention-tier items
+  // (0/1) tint the badge — those are the ones that were meant to be seen live
+  const { data: unread } = useUnreadDeliveries(ambientOn)
   return (
     <>
       {NAV.filter((item) => (!item.ambientOnly || ambientOn) && (!item.a2aOnly || a2aOn)).map((item) => (
@@ -58,6 +61,20 @@ function NavItems() {
         >
           <span className="w-4 text-center font-mono text-xs opacity-70">{item.glyph}</span>
           {item.label}
+          {item.ambientOnly && unread && unread.count > 0 && (
+            <span
+              data-testid="unread-badge"
+              title={`${unread.count} delivered, never opened${unread.attention ? ` · ${unread.attention} were meant to be seen live` : ''}`}
+              className={cx(
+                'ml-auto rounded-full px-1.5 py-0.5 font-mono text-[9px] font-bold',
+                unread.attention > 0
+                  ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
+                  : 'bg-slate-700/60 text-slate-300',
+              )}
+            >
+              {unread.count}
+            </span>
+          )}
         </NavLink>
       ))}
     </>

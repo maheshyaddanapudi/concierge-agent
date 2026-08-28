@@ -230,6 +230,11 @@ class Delivery(Base):
     skey: Mapped[str | None] = mapped_column(String(255), default=None)
     # §18.4 per-channel send ledger: {channel: {ok, error, at}}
     external: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # M42: when a human actually opened it (§18.4) — null means unseen, which
+    # is what the §17.5 salience pass keys on
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # M42: the §17.5 salience verdict {verdict, reason, confidence, at, mode}
+    salience: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     feedback: Mapped[str | None] = mapped_column(String(16), default=None)
     reward: Mapped[float | None] = mapped_column(Float, default=None)  # §17.7 substrate
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

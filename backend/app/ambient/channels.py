@@ -199,6 +199,35 @@ async def _record_send(rows: list[Delivery], channel: str, entry: dict[str, Any]
         await session.commit()
 
 
+# the real-time modes: these are the ones a human was meant to see AS THEY
+# HAPPENED. A digest reaching an empty room is its normal condition, not a
+# failure, so it is never marked unseen (spec §18.4, M42)
+_REALTIME_MODES = {"interrupt", "notify"}
+
+
+async def _record_in_app_outcome(mode: str, rows: list[Delivery], watchers: int) -> None:
+    """M42: record the truth when the in-app broadcast reached nobody.
+
+    Written ONLY on the lossy path — the happy path leaves `external` null,
+    so byte-identity at defaults is preserved (spec §18.4)."""
+    if mode not in _REALTIME_MODES or watchers > 0:
+        return
+    entry = {
+        "ok": False,
+        "error": "no subscriber",
+        "at": datetime.now(UTC).isoformat(),
+    }
+    await _record_send(rows, "in_app", entry)
+    logger.info(
+        "ambient_delivered_unseen",
+        tier="ambient",
+        kind="deliver",
+        mode=mode,
+        count=len(rows),
+        delivery_ids=[str(r.id) for r in rows],
+    )
+
+
 def _pursue(pursuit: str, watchers: int) -> bool:
     """Should the external channels fire for a batch the in-app hub just
     reached `watchers` subscribers with? (spec §17.5/§18.4, M41)
@@ -230,6 +259,7 @@ async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
     names = [str(n) for n in (routing.get(mode) or []) if n != "in_app"]
     # §17.5 pursuit: a routing modifier over the EXTERNAL half only — the
     # in-app outbox row and its toast above are already decided and sent
+    await _record_in_app_outcome(mode, rows, watchers)
     pursuit = str(await get_cache().setting("ambient_pursuit") or "always")
     if names and not _pursue(pursuit, watchers):
         logger.info(

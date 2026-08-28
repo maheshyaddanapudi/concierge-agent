@@ -21,6 +21,8 @@ const SETTINGS: Record<string, unknown> = {
   ambient_quiet_hours: ['22:00', '07:00'],
   ambient_channels: {},
   ambient_pursuit: 'always',
+  ambient_salience_mode: 'off',
+  ambient_salience_min_urgency: 3,
   ambient_tick_interval_s: 60,
   run_stall_after_s: 300,
   overlap_threshold_percent: 70,
@@ -108,6 +110,10 @@ describe('SettingsPage M40 sections (spec §8.7)', () => {
     expect(screen.getByText('Delivery channels (§18.4)')).toBeInTheDocument()
     // M41: pursuit sits with the routing it modifies
     expect(screen.getByText('Pursuit (§17.5)')).toBeInTheDocument()
+    // M42: salience sits with the delivery controls it re-judges
+    expect(screen.getByText('Salience (§17.5)')).toBeInTheDocument()
+    expect(screen.getByText(/lead the next digest, remember the fact, or drop it/)).toBeInTheDocument()
+    expect(screen.getByText('Min urgency')).toBeInTheDocument()
     expect(screen.getByText(/only when the in-app toast reached nobody/)).toBeInTheDocument()
     expect(screen.getByText('Poll interval (s)')).toBeInTheDocument()
     expect(screen.getByText(/0 disables parking/)).toBeInTheDocument()

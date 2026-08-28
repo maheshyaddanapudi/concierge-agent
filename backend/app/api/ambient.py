@@ -6,6 +6,7 @@ cadence state. Ledger exposes the fire/hold audit with per-category
 intervention precision.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -42,6 +43,8 @@ def _delivery_out(d: Delivery) -> dict[str, Any]:
         "feedback": d.feedback,
         "reward": d.reward,
         "external": d.external,  # §18.4 per-channel send ledger
+        "seen_at": d.seen_at.isoformat() if d.seen_at else None,  # M42
+        "salience": d.salience,  # §17.5 judge verdict, M42
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
@@ -59,6 +62,38 @@ async def list_deliveries(
         query = query.where(Delivery.delivered_at.isnot(None))
     rows = list((await session.execute(query)).scalars())
     return {"items": [_delivery_out(d) for d in rows]}
+
+
+@deliveries_router.get("/unread-count")
+async def unread_count(session: SessionDep) -> dict[str, int]:
+    """M42: delivered-but-never-opened items — the Ambient nav badge. Only
+    what was actually delivered counts; pending rows are not yet news."""
+    rows = list(
+        (
+            await session.execute(
+                scope_to_user(select(Delivery), Delivery).where(
+                    Delivery.delivered_at.isnot(None),
+                    Delivery.seen_at.is_(None),
+                    Delivery.superseded_by.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    return {"count": len(rows), "attention": len([r for r in rows if r.tier <= 1])}
+
+
+@deliveries_router.post("/{delivery_id}/seen")
+async def mark_seen(delivery_id: UUID, session: SessionDep) -> dict[str, Any]:
+    """M42: opening an item in the Inbox stamps seen_at — this is what turns
+    'was it attended to' from an inference into a fact (§18.4)."""
+    row = await session.get(Delivery, delivery_id)
+    if row is None or not owns_row(row):
+        raise HTTPException(404, "no such delivery")
+    if row.seen_at is None:  # idempotent: first open wins
+        row.seen_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(row)
+    return _delivery_out(row)
 
 
 @deliveries_router.get("/digest-preview")
