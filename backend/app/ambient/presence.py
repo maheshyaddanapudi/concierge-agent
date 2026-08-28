@@ -134,7 +134,5 @@ async def is_platform_idle(idle_minutes: int) -> bool:
         ).scalar_one()
         if active:
             return False
-        latest = (
-            await session.execute(select(func.max(Run.started_at)))
-        ).scalar_one()
+        latest = (await session.execute(select(func.max(Run.started_at)))).scalar_one()
     return latest is None or latest <= cutoff

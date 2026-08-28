@@ -20,7 +20,9 @@ class EvalParseError(ValueError):
 def _rows_from_csv(data: bytes) -> list[dict[str, str]]:
     text = data.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-    return [{(k or "").strip().lower(): (v or "").strip() for k, v in row.items()} for row in reader]
+    return [
+        {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()} for row in reader
+    ]
 
 
 def _rows_from_xlsx(data: bytes) -> list[dict[str, str]]:

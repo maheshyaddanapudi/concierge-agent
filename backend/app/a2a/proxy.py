@@ -28,7 +28,7 @@ from langgraph.types import interrupt
 
 from app.a2a import client_port, tasks
 from app.a2a.client_port import RemoteOutcome
-from app.a2a.fence import fence_remote_output
+from app.a2a.fence import fence_remote_output, live_fence_cap
 from app.db import get_session_factory
 from app.models import RemoteAgent
 
@@ -193,13 +193,14 @@ def make_a2a_proxy(row: dict[str, Any], sanitized_name: str) -> BaseTool:
                         )
                     )
 
+            fence_cap = await live_fence_cap()
             if outcome.state == "completed":
                 if local_task_id is not None:
                     await tasks.update_task(
                         local_task_id, state="completed", result_text=outcome.text
                     )
                 _ops("send", "completed")
-                return fence_remote_output(outcome.text, agent_name=agent_name)
+                return fence_remote_output(outcome.text, agent_name=agent_name, max_chars=fence_cap)
 
             error_text = outcome.error or outcome.text or f"task ended {outcome.state}"
             if local_task_id is not None:
@@ -207,7 +208,9 @@ def make_a2a_proxy(row: dict[str, Any], sanitized_name: str) -> BaseTool:
             _ops("send", outcome.state)
             raise RuntimeError(
                 f"remote agent task {outcome.state}: "
-                + fence_remote_output(error_text, agent_name=agent_name, state=outcome.state)
+                + fence_remote_output(
+                    error_text, agent_name=agent_name, state=outcome.state, max_chars=fence_cap
+                )
             )
 
         except TimeoutError:

@@ -83,9 +83,7 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     from app.auth import auth_enabled
 
     if auth_enabled():
-        parts.append(
-            "(m.user_id = CAST(:auth_user_id AS uuid) OR m.user_id IS NULL)"
-        )
+        parts.append("(m.user_id = CAST(:auth_user_id AS uuid) OR m.user_id IS NULL)")
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 

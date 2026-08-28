@@ -77,7 +77,9 @@ async def logout(authorization: str | None = Header(default=None)) -> None:
 
 
 @router.get("/me")
-async def me(session: SessionDep, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+async def me(
+    session: SessionDep, authorization: str | None = Header(default=None)
+) -> dict[str, Any]:
     _require_on()
     user = await _require_user(session, authorization)
     return {
@@ -129,9 +131,7 @@ async def list_users(
     if actor.role != "admin":
         raise HTTPException(403, "user management requires the admin role")
     rows = list((await session.execute(select(User).order_by(User.created_at))).scalars())
-    return {
-        "items": [{"id": str(u.id), "username": u.username, "role": u.role} for u in rows]
-    }
+    return {"items": [{"id": str(u.id), "username": u.username, "role": u.role} for u in rows]}
 
 
 @router.patch("/me/prefs")
@@ -145,7 +145,9 @@ async def patch_prefs(
     user = await _require_user(session, authorization)
     unknown = set(body) - PREF_KEYS
     if unknown:
-        raise HTTPException(422, f"unknown pref(s) {sorted(unknown)} — allowed: {sorted(PREF_KEYS)}")
+        raise HTTPException(
+            422, f"unknown pref(s) {sorted(unknown)} — allowed: {sorted(PREF_KEYS)}"
+        )
     for key, value in body.items():
         if value is not None and not (
             isinstance(value, list)

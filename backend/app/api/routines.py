@@ -97,8 +97,9 @@ def _validate_model_ref(ref: str | None) -> None:
 @router.get("")
 async def list_routines(session: SessionDep) -> list[dict[str, Any]]:
     rows = list(
-        (await session.execute(scope_to_user(select(Routine).order_by(Routine.name), Routine)))
-        .scalars()
+        (
+            await session.execute(scope_to_user(select(Routine).order_by(Routine.name), Routine))
+        ).scalars()
     )
     return [_out(r) for r in rows]
 
@@ -159,7 +160,9 @@ async def patch_routine(
         # §4 discipline: static definitions immutable — status toggles only
         illegal = set(changes) - {"status"}
         if illegal:
-            raise HTTPException(409, f"static routine: only status may change (got {sorted(illegal)})")
+            raise HTTPException(
+                409, f"static routine: only status may change (got {sorted(illegal)})"
+            )
     if "autonomy" in changes and changes["autonomy"] not in ROUTINE_AUTONOMY:
         raise HTTPException(422, f"autonomy must be one of {sorted(ROUTINE_AUTONOMY)}")
     if "model_ref" in changes:

@@ -29,7 +29,9 @@ async def _bootstrap() -> tuple[User, str]:
 
 
 async def _login(client: Any, username: str, password: str) -> str:
-    resp = await client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    resp = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": password}
+    )
     assert resp.status_code == 200, resp.text
     return str(resp.json()["token"])
 
@@ -155,9 +157,9 @@ async def test_work_is_invisible_across_users(seeded_client: Any, auth_on: Any) 
     assert member_runs == []
     member_routines = (await seeded_client.get("/api/v1/routines", headers=_h(member))).json()
     assert member_routines == []
-    member_deliveries = (
-        await seeded_client.get("/api/v1/deliveries", headers=_h(member))
-    ).json()["items"]
+    member_deliveries = (await seeded_client.get("/api/v1/deliveries", headers=_h(member))).json()[
+        "items"
+    ]
     assert member_deliveries == []
     admin_runs = (await seeded_client.get("/api/v1/runs", headers=_h(admin))).json()
     assert len(admin_runs) == 1
@@ -214,9 +216,7 @@ async def test_prefs_override_quiet_hours(client: Any, auth_on: Any) -> None:
     async with get_session_factory()() as session:
         from sqlalchemy import select
 
-        user = (
-            await session.execute(select(User).where(User.username == "admin"))
-        ).scalar_one()
+        user = (await session.execute(select(User).where(User.username == "admin"))).scalar_one()
     eff = await effective_ambient_settings(user.id)
     assert eff["ambient_quiet_hours"] == ["01:00", "02:00"]  # user override
     assert await effective_ambient_settings(None) != eff or True  # global stays global

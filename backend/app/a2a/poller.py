@@ -22,7 +22,7 @@ from uuid import UUID
 import structlog
 
 from app.a2a import client_port, tasks
-from app.a2a.fence import fence_remote_output
+from app.a2a.fence import fence_remote_output, live_fence_cap
 from app.db import get_session_factory
 from app.models import A2A_TERMINAL_STATES, RemoteAgent
 
@@ -68,10 +68,12 @@ async def deliver_outcome(
     from app.ambient.deliver import add_delivery
 
     failed = outcome.state != "completed"
+    fence_cap = await live_fence_cap()
     body = fence_remote_output(
         outcome.text or outcome.error or f"task ended {outcome.state}",
         agent_name=agent_name,
         state=outcome.state,
+        max_chars=fence_cap,
     )
     await add_delivery(
         category="a2a",
@@ -145,6 +147,7 @@ async def poll_parked_tasks() -> int:
                 outcome.question or "(no question text)",
                 agent_name=agent_name,
                 state="input-required",
+                max_chars=await live_fence_cap(),
             )
             await add_delivery(
                 category="a2a",

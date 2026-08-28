@@ -183,9 +183,7 @@ async def _learn_retiers(mode: str) -> int:
                     row[0]
                     for row in (
                         await session.execute(
-                            select(Delivery.user_id)
-                            .where(Delivery.feedback.isnot(None))
-                            .distinct()
+                            select(Delivery.user_id).where(Delivery.feedback.isnot(None)).distinct()
                         )
                     ).all()
                 },

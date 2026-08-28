@@ -86,6 +86,16 @@ DEFAULTS: dict[str, Any] = {
     "a2a_task_timeout_s": 120,
     "a2a_poll_interval_s": 60,
     "a2a_max_parked": 20,
+    # M40 config-hardening keys — every default equals the constant it
+    # replaced, so untouched settings are byte-identical to pre-M40
+    "ambient_tick_interval_s": 60,
+    "rate_limit_burst": 120,
+    "rate_limit_per_s": 10,
+    "overlap_threshold_percent": 70,
+    "run_stall_after_s": 300,
+    "agentic_recursion_limit": 100,
+    "a2a_http_timeout_s": 15,
+    "a2a_fence_max_chars": 8000,
 }
 
 _MODEL_KEYS = {
@@ -127,6 +137,9 @@ _INT_KEYS = {
     "a2a_card_refresh_interval_s",
     "a2a_task_timeout_s",
     "a2a_poll_interval_s",
+    "rate_limit_burst",
+    "rate_limit_per_s",
+    "a2a_http_timeout_s",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -232,6 +245,20 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("formatter_coverage_flag_threshold must be an integer 1–100")
         elif key == "a2a_max_parked" and (not isinstance(value, int) or value < 0):
             errors.append("a2a_max_parked must be a non-negative integer (0 disables parking)")
+        elif key == "ambient_tick_interval_s" and (not isinstance(value, int) or value < 15):
+            errors.append("ambient_tick_interval_s must be an integer >= 15")
+        elif key == "overlap_threshold_percent" and (
+            not isinstance(value, int) or not 0 <= value <= 100
+        ):
+            errors.append("overlap_threshold_percent must be an integer 0-100")
+        elif key == "run_stall_after_s" and (not isinstance(value, int) or value < 60):
+            errors.append("run_stall_after_s must be an integer >= 60")
+        elif key == "agentic_recursion_limit" and (
+            not isinstance(value, int) or not 10 <= value <= 500
+        ):
+            errors.append("agentic_recursion_limit must be an integer 10-500")
+        elif key == "a2a_fence_max_chars" and (not isinstance(value, int) or value < 500):
+            errors.append("a2a_fence_max_chars must be an integer >= 500")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
         elif key == "memory_score_floor" and (

@@ -14,6 +14,7 @@ owner even off-request (ambient fires, eval runs)."""
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import time
@@ -33,9 +34,12 @@ from app.models import AuthSession, User
 
 logger = structlog.get_logger("auth")
 
-SESSION_TTL_H = 24
-RATE_LIMIT_BURST = 120  # tokens per bucket
-RATE_LIMIT_REFILL_PER_S = 10.0
+# M40: session lifetime is env like the auth master switch; the rate-limit
+# shape is a live setting pair (rate_limit_burst / rate_limit_per_s) read
+# per request — these module values are the code defaults only
+SESSION_TTL_H = int(os.environ.get("AUTH_SESSION_TTL_H", "24") or "24")
+RATE_LIMIT_BURST = 120  # default tokens per bucket (rate_limit_burst)
+RATE_LIMIT_REFILL_PER_S = 10.0  # default refill (rate_limit_per_s)
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 
 _current_user: ContextVar[dict[str, Any] | None] = ContextVar("current_user", default=None)
@@ -78,9 +82,7 @@ def bind_run_owner(user_id: UUID | None) -> None:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(
-        password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P
-    )
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${digest.hex()}"
 
 
@@ -110,9 +112,7 @@ async def create_session(user: User) -> tuple[str, datetime]:
     async with get_session_factory()() as session:
         session.add(AuthSession(user_id=user.id, token_hash=_token_hash(token), expires_at=expires))
         # opportunistic cleanup of expired sessions
-        await session.execute(
-            delete(AuthSession).where(AuthSession.expires_at < datetime.now(UTC))
-        )
+        await session.execute(delete(AuthSession).where(AuthSession.expires_at < datetime.now(UTC)))
         await session.commit()
     return token, expires
 
@@ -169,10 +169,14 @@ async def bootstrap_admin() -> tuple[User, str]:
 # ── the guard middleware (spec §18.8) ────────────────────────────────
 
 
-def _rate_limited(key: str) -> bool:
+def _rate_limited(
+    key: str,
+    burst: float = float(RATE_LIMIT_BURST),
+    per_s: float = RATE_LIMIT_REFILL_PER_S,
+) -> bool:
     now = time.monotonic()
-    tokens, last = _buckets.get(key, (float(RATE_LIMIT_BURST), now))
-    tokens = min(float(RATE_LIMIT_BURST), tokens + (now - last) * RATE_LIMIT_REFILL_PER_S)
+    tokens, last = _buckets.get(key, (burst, now))
+    tokens = min(burst, tokens + (now - last) * per_s)
     if tokens < 1.0:
         _buckets[key] = (tokens, now)
         return True
@@ -199,7 +203,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         user = await authenticate(token)
         if user is None:
             return _harden(JSONResponse({"detail": "authentication required"}, status_code=401))
-        if _rate_limited(user["id"]):
+        from app.registry_cache import get_cache
+
+        try:  # M40: live rate-limit shape; a settings hiccup falls back to defaults
+            burst = float(await get_cache().setting("rate_limit_burst"))
+            per_s = float(await get_cache().setting("rate_limit_per_s"))
+        except Exception:  # noqa: BLE001
+            burst, per_s = float(RATE_LIMIT_BURST), RATE_LIMIT_REFILL_PER_S
+        if _rate_limited(user["id"], burst, per_s):
             return _harden(JSONResponse({"detail": "rate limit exceeded"}, status_code=429))
         if (
             request.method in {"POST", "PATCH", "PUT", "DELETE"}

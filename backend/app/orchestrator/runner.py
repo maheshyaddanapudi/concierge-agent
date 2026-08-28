@@ -504,10 +504,14 @@ async def _run_agentic(
     )
 
     agent = await build_agentic_agent()
+    from app.registry_cache import get_cache
+
     config: dict[str, Any] = {
         "configurable": {"thread_id": str(ctx.run_id)},
         "callbacks": ctx.callbacks,
-        "recursion_limit": 100,
+        # M40: the agentic loop's step budget is a live setting; the graph
+        # and direct shells keep the fixed 100 (small, deterministic graphs)
+        "recursion_limit": int(await get_cache().setting("agentic_recursion_limit")),
     }
     if resume is not None:
         graph_input: Any = await _resume_command(agent, config, resume)

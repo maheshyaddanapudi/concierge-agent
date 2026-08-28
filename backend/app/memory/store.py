@@ -128,9 +128,7 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
                 continue
             entity = (
                 await sess.execute(
-                    sa_select(MemoryEntity).where(
-                        sa_func.lower(MemoryEntity.name) == name.lower()
-                    )
+                    sa_select(MemoryEntity).where(sa_func.lower(MemoryEntity.name) == name.lower())
                 )
             ).scalar_one_or_none()
             if entity is None:

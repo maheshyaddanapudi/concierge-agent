@@ -68,9 +68,7 @@ AMBIENT_JUDGE_TOKENS = Counter(
     "concierge_ambient_judge_tokens_total", "Ambient judge token usage", ["direction"]
 )
 # §18.9: 1 while this replica holds the ambient-tick leader lease
-AMBIENT_LEADER = Gauge(
-    "concierge_ambient_leader", "1 when this replica leads the ambient tick"
-)
+AMBIENT_LEADER = Gauge("concierge_ambient_leader", "1 when this replica leads the ambient tick")
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

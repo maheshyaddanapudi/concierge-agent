@@ -259,9 +259,7 @@ async def _digest_due(
 APPROVAL_CATEGORIES = {"hitl", "learning"}
 
 
-async def _digest_flush(
-    now: datetime, owner: "UUID | None" = None, scoped: bool = False
-) -> int:
+async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool = False) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
     (demoted interrupts lead — they kept urgency 5). Approval items
     (spec §18.1) flush ranked by urgency under
@@ -381,9 +379,7 @@ async def _flush_bucket(
     # out — the user-returned flush stays live because the user is present
     if not quiet:
         async with get_session_factory()() as session:
-            due = await _digest_due(
-                session, now, list(eff["ambient_digest_times"]), owner, scoped
-            )
+            due = await _digest_due(session, now, list(eff["ambient_digest_times"]), owner, scoped)
         if due:
             out["digest"] += await _digest_flush(now, owner, scoped)
 
