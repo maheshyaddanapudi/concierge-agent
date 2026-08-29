@@ -32,6 +32,7 @@ campaigns and fixed on their branches with regression tests (details below)
 | `27-a2a` | The A2A wave — below |
 | `28-config-hardening` | M40 (spec §14e steps 41–44) — below |
 | `29-ambient-pursuit` | M41 (spec §14f steps 45–47) — below |
+| `30-salience` | M42 (spec §14g steps 48–51) — below, incl. the randomized regression sample |
 
 ## Stage 27 — A2A (spec §14d steps 33–40)
 
@@ -117,6 +118,46 @@ the M41 unit suite), and the deliveries were synthetic tier-0 `ops` rows
 inserted server-side rather than driven from a natural producer — the
 dispatch path is what stage 29 exercises, and the producers that reach it
 are covered by their own tests.
+
+## Stage 30 — Delivery salience (spec §14g steps 48–51, M42)
+
+Two halves, both on a fresh `docker compose up` with fresh volumes on the
+M42 images, anthropic theme, `openrouter:qwen/qwen3.8-max`.
+
+**New functionality.** Salience `auto`, nobody watching the stream (the
+browser is closed — an open tab *is* a watcher, which this stage caught on
+its first run). Two tier-0 deliveries go unseen and a **real model** judges
+their content:
+
+| Frames | Step | Proof |
+|---|---|---|
+| `00` | §8.7 | The salience block on Settings — mode select + urgency prefilter, beside the pursuit control |
+| `05` | §14g-48 | Both rows record `in_app {ok:false, "no subscriber"}` — the record no longer overstates a delivery that reached nobody |
+| `01`, `04` | §14g-48 | Unread badge shows 1; opening the item stamps `seen_at` and the count goes to 0 |
+| `02`, `03`, `05` | §14g-49 | The payments-API outage → **escalate**, confidence 0.97, reasoning naming the specific content ("an ongoing, unmitigated revenue-impacting outage"). It lands at **tier 2 with `delivered_at` null** — re-queued as digest-lead, never re-interrupted — and the digest preview now leads with it |
+| `02`, `05` | §14g-50 | The nightly cache warm → **drop**, confidence 0.97 ("ephemeral operational noise … carries no durable fact worth remembering"); the row is otherwise untouched |
+
+The judge's two verdicts came back with the reasoning quoted in the
+transcript — the discrimination between "one in eleven checkouts failing,
+no rollback" and "finished normally in 41s, requires no action" is the
+whole point of the layer, and it was made live rather than scripted.
+
+**Regression half (§14g-51)** — `30-salience/regression/`. Ten frames drawn
+at random from the archived campaign's deterministic surfaces, re-captured
+on the fresh M42 stack. Six were reproducible without campaign-built state
+and match their archived counterparts apart from relative timestamps
+(`2m ago` → `44s ago`); the other four need state only the original scripts
+build and are named rather than faked. Live-run frames and Settings frames
+were excluded from the pool by construction, and why is stated in that
+directory's README. Backend suite on the same build: **762 passed, 1
+skipped**.
+
+**One honest note.** Two pre-existing assertions used `external is None` as
+a proxy for "no external channel fired". M42 deliberately puts the in_app
+truth marker in that same ledger on the lossy path, so both were updated to
+assert the intent directly. The happy path — someone watching — still
+leaves `external` null, which is the byte-identity invariant M29 and M41
+established and this milestone did not spend.
 
 ### Frames replaced in place (M40 surgical refresh)
 
