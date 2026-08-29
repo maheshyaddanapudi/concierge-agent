@@ -291,3 +291,172 @@ async def test_external_adapter_still_fires_alongside_the_in_app_entry(client: A
     finally:
         register_channel_adapter("t42chan", None)
         await _set(ambient_pursuit="always", ambient_channels={})
+
+
+# ── the retain outcome (spec §17.5) ──────────────────────────────────
+#
+# Retain was the one outcome with no coverage: the live stage-30 judge
+# returned only escalate and drop, so this path had never executed. It
+# also fails CLOSED in two ways that must be documented rather than
+# discovered — memory off, or a delivery with no run to attribute the
+# content to — and both are asserted here.
+
+
+class TestRetainOutcome:
+    async def _unseen_with_run(self, title: str) -> tuple[Delivery, Any]:
+        """A delivery carrying run provenance — the only shape retain can
+        actually act on."""
+        from app.models import Conversation, Run
+
+        await _enable(ambient_channels={})
+        async with get_session_factory()() as session:
+            conv = Conversation(title="m42 retain probe")
+            session.add(conv)
+            await session.flush()
+            run = Run(
+                conversation_id=conv.id,
+                chat_message=title,
+                status="completed",
+                trigger={"kind": "test"},
+            )
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+        row = await add_delivery(
+            category="ops", tier=0, urgency=5, title=title, body="a durable fact", run_id=run.id
+        )
+        await flush_deliveries(NOON)  # nobody watching ⇒ unseen
+        return await _fresh(row.id), run
+
+    async def test_retain_hands_content_to_memory_with_provenance(
+        self, client: Any, monkeypatch: Any
+    ) -> None:
+        row, run = await self._unseen_with_run("prod key rotated to KMS")
+        await _set(ambient_salience_mode="auto", memory_enabled=True)
+        extracted: list[Any] = []
+
+        async def fake_extract(run_id: Any) -> list[Any]:
+            extracted.append(run_id)
+            return []
+
+        monkeypatch.setattr("app.memory.extract.extract_from_run", fake_extract)
+
+        async def verdict(_row: Delivery) -> SalienceVerdict:
+            return SalienceVerdict(verdict="retain", reason="durable fact", confidence=0.8)
+
+        monkeypatch.setattr("app.ambient.salience.judge", verdict)
+        out = await run_salience_pass()
+        assert out["retain"] == 1
+        # the CONTENT survives via the run that produced it — that is the
+        # provenance the spec promises
+        assert extracted == [run.id], extracted
+        fresh = await _fresh(row.id)
+        assert fresh.salience["verdict"] == "retain" and fresh.salience["applied"] is True
+        # retain never re-tiers or re-queues — only escalate touches the row
+        assert fresh.tier == 0 and fresh.delivered_at is not None
+        await _set(memory_enabled=False)
+
+    async def test_retain_is_a_noop_when_memory_is_off(
+        self, client: Any, monkeypatch: Any
+    ) -> None:
+        """Documented failure-closed path: the verdict is still ledgered so
+        the decision is auditable, but nothing is written to memory."""
+        row, _run = await self._unseen_with_run("fact nobody will keep")
+        await _set(ambient_salience_mode="auto", memory_enabled=False)
+        called: list[Any] = []
+
+        async def fake_extract(run_id: Any) -> list[Any]:
+            called.append(run_id)
+            return []
+
+        monkeypatch.setattr("app.memory.extract.extract_from_run", fake_extract)
+
+        async def verdict(_row: Delivery) -> SalienceVerdict:
+            return SalienceVerdict(verdict="retain", reason="durable", confidence=0.8)
+
+        monkeypatch.setattr("app.ambient.salience.judge", verdict)
+        await run_salience_pass()
+        assert called == []  # memory dark ⇒ no write, by design
+        assert (await _fresh(row.id)).salience["verdict"] == "retain"  # still on the record
+
+    async def test_retain_is_a_noop_without_run_provenance(
+        self, client: Any, monkeypatch: Any
+    ) -> None:
+        """A delivery with no run has no content lineage to attribute, so
+        retain records the verdict and writes nothing."""
+        await _enable(ambient_channels={})
+        row = await add_delivery(category="ops", tier=0, urgency=5, title="orphan alert")
+        await flush_deliveries(NOON)
+        await _set(ambient_salience_mode="auto", memory_enabled=True)
+        called: list[Any] = []
+
+        async def fake_extract(run_id: Any) -> list[Any]:
+            called.append(run_id)
+            return []
+
+        monkeypatch.setattr("app.memory.extract.extract_from_run", fake_extract)
+
+        async def verdict(_row: Delivery) -> SalienceVerdict:
+            return SalienceVerdict(verdict="retain", reason="durable", confidence=0.8)
+
+        monkeypatch.setattr("app.ambient.salience.judge", verdict)
+        await run_salience_pass()
+        assert called == []
+        assert (await _fresh(row.id)).salience["verdict"] == "retain"
+        await _set(memory_enabled=False)
+
+
+# ── §18.8 tenancy on the M42 endpoints ───────────────────────────────
+
+
+@pytest.fixture
+def auth_on(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from app.config import get_config
+
+    monkeypatch.setenv("AUTH_ENABLED", "1")
+    get_config.cache_clear()
+    yield
+    get_config.cache_clear()
+
+
+class TestSeenEndpointsAreTenantScoped:
+    """seen/unread are per-user work rows: one user must never see or
+    mutate another's (spec §18.8)."""
+
+    async def test_unread_and_seen_are_isolated(self, client: Any, auth_on: Any) -> None:
+        from app.auth import bootstrap_admin
+
+        admin_user, password = await bootstrap_admin()
+        login = await client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": password}
+        )
+        admin_token = login.json()["token"]
+        ah = {"Authorization": f"Bearer {admin_token}"}
+        created = await client.post(
+            "/api/v1/auth/users",
+            json={"username": "morgan", "password": "member-pass-1", "role": "member"},
+            headers=ah,
+        )
+        assert created.status_code == 201, created.text
+        member_login = await client.post(
+            "/api/v1/auth/login", json={"username": "morgan", "password": "member-pass-1"}
+        )
+        mh = {"Authorization": f"Bearer {member_login.json()['token']}"}
+
+        await _enable(ambient_channels={})
+        mine = await add_delivery(
+            category="ops", tier=0, urgency=5, title="admin's alert", user_id=admin_user.id
+        )
+        await flush_deliveries(NOON)
+
+        # the other user neither counts it …
+        member_count = (await client.get(f"{API}/deliveries/unread-count", headers=mh)).json()
+        assert member_count["count"] == 0, member_count
+        # … nor can mark it seen
+        forbidden = await client.post(f"{API}/deliveries/{mine.id}/seen", headers=mh)
+        assert forbidden.status_code == 404
+
+        owner_count = (await client.get(f"{API}/deliveries/unread-count", headers=ah)).json()
+        assert owner_count["count"] >= 1
+        ok = await client.post(f"{API}/deliveries/{mine.id}/seen", headers=ah)
+        assert ok.status_code == 200 and ok.json()["seen_at"]
