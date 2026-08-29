@@ -1,23 +1,22 @@
-# §14g-51 — randomized regression sample
+# §14g-51 — regression sample on the CHAT path
 
-Ten frames were drawn **at random** (no cherry-picking; the draw is in the
-stage transcript) from the archived campaign's *deterministic* surfaces —
-registries, static guards, themes, empty slate — and re-captured on the M42
-build against a fresh `docker compose up` with fresh volumes.
+An earlier version of this sample drew from registry and settings surfaces.
+That was the wrong choice: those pages are near-static and barely touch the
+code M42 changes, so a pass there proves little. Settings in particular only
+move when something new is added — and when it is, that is a new acceptance
+stage, not a regression check.
 
-Two categories were deliberately excluded from the pool, and the exclusion
-is stated rather than hidden:
+This sample therefore draws from the paths that can actually regress: the
+**chat path** — planner, resolution ladder, tool dispatch, HITL pause and
+resume, SSE streaming, the A2UI answer, and the run trace.
 
-- **live-run frames** (traces, durations, token counts, model prose) differ
-  legitimately run to run, so a mismatch would prove nothing;
-- **Settings frames**, because M42 adds the salience block on purpose —
-  those get the surgical-refresh treatment, not a regression check.
+Six scenarios were drawn at random (the draw is recorded in the transcript)
+and replayed live on the M42 build using the archived campaign's own
+prompts, with `ambient_salience_mode=off` and `ambient_enabled=false` — the
+M42 defaults.
 
-Of the ten drawn, **six were reproducible without campaign-built state** and
-were re-captured here. The other four need state that only the original
-campaign scripts construct (a registered stdio server, a saved custom sub
-agent, a rendered answer); they are named in the transcript as
-not-sampled-with-reason rather than faked or quietly dropped.
-
-Every re-captured frame matches its archived counterpart apart from
-relative timestamps (`2m ago` → `44s ago`), which are expected to move.
+Answer **prose is nondeterministic**, so the claim here is structural: the
+same plan card, the same route rung, the same nested rails, the same gate
+behaviour, the same trace shape, the same run statuses. Where a frame has an
+archived counterpart, that counterpart is named so the two can be put side
+by side.
