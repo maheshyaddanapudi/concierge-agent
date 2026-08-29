@@ -318,7 +318,7 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.7 Settings (command center)
 
-- **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
+- **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1). **The rule (M43): every role model registered in §3.7 has a select plus params on this page**, in the section that owns the role — a role whose model can only be set by API is a hidden control, and a new role model is not shipped until its picker is. Today that means `default`/`planner`/`aggregator` here, `formatter` in the formatter block, `memory_extraction` in the memory block, and `ambient_salience` in the salience block. Provider API keys remain the one deliberate exception in the other direction: env-only, never in DB or UI (§13).
 - **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, **declarative answer UI on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner — plus (M40) the **overlap-guard threshold** (`overlap_threshold_percent`) and the **agentic recursion limit**.
 - **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
 - **Ambient (§17, M40)**: master `ambient_enabled` toggle (hint: the Ambient page appears in the nav when on), tick interval, run/routine/wakeup budgets, idle minutes, HITL timeout, digest times, quiet hours, notification/escalation budgets, interrupt threshold, learning mode, stall-reaper window (`run_stall_after_s`), channels routing, and (M41) the **pursuit select** (`ambient_pursuit`: off | away | always) sitting with the channel routing it modifies, hinted as "external channels fire only when the in-app toast reached nobody", plus (M42) the **salience block** — mode select (off | propose | auto), minimum-urgency prefilter, and an optional salience model override — hinted as "re-judges what an unseen alert actually said: lead the next digest, remember it, or drop it on the record" — the same live-PATCH pattern as every section; the master switch here mirrors exactly what the API accepts.
@@ -349,6 +349,17 @@ digest preview, approval batch ranked by risk), **Ledger** (fire/hold audit
 with reasons, correlation-chain view for patterns, intervention-precision
 sparkline per category). Chat composer gains nothing — ambient never changes
 the interactive surface when dark. The page renders only when `ambient_enabled` is on.
+
+**Salience on the delivery card (M43).** A §17.5 verdict is shown where the
+delivery already lives, not in a separate queue — a second inbox to triage
+would cost more attention than the feature saves. The card leads with the
+*consequence* in plain language ("Worth your attention" / "Worth
+remembering" / "Looks like noise"), never the mechanism. A proposed verdict
+offers **Do it** and **Leave it**; an applied one states what happened and
+offers **Undo** while undo is still possible, or says why it no longer is.
+Nothing is hidden: an expandable **why this?** carries the judge's reason,
+confidence, the mode that produced it, and the fact that a model made the
+call — demoted below the plain-language line, never omitted.
 
 ### 8.10 Remote Agents (§19)
 
@@ -430,6 +441,7 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M43 | Salience decision surface + settings completeness (§17.5/§8.9/§8.7): the `propose` mode M42 promised becomes real — a verdict renders on its own delivery card with **Do it** / **Leave it**, plain-language consequence headlines and layered "why this?" disclosure; every applied verdict (human- or auto-) gains a working **Undo** that restores the snapshotted state and retracts only the memories retention created, refusing honestly once a digest has spent the escalation; apply and decline both write the §17.7 reward signal, so the judge becomes evaluable; decisions are idempotent, conflict-refusing and tenant-scoped. Plus the §8.7 rule that every §3.7 role model has a Settings picker, closing the two that were validated but unreachable (`memory_extraction_model`, `ambient_salience_model` — the latter promised in the M42 §8.7 text and not built) | §14h-52..54; no state change in `propose` until a human acts; undo restores byte-exactly |
 | M42 | Delivery salience + truthful delivery record (§17.5/§18.4/§16): `in_app` becomes a first-class ledger entry written only when the in-app broadcast reached nobody (real-time modes only — a digest reaching an empty room is normal), `seen_at` + an unread nav badge make attention a fact rather than an inference, and the **salience pass** re-judges the CONTENT of unseen tier ≤1 deliveries — deterministic prefilter (urgency, category, `skey` recurrence, previously collapsed and never read as a signal) then a fail-open LLM judge over the fenced body — into three ledgered outcomes: escalate to digest-lead (never re-interrupt), retain into §16 with delivery provenance, or drop on the record. `ambient_salience_mode` default `off` | byte-identity at defaults; §14g-48..51, incl. a randomized regression sample proving unchanged surfaces |
 | M41 | Ambient pursuit (§17.5/§18.4): `ambient_pursuit` ('off'\|'away'\|'always', default 'always' = pre-M41 behavior) gates the external half of `dispatch_delivered` on whether the in-app half reached anyone; the presence oracle is the SSE subscriber set sampled at dispatch — the literal audience of the toast just sent, correct per-process under §18.9 — never the idle timer; strictly subordinate to quiet hours, tiers, and the notification budget; Settings control beside the channel routing it modifies | tri-state matrix green + §14f-45..47 live against local SMTP and SMS-gateway-shaped webhook sinks |
 | M40 | Config hardening + per-chat target pin: the §7.5 composer pin (and history-summary checkbox) become per-conversation state; `a2a_poll_interval_s` wired (tick-bounded watermark); Ambient + A2A + API-guardrail sections on the Settings page; hardcoded constants promoted to live settings (`ambient_tick_interval_s`, `rate_limit_burst`/`rate_limit_per_s`, `overlap_threshold_percent`, `run_stall_after_s`, `agentic_recursion_limit`, `a2a_http_timeout_s`, `a2a_fence_max_chars`) each with validation, defaults equal to the previous constants; auth session TTL moves to env (`AUTH_SESSION_TTL_H`) | byte-identity at defaults; §14e-41..44 |
@@ -606,6 +618,30 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     default) the §11 suites pass untouched, and a **randomized sample of
     previously captured acceptance frames**, re-captured on the M42 build,
     matches the archived frames surface for surface.
+
+**§14h Salience decision surface + settings completeness (M43):**
+
+52. (M43) **A proposal is actionable**: with `ambient_salience_mode='propose'`,
+    an unseen alert's verdict renders on its own Inbox card, leading with the
+    consequence in plain language and offering **Do it** / **Leave it**;
+    "why this?" expands to the reason, confidence, mode, and the fact that a
+    model made the call. **Do it** executes the verdict (an escalation leads
+    the next digest, never re-interrupting); **Leave it** changes no state.
+    Both record the decision AND a §17.7 reward signal on the delivery
+    (`accepted` / `dismissed`), so the judge accrues the evidence by which it
+    can be evaluated. Replaying a decision is a no-op; a conflicting one is
+    refused.
+53. (M43) **An applied verdict is reversible**: with
+    `ambient_salience_mode='auto'`, an auto-applied verdict shows what it did
+    and offers **Undo** — restoring the row exactly as snapshotted, and
+    retracting only the memories that retention itself created. Once the
+    escalated item has actually gone out in a digest, Undo refuses with that
+    reason instead of pretending. Cross-tenant, every decision route 404s.
+54. (M43) **No hidden controls**: every §3.7 role model has a select plus
+    params on the Settings page in the section owning that role — including
+    `memory_extraction_model` and `ambient_salience_model`, both of which the
+    settings API already validated while no UI offered them. Provider API
+    keys remain absent from the UI by design (§13).
 
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
@@ -871,6 +907,32 @@ before entering the judge's context. `ambient_salience_mode`
 gates the whole pass; in `propose` the verdicts queue for approval instead
 of applying. **Digest deliveries are never candidates** — a digest reaching
 an empty room is its normal condition, not a failure.
+
+**The decision surface (M43).** A queued verdict that nothing can act on is
+a dead end, so `propose` carries a working approval control and `auto`
+carries a working reverse gear — the §17.7 `'auto'` precedent, where every
+ledgered change is one-click revertible, applied to salience:
+
+- **apply** executes the recorded verdict (escalate → digest-lead; retain →
+  the §16 admission path; drop → the row is dismissed by the human, which
+  is the only way a delivery is ever marked seen — the system never marks
+  its own content seen on the user's behalf).
+- **decline** changes no state and records the refusal.
+- **undo** reverses an applied verdict — in either mode, human- or
+  auto-applied — restoring the row to the state snapshotted before the
+  mutation, and retracting exactly the memories that retention created (a
+  memory the run already held is untouched). Undo is bounded by physics,
+  not policy: once an escalated item has actually gone out in a digest the
+  mutation is spent, and the control refuses with that reason rather than
+  pretending. It is an affordance, never a setting — nothing may switch off
+  the user's escape hatch.
+
+Every human decision — apply and decline alike — is written to the §17.7
+feedback substrate as `accepted`/`dismissed` on the delivery, so the judge
+accrues the same reward signal the delivery policy already learns from.
+Without it the judge could never be evaluated, only trusted. Decisions are
+first-write-wins and idempotent: replaying the same decision is a no-op,
+a conflicting one is refused.
 
 ### 17.6 Governance, observability, evaluation
 
