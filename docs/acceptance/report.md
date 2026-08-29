@@ -286,3 +286,53 @@ Fresh `docker compose up` (with the sandbox proxy override), then the
 `a2a-27a … a2a-27e` with `OUT=docs/acceptance`. Counterparties:
 `python -m tests.a2a_counterparty --port 8027|8028|8029|8030 …` from
 `backend/` (see the module docstring).
+
+## Stage 31 — Salience decision surface (spec §14h steps 52–54, M43)
+
+`31-salience-decisions/`. M43 code, anthropic theme, live
+`openrouter:qwen/qwen3.8-max` as the judge, `ambient_salience_mode='propose'`.
+Two tier-0 deliveries were pushed through the delivery plane and left
+unseen (nobody subscribed), then judged on their content by the real model
+— no scripted verdicts anywhere in this stage.
+
+| Frames | Step | Proof |
+|---|---|---|
+| `00`, `01` | §14h-54 | The two role models that had no picker until now: **Salience judge model** in the salience block, **Extraction model** in the memory block. Both keys were API-validated and unreachable from the UI — `ambient_salience_model` was even promised in M42's own §8.7 text |
+| `02` | §14h-52 | The payments-webhook alert judged **escalate, confidence 0.90** renders as a proposal: "**Worth your attention** · Lead the next digest with this", with **Do it** / **Leave it**. Nothing has changed on the row |
+| `03` | §14h-52 | "why this?" expanded — "A model judged this delivery after it went unseen — verdict escalate, confidence 0.90, mode propose", then the judge's own reasoning naming the specific content ("41 queued events with orders not marked paid — which is revenue-impacting, clearly actionable … shows no sign of self-resolution"). The mechanism is one click away, never omitted and never leading |
+| `04` | §14h-52 | **Do it** → tier 0 → **2 with `delivered_at` nulled** (digest-lead, never re-interrupted), `decision: applied`, `decided_by: user`, and the digest preview now carries it. The §17.7 reward lands: `feedback: accepted`, `reward: 0.64` |
+| `05` | §14h-53 | **Undo** → restored exactly: tier back to **0**, `delivered_at` non-null again, `decision: undone`, and the negative reward recorded (`dismissed`, `reward: -1`). The verdict itself stays on the record — undo is reversal, not erasure |
+| `06`, `07` | §14h-52 | The nightly-backup alert judged **drop, confidence 0.98** renders as "**Looks like noise** · Dismiss it." **Leave it** → `decision: declined` with the row **untouched** (tier 0, still delivered) and `reward: -1`. Declining is a verdict on the judge, not on the delivery |
+
+Transcript: `transcript-decisions.txt` (every state read back from the API
+after each click).
+
+**Honest notes.**
+
+- **The first attempt is kept as `transcript-first-attempt.txt` and it
+  failed on my own driver, not the app.** The script tried to create its
+  test alerts via `POST /ambient/fire` — an endpoint that does not exist
+  (the acceptance campaigns have always inserted through the delivery
+  plane directly). It 404'd, the script then ran against whatever backlog
+  rows were already on the page, and crashed when it looked for its own
+  title. One real thing survives from it and is worth recording: a
+  stage-30 backlog row judged `drop` was applied through the UI and came
+  back `decision: applied`, `decided_by: user`, `seen_at` set,
+  `feedback: accepted`, `reward: 1.0` — the human-dismissal path, proven
+  before the rewritten driver existed.
+- **One console 404 in the clean run is `/favicon.ico`** — this repo ships
+  no favicon and the dev server has nothing to serve. Unrelated to M43;
+  recorded rather than filtered out of the count.
+- **The stack for this stage ran from source, not from the compose
+  images.** `docker compose build` cannot complete in this environment:
+  the agent proxy relays CONNECT only, so the Dockerfile's `apt-get`
+  step over plain HTTP gets `405 Method Not Allowed`. Rather than edit a
+  committed Dockerfile to work around an environment quirk, the M43
+  backend was run from the venv and the frontend from Vite, both against
+  the same Postgres the compose stack uses. Same code, same database,
+  same live model — but this stage is **not** a proof of the container
+  build, and the ten-step §14 ceremony on a fresh `docker compose up`
+  should be re-run wherever images can actually be built.
+- `seen_at` is set on these rows by hovering the card, which is M42's
+  existing "opening an item stamps seen" behavior, not something M43
+  changed.
