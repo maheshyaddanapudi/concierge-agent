@@ -142,15 +142,50 @@ transcript — the discrimination between "one in eleven checkouts failing,
 no rollback" and "finished normally in 41s, requires no action" is the
 whole point of the layer, and it was made live rather than scripted.
 
-**Regression half (§14g-51)** — `30-salience/regression/`. Ten frames drawn
-at random from the archived campaign's deterministic surfaces, re-captured
-on the fresh M42 stack. Six were reproducible without campaign-built state
-and match their archived counterparts apart from relative timestamps
-(`2m ago` → `44s ago`); the other four need state only the original scripts
-build and are named rather than faked. Live-run frames and Settings frames
-were excluded from the pool by construction, and why is stated in that
-directory's README. Backend suite on the same build: **762 passed, 1
-skipped**.
+**Regression half (§14g-51)** — `30-salience/regression/`. The first
+version of this sample drew from registry and settings surfaces. That was
+the wrong pool: those pages are near-static and barely exercise what M42
+changed, and Settings only moves when something new is added — which is a
+new acceptance stage, not a regression check. It was redrawn from the
+**chat path**, where the planner, resolution ladder, tool dispatch, HITL,
+SSE streaming, the A2UI answer and the run trace actually live.
+
+Six scenarios were drawn at random and replayed live on the M42 build with
+the archived campaign's own prompts, at the M42 defaults
+(`ambient_salience_mode=off`, `ambient_enabled=false`):
+
+| Frame | Scenario | Result |
+|---|---|---|
+| `chat-01` | HITL gate armed (graph) | Matches `06-…/03-gate-armed.png` element for element — plan card, `ROUTE custom_sub_agent → research-concierge`, the nested `TOOL_CALL SUMMARIZE-AND-STRUCTURE` / `SKILL WEB-RESEARCH` rail, the approval card, the composer. Only the sidebar history and the model's own plan prose differ |
+| `chat-02` | Gate approved → A2UI answer | Structured blocks, inline code tokens, Sources, `COVERAGE 100%`, raw-response toggle, run-trace link, composer restored |
+| `chat-03` | Agentic run | Completed |
+| `chat-04` | Uncovered ask → full-catalog fallback | Fallback engaged, structured answer with validation table and runnable command block — see the note below |
+| `chat-05` | Runs list | Unchanged |
+| `chat-06` | Trace drawer + step timeline | `plan` / `route` with the `rung: fallback` chip, per-step timings, token counts, model attribution, PLAN JSON, status pills, inline error surfacing |
+
+Answer prose is nondeterministic, so the claim is structural — same cards,
+same rungs, same rails, same trace shape — not pixel equality.
+
+**The fallback scenario failed on its first attempt and that is recorded
+here rather than quietly re-rolled.** The run died with
+`full-catalog fallback failed: Model call limits exceeded: run limit (9/9)`:
+the planner correctly returned `no_confident_match: true`, the router
+correctly took the fallback rung, and the fallback worker then spent its
+nine model calls making fifteen `filesystem_write_file` / `create_directory`
+calls — the model tried to *build* an invoice reconciler instead of
+answering — until the §7.0 ceiling fired and the run failed honestly with
+the reason in the drawer. Before attributing that to model behaviour it was
+checked: `orchestrator/middleware.py`, where `run_limit =
+max_tool_iterations + 1` is enforced, is **not** among the files M40–M42
+touched; `max_tool_iterations` is still 8; and `runner.py`'s only change is
+the *agentic* recursion limit while this was a graph-mode run. The archived
+campaign also wrapped this exact scenario in a four-attempt retry loop
+because the rung is nondeterministic. Re-run under that same policy, it
+converged on attempt 1. `chat-06` is the trace of the failed attempt and is
+kept — it is the better artifact for proving the limit and error-edge
+machinery still work.
+
+Backend suite on the same build: **762 passed, 1 skipped**.
 
 **One honest note.** Two pre-existing assertions used `external is None` as
 a proxy for "no external channel fired". M42 deliberately puts the in_app
