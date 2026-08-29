@@ -208,4 +208,7 @@ async def test_in_app_routing_entry_is_not_an_external_channel(client: Any) -> N
     out = await flush_deliveries(NOON)  # nobody watching
     assert out["interrupt"] == 1
     fresh = await _fresh(row.id)
-    assert fresh.external is None
+    # M42: the in_app truth marker is expected here (nobody was watching);
+    # what must NOT appear is an external adapter entry for `in_app`
+    assert set(fresh.external or {}) <= {"in_app"}
+    assert (fresh.external or {}).get("in_app", {}).get("ok") is False
