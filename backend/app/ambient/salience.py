@@ -28,7 +28,7 @@ on any error the row keeps exactly the disposition it already had.
 """
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
@@ -55,9 +55,7 @@ class SalienceVerdict(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-def fence_delivery_content(
-    body: str, *, category: str, urgency: int, recurrence: int
-) -> str:
+def fence_delivery_content(body: str, *, category: str, urgency: int, recurrence: int) -> str:
     """Delivered content is untrusted — remote-agent output reaches
     deliveries through §19.6 — so it is fenced before entering any model
     context, exactly like a remote tool result."""
@@ -132,10 +130,46 @@ async def judge(row: Delivery) -> SalienceVerdict | None:
         return None
 
 
+async def _perform(
+    row_id: UUID, verdict: str, *, by_human: bool
+) -> tuple[dict[str, Any], list[str]]:
+    """Carry out one verdict and return everything undo will need: the state
+    as it stood immediately BEFORE the mutation, and the ids of the memories
+    retention itself created (never the ones the run already had)."""
+    prior: dict[str, Any] = {}
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, row_id)
+        if row is None:
+            return {}, []
+        prior = {
+            "tier": row.tier,
+            "delivered_at": row.delivered_at.isoformat() if row.delivered_at else None,
+            "channel": row.channel,
+            "seen_at": row.seen_at.isoformat() if row.seen_at else None,
+        }
+        if verdict == "escalate":
+            # digest-lead ONLY: never a re-interrupt, never a tier < 2, so
+            # quiet hours and the budget stay untouched (spec §17.5)
+            row.tier = 2
+            row.delivered_at = None
+            row.channel = None
+        elif verdict == "drop" and by_human and row.seen_at is None:
+            # a human dismissing the proposal is the ONLY thing that marks a
+            # delivery seen — the pass never does it on the user's behalf
+            row.seen_at = datetime.now(UTC)
+        await session.commit()
+    memory_ids = await _retain(row_id) if verdict == "retain" else []
+    return prior, memory_ids
+
+
 async def _apply(row_id: UUID, verdict: SalienceVerdict, mode: str) -> str:
     """Write the outcome. In `propose` the verdict is recorded but NOT
-    applied — it queues for approval, mirroring §17.7 learning mode."""
+    applied — it queues for the §8.9 approval control (M43)."""
     applied = mode == "auto"
+    prior: dict[str, Any] = {}
+    memory_ids: list[str] = []
+    if applied:
+        prior, memory_ids = await _perform(row_id, verdict.verdict, by_human=False)
     async with get_session_factory()() as session:
         row = await session.get(Delivery, row_id)
         if row is None:
@@ -147,16 +181,14 @@ async def _apply(row_id: UUID, verdict: SalienceVerdict, mode: str) -> str:
             "at": datetime.now(UTC).isoformat(),
             "mode": mode,
             "applied": applied,
+            # M43 undo provenance — present only once something was applied
+            "decision": "applied" if applied else None,
+            "decided_at": datetime.now(UTC).isoformat() if applied else None,
+            "decided_by": "system" if applied else None,
+            "prior": prior or None,
+            "memory_ids": memory_ids,
         }
-        if applied and verdict.verdict == "escalate":
-            # digest-lead ONLY: never a re-interrupt, never a tier < 2, so
-            # quiet hours and the budget stay untouched (spec §17.5)
-            row.tier = 2
-            row.delivered_at = None
-            row.channel = None
         await session.commit()
-    if applied and verdict.verdict == "retain":
-        await _retain(row_id)
     logger.info(
         "ambient_salience_verdict",
         tier="ambient",
@@ -170,25 +202,143 @@ async def _apply(row_id: UUID, verdict: SalienceVerdict, mode: str) -> str:
     return verdict.verdict
 
 
-async def _retain(row_id: UUID) -> None:
+async def _retain(row_id: UUID) -> list[str]:
     """Hand the content to §16 through the normal admission path, carrying
-    delivery provenance. Memory off ⇒ no-op, like every other §16 caller."""
+    delivery provenance. Memory off ⇒ no-op, like every other §16 caller.
+    Returns the ids of the memories THIS call created, so undo can retract
+    exactly those and nothing the run already held (M43)."""
     from app.registry_cache import get_cache
 
     if not bool(await get_cache().setting("memory_enabled")):
-        return
+        return []
     async with get_session_factory()() as session:
         row = await session.get(Delivery, row_id)
     if row is None or row.run_id is None:
         # provenance-free content has no run to attribute; the verdict is
         # still ledgered, but nothing is written to memory
-        return
+        return []
     try:
         from app.memory.extract import extract_from_run
 
-        await extract_from_run(row.run_id)
+        created = await extract_from_run(row.run_id)
+        return [str(m.id) for m in created or []]
     except Exception as exc:  # noqa: BLE001 — retention must never block
         logger.warning("salience_retain_failed", delivery_id=str(row_id), error=str(exc))
+        return []
+
+
+# ── the decision surface (spec §17.5/§8.9 — M43) ──────────────────────────
+
+Action = Literal["apply", "decline", "undo"]
+# what each action needs to find on the row, and what it leaves behind
+_TERMINAL = {"applied", "declined", "undone"}
+
+
+async def decide(row_id: UUID, action: Action) -> tuple[str, str]:
+    """Act on a recorded verdict. Returns (outcome, detail) where outcome is
+    one of ok | noop | conflict | missing — the caller maps those to status
+    codes. First decision wins: replaying one is a no-op, contradicting one
+    is refused, so a double-clicked button can never double-apply."""
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, row_id)
+        if row is None:
+            return "missing", "no such delivery"
+        ledger = dict(row.salience or {})
+    if not ledger:
+        return "conflict", "no salience verdict on this delivery"
+    verdict = str(ledger.get("verdict") or "")
+    decision = ledger.get("decision")
+
+    if action == "apply":
+        if decision == "applied":
+            return "noop", "already applied"
+        if decision in _TERMINAL:
+            return "conflict", f"already {decision}"
+        prior, memory_ids = await _perform(row_id, verdict, by_human=True)
+        ledger |= {"applied": True, "prior": prior or None, "memory_ids": memory_ids}
+        await _close(row_id, ledger, "applied")
+        await _reward(row_id, "accepted")
+        return "ok", verdict
+
+    if action == "decline":
+        if decision == "declined":
+            return "noop", "already declined"
+        if decision in _TERMINAL:
+            return "conflict", f"already {decision}"
+        # a decline changes NO state — it only says the verdict was wrong
+        await _close(row_id, ledger, "declined")
+        await _reward(row_id, "dismissed")
+        return "ok", verdict
+
+    if decision != "applied":
+        return "conflict", "nothing applied to undo"
+    prior = dict(ledger.get("prior") or {})
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, row_id)
+        if row is None:
+            return "missing", "no such delivery"
+        if verdict == "escalate":
+            if row.delivered_at is not None:
+                # the digest already went out — the mutation is spent, and
+                # pretending otherwise would be a lie (spec §17.5)
+                return "conflict", "already delivered in a digest — the escalation is spent"
+            row.tier = int(prior.get("tier", row.tier))
+            row.channel = prior.get("channel")
+            row.delivered_at = _parse(prior.get("delivered_at"))
+        elif verdict == "drop":
+            row.seen_at = _parse(prior.get("seen_at"))
+        await session.commit()
+    if verdict == "retain":
+        from app.memory.store import hard_delete
+
+        for mid in ledger.get("memory_ids") or []:
+            try:
+                await hard_delete(UUID(str(mid)))
+            except Exception as exc:  # noqa: BLE001 — a gone memory is still undone
+                logger.warning("salience_undo_memory_failed", memory_id=str(mid), error=str(exc))
+    await _close(row_id, ledger, "undone")
+    await _reward(row_id, "dismissed")
+    return "ok", verdict
+
+
+def _parse(value: Any) -> datetime | None:
+    return datetime.fromisoformat(str(value)) if value else None
+
+
+async def _close(row_id: UUID, ledger: dict[str, Any], decision: str) -> None:
+    """Stamp the decision onto the ledger. Append-only in spirit: the
+    verdict, reason and confidence that produced it are never rewritten."""
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, row_id)
+        if row is None:
+            return
+        row.salience = ledger | {
+            "decision": decision,
+            "decided_at": datetime.now(UTC).isoformat(),
+            "decided_by": "user",
+            "applied": decision == "applied",
+        }
+        await session.commit()
+    logger.info(
+        "ambient_salience_decision",
+        tier="ambient",
+        kind="deliver",
+        delivery_id=str(row_id),
+        decision=decision,
+        verdict=ledger.get("verdict"),
+    )
+
+
+async def _reward(row_id: UUID, feedback: str) -> None:
+    """Feed the §17.7 substrate. Without this the judge could never be
+    measured, only trusted — so a failure here is logged, never swallowed
+    into silence."""
+    try:
+        from app.ambient.deliver import record_feedback
+
+        await record_feedback(row_id, feedback)
+    except Exception as exc:  # noqa: BLE001 — never block the decision itself
+        logger.warning("salience_reward_failed", delivery_id=str(row_id), error=str(exc))
 
 
 async def run_salience_pass(limit: int = 20) -> dict[str, int]:

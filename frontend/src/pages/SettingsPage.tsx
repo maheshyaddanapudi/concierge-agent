@@ -524,6 +524,14 @@ export function SettingsPage() {
             k="memory_extraction_enabled"
             hint="post-run fact/preference extraction through the admission gate"
           />
+          {/* M43 §8.7: the extraction role's model, reachable at last — the
+              settings API has validated this key since the memory milestones */}
+          <ModelSelect
+            label="Extraction model"
+            refKey="memory_extraction_model"
+            paramsKey="memory_extraction_model_params"
+            allowInherit
+          />
           <BoolSetting
             label="Reflection (L4)"
             k="memory_reflection_enabled"
@@ -671,6 +679,17 @@ export function SettingsPage() {
                     hint="prefilter floor (1-5) before a model is called; a recurring alert clears it anyway"
                   />
                 </div>
+              </div>
+              {/* M43 §8.7: every role model has a picker in the section that
+                  owns it — this one was validated by the API since M42 with
+                  no UI to reach it */}
+              <div className="mt-3">
+                <ModelSelect
+                  label="Salience judge model"
+                  refKey="ambient_salience_model"
+                  paramsKey="ambient_salience_model_params"
+                  allowInherit
+                />
               </div>
             </Field>
             <Field

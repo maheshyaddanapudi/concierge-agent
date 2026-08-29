@@ -7,7 +7,7 @@ intervention precision.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -94,6 +94,32 @@ async def mark_seen(delivery_id: UUID, session: SessionDep) -> dict[str, Any]:
         await session.commit()
         await session.refresh(row)
     return _delivery_out(row)
+
+
+@deliveries_router.post("/{delivery_id}/salience/{action}")
+async def decide_salience(delivery_id: UUID, action: str) -> dict[str, Any]:
+    """M43: act on a §17.5 verdict — apply it, decline it, or undo one that
+    was applied (by a human or by `auto`). First decision wins; a repeat is
+    a no-op, a contradiction is refused, and an escalation already spent by
+    a digest refuses honestly instead of pretending to reverse."""
+    from app.ambient.salience import Action, decide
+
+    if action not in ("apply", "decline", "undo"):
+        raise HTTPException(422, "action must be one of ['apply', 'decline', 'undo']")
+    async with get_session_factory()() as session:
+        existing = await session.get(Delivery, delivery_id)
+    if existing is None or not owns_row(existing):
+        raise HTTPException(404, "no such delivery")
+    outcome, detail = await decide(delivery_id, cast("Action", action))
+    if outcome == "missing":
+        raise HTTPException(404, detail)
+    if outcome == "conflict":
+        raise HTTPException(409, detail)
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, delivery_id)
+    if row is None:
+        raise HTTPException(404, "no such delivery")
+    return _delivery_out(row) | {"outcome": outcome, "detail": detail}
 
 
 @deliveries_router.get("/digest-preview")
