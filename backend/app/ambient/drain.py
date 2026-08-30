@@ -120,7 +120,7 @@ async def drain_once(limit: int = 20) -> int:
     return handled
 
 
-async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
+async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> None:
     """Lifespan-owned loop: LISTEN for wake pings, sweep on the tick.
     Cheap no-op while ambient is dark. Under `--scale backend=N` the tick
     elects a leader per tick (spec §18.9): only the leader runs the
@@ -190,6 +190,12 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
 
                     await evaluate_presence(idle_minutes)
                     await flush_deliveries()
+                    # M42 §17.5: re-judge what nobody saw. Runs AFTER the
+                    # flush so this tick's misses are already visible, and
+                    # is a no-op while ambient_salience_mode is off
+                    from app.ambient.salience import run_salience_pass
+
+                    await run_salience_pass()
                     if await is_platform_idle(idle_minutes):
                         from app.ambient.anticipate import run_anticipation
 
@@ -217,9 +223,20 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
             logger.warning("ambient_tick_failed", error=str(exc))
         wake.clear()
+        # M40: the tick cadence is a live setting (an explicit tick_s arg —
+        # tests — still wins); floor 15s matches the §3.7 validation bound
+        if tick_s is not None:
+            effective_tick = tick_s
+        else:
+            try:
+                effective_tick = float(
+                    max(int(await get_cache().setting("ambient_tick_interval_s")), 15)
+                )
+            except Exception:  # noqa: BLE001 — a settings hiccup must not stop the loop
+                effective_tick = 60.0
         waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(wake.wait())}
         _, pending = await asyncio.wait(
-            waiters, timeout=tick_s, return_when=asyncio.FIRST_COMPLETED
+            waiters, timeout=effective_tick, return_when=asyncio.FIRST_COMPLETED
         )
         for task in pending:
             task.cancel()

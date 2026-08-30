@@ -223,3 +223,10 @@ __marimo__/
 # Node
 node_modules/
 frontend/dist/
+
+# Acceptance campaign drivers (Playwright .mjs) — deliberately NOT committed
+# yet. The evidence they produce lives in docs/acceptance/; the scripts stay
+# session-local so they can be run from scratch without entering git.
+docs/acceptance/scripts/
+camp-a2a/
+camp-m40/

@@ -101,6 +101,16 @@ export function useHitlPending() {
   })
 }
 
+/** M42: delivered-but-never-opened count for the Ambient nav badge. */
+export function useUnreadDeliveries(enabled: boolean) {
+  return useQuery({
+    queryKey: ['deliveries', 'unread-count'],
+    queryFn: () => api.get<{ count: number; attention: number }>('/deliveries/unread-count'),
+    refetchInterval: 5000,
+    enabled,
+  })
+}
+
 export function useInvalidate() {
   const qc = useQueryClient()
   return (...keys: string[]) => {

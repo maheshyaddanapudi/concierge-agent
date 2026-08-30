@@ -61,6 +61,10 @@ DEFAULTS: dict[str, Any] = {
     "memory_half_life_days": 30.0,
     "memory_idle_minutes": 10,
     "memory_digest_compact_days": 14,
+    # M44 §16.1 durable forgetting — off is byte-identical (deletes stay
+    # physical); similarity is the semantic suppression threshold
+    "memory_forget_enabled": False,
+    "memory_forget_similarity": 0.85,
     # §18.6 community breadth: its own budget line; 0 disables the section
     "memory_community_budget_tokens": 150,
     # §17 ambient keys — dark by default
@@ -77,15 +81,36 @@ DEFAULTS: dict[str, Any] = {
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
     "ambient_learning_mode": "off",
+    # M43c: the §17.3 rule-based auto-downgrade is a feedback CONSUMER and
+    # gets its own gate (capture stays always-on); true = pre-M43c behavior
+    "ambient_precision_rule_enabled": True,
     # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
     # empty ⇒ in-app only, byte-identical to M23–M25
     "ambient_channels": {},
+    # M41 pursuit: 'always' is the pre-M41 presence-blind behavior, so the
+    # default leaves external dispatch byte-identical
+    "ambient_pursuit": "always",
+    # M42 salience: off is byte-identical — the pass does not run at all
+    "ambient_salience_mode": "off",
+    "ambient_salience_min_urgency": 3,
+    "ambient_salience_model": None,
+    "ambient_salience_model_params": None,
     # §19 a2a keys — dark by default
     "a2a_enabled": False,
     "a2a_card_refresh_interval_s": 300,
     "a2a_task_timeout_s": 120,
     "a2a_poll_interval_s": 60,
     "a2a_max_parked": 20,
+    # M40 config-hardening keys — every default equals the constant it
+    # replaced, so untouched settings are byte-identical to pre-M40
+    "ambient_tick_interval_s": 60,
+    "rate_limit_burst": 120,
+    "rate_limit_per_s": 10,
+    "overlap_threshold_percent": 70,
+    "run_stall_after_s": 300,
+    "agentic_recursion_limit": 100,
+    "a2a_http_timeout_s": 15,
+    "a2a_fence_max_chars": 8000,
 }
 
 _MODEL_KEYS = {
@@ -94,6 +119,7 @@ _MODEL_KEYS = {
     "aggregator_model",
     "formatter_model",
     "memory_extraction_model",
+    "ambient_salience_model",
 }
 _PARAMS_KEYS = {
     "default_model_params",
@@ -101,6 +127,7 @@ _PARAMS_KEYS = {
     "aggregator_model_params",
     "formatter_model_params",
     "memory_extraction_model_params",
+    "ambient_salience_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -127,6 +154,9 @@ _INT_KEYS = {
     "a2a_card_refresh_interval_s",
     "a2a_task_timeout_s",
     "a2a_poll_interval_s",
+    "rate_limit_burst",
+    "rate_limit_per_s",
+    "a2a_http_timeout_s",
 }
 _BOOL_KEYS = {
     "orchestrator_full_fallback_enabled",
@@ -140,6 +170,8 @@ _BOOL_KEYS = {
     "memory_reflection_enabled",
     "procedural_learning_enabled",
     "ambient_enabled",
+    "ambient_precision_rule_enabled",
+    "memory_forget_enabled",
     "a2a_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
@@ -232,12 +264,42 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("formatter_coverage_flag_threshold must be an integer 1–100")
         elif key == "a2a_max_parked" and (not isinstance(value, int) or value < 0):
             errors.append("a2a_max_parked must be a non-negative integer (0 disables parking)")
+        elif key == "ambient_tick_interval_s" and (not isinstance(value, int) or value < 15):
+            errors.append("ambient_tick_interval_s must be an integer >= 15")
+        elif key == "overlap_threshold_percent" and (
+            not isinstance(value, int) or not 0 <= value <= 100
+        ):
+            errors.append("overlap_threshold_percent must be an integer 0-100")
+        elif key == "run_stall_after_s" and (not isinstance(value, int) or value < 60):
+            errors.append("run_stall_after_s must be an integer >= 60")
+        elif key == "agentic_recursion_limit" and (
+            not isinstance(value, int) or not 10 <= value <= 500
+        ):
+            errors.append("agentic_recursion_limit must be an integer 10-500")
+        elif key == "a2a_fence_max_chars" and (not isinstance(value, int) or value < 500):
+            errors.append("a2a_fence_max_chars must be an integer >= 500")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
+        elif key == "memory_forget_similarity" and (
+            not isinstance(value, int | float) or not 0.5 <= float(value) <= 1.0
+        ):
+            errors.append("memory_forget_similarity must be a number between 0.5 and 1.0")
         elif key == "memory_score_floor" and (
             not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
         ):
             errors.append("memory_score_floor must be a number between 0 and 1")
+        elif key == "ambient_salience_mode" and (
+            not isinstance(value, str) or value not in {"off", "propose", "auto"}
+        ):
+            errors.append("ambient_salience_mode must be one of: off, propose, auto")
+        elif key == "ambient_salience_min_urgency" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 5
+        ):
+            errors.append("ambient_salience_min_urgency must be an integer 1-5")
+        elif key == "ambient_pursuit" and (
+            not isinstance(value, str) or value not in {"off", "away", "always"}
+        ):
+            errors.append("ambient_pursuit must be one of: off, away, always")
         elif key == "ambient_learning_mode" and value not in {"off", "auto", "propose"}:
             errors.append("ambient_learning_mode must be one of: off, auto, propose")
         elif key == "ambient_channels":

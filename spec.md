@@ -137,7 +137,7 @@ Rules:
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6)`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, `memory_forget_enabled (default false — M44 §16.1 durable forgetting; off is byte-identical: user deletes stay physical and mode=forget is a 422 naming this key)`, `memory_forget_similarity (default 0.85, range 0.5–1.0 — cosine threshold for semantic re-admission suppression, calibrated against a live-measured paraphrase at 0.876; hash-only when no embedding model is configured)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, `ambient_precision_rule_enabled (default true — gates the §17.3 rule-based precision auto-downgrade, the static-policy feedback consumer active while learning is off; false = feedback is still captured but never re-tiers a category; true is byte-identical to pre-M43c behavior)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, `ambient_pursuit ('off'|'away'|'always', default 'always' — whether the external channels named by that routing actually fire for a batch whose in-app broadcast reached nobody, §18.4/§17.5; 'always' is the pre-M41 presence-blind behavior, so the default is byte-identical)`, `ambient_salience_mode ('off'|'propose'|'auto', default 'off' — the §17.5 M42 content-salience pass over unseen tier ≤1 deliveries; off is byte-identical, propose queues verdicts for approval, auto applies them)`, `ambient_salience_min_urgency (default 3, range 1–5 — the deterministic prefilter floor before the judge is ever called)`, `ambient_salience_model` / `ambient_salience_model_params` (nullable — null falls back to `default_model`, like planner/aggregator/formatter), plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6; tick-bounded: the ambient leader tick invokes the poller, which no-ops until this interval has elapsed since its last poll, so the effective cadence is max(tick, interval))`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`, plus the M40 config-hardening keys: `ambient_tick_interval_s (default 60, min 15 — the ambient scheduler tick cadence; evaluators, drain heartbeat, and the parked-task poller all ride it)`, `rate_limit_burst (default 120)` / `rate_limit_per_s (default 10)` (the §18.8 token bucket, read live per refill), `overlap_threshold_percent (default 70, range 0–100 — the §4 overlap-guard gate; 100 effectively disables the dialog, 0 flags every save)`, `run_stall_after_s (default 300, min 60 — the §17.4 H3 reaper window before a silent ambient run is marked stalled)`, `agentic_recursion_limit (default 100, range 10–500 — the agentic loop's LangGraph recursion budget; the model-call limit stays derived from max_tool_iterations)`, `a2a_http_timeout_s (default 15, min 1 — the shared A2A HTTP client timeout, applied on the manager's next client build)`, `a2a_fence_max_chars (default 8000, min 500 — cap on fenced remote output, §19.5)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
 
 ## 4. Registry API
 
@@ -274,7 +274,7 @@ The user (or an API caller) can pin a specific sub agent to handle a request, re
   1. `POST /sub-agents/{id}/invoke` `{message, conversation_id?}` — programmatic; without a conversation id a fresh conversation is created, so the run is always chat-visible and auditable.
   2. `POST /chat` with `target_sub_agent_id` — conversational; the run lands in the conversation with history rendering as usual.
   3. Sub Agents page row action "Invoke →" — opens Chat pre-pinned to that agent (surface 2).
-  4. Chat composer **target picker** — "Orchestrator (auto)" plus every active, exposed sub agent; picking one pins the next message (surface 2).
+  4. Chat composer **target picker** — "Orchestrator (auto)" plus every active, exposed sub agent; picking one pins the next message (surface 2). **The pin is per-conversation state (M40)**: each conversation remembers its own target — and its history-summary checkbox — and switching conversations never carries a pin across. A new conversation always starts at Orchestrator (auto); reopening a conversation restores the pin it had; a `?target=` deep link (surface 3) pins only the conversation it opens.
 - **Gating**: the sub agent must be `status='active'` **and** `direct_exposure=true` (§3.4) — enforced at the API surface (403 not exposed / 409 not active) and re-checked at execution start (defense in depth: a toggle flipped between request and execution fails the run cleanly). The flag closes all four surfaces at once.
 - **Execution**: the direct branch resolves the pinned agent through the §7.1 ladder's sub-agent rungs (`native_sub_agent` via the registered graph, `custom_sub_agent` via the factory-compiled workflow — identical worker code paths to routed dispatch), records a `route` step with rung and target so traces stay comparable, and runs the worker with HITL propagation on the run's checkpointer thread.
 - **Boundaries**: the routing ladder and planner are untouched — an orchestrator-routed run never carries `mode='direct'`. Sub agents still cannot invoke other sub agents; direct invocation is a user-initiated entry point, not an agent-to-agent surface. Conversation history is **not** injected into the pinned worker by default (workers are task-scoped, exactly as when dispatched by the planner); the conversation is the audit surface, not extra context.
@@ -318,9 +318,12 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.7 Settings (command center)
 
-- **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1).
-- **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, **declarative answer UI on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner.
+- **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1). **The rule (M43): every role model registered in §3.7 has a select plus params on this page**, in the section that owns the role — a role whose model can only be set by API is a hidden control, and a new role model is not shipped until its picker is. Today that means `default`/`planner`/`aggregator` here, `formatter` in the formatter block, `memory_extraction` in the memory block, and `ambient_salience` in the salience block. Provider API keys remain the one deliberate exception in the other direction: env-only, never in DB or UI (§13).
+- **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, **declarative answer UI on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner — plus (M40) the **overlap-guard threshold** (`overlap_threshold_percent`) and the **agentic recursion limit**.
 - **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
+- **Ambient (§17, M40)**: master `ambient_enabled` toggle (hint: the Ambient page appears in the nav when on), tick interval, run/routine/wakeup budgets, idle minutes, HITL timeout, digest times, quiet hours, notification/escalation budgets, interrupt threshold, learning mode, stall-reaper window (`run_stall_after_s`), channels routing, and (M41) the **pursuit select** (`ambient_pursuit`: off | away | always) sitting with the channel routing it modifies, hinted as "external channels fire only when the in-app toast reached nobody", plus (M42) the **salience block** — mode select (off | propose | auto), minimum-urgency prefilter, and an optional salience model override — hinted as "re-judges what an unseen alert actually said: lead the next digest, remember it, or drop it on the record" — the same live-PATCH pattern as every section; the master switch here mirrors exactly what the API accepts.
+- **A2A (§19, M40)**: master `a2a_enabled` toggle (hint: the Remote Agents page appears in the nav when on), card refresh interval, task timeout, poll interval, max parked (0 disables parking), HTTP timeout, fence cap.
+- **API guardrails (M40)**: rate-limit burst + refill per second (`rate_limit_burst` / `rate_limit_per_s`) — admin-gated like every settings write.
 - **Registry cache (§7.3)**: mode select (`bypass` | `memory` | `redis` — redis offered only when `REDIS_URL` is set, save pings it), per-registry status readout (records, generation, loaded-at), **Refresh all caches** button.
 - **Retrieval (§7.4)**: enabled toggle, threshold, top-K, embedding model (`provider:model`, validated at save; blank = lexical-only).
 - **Observability**: log level select, LangSmith toggle, OTLP endpoint field.
@@ -331,7 +334,8 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.8 Memory (§16)
 
-- Store browser: searchable/filterable list (scope, kind, status, source) over `memories`; edit-as-supersede (`source='user_edited'`), pin/unpin, hard delete; provenance links into run traces; bi-temporal fields visible on the row detail.
+- Store browser: searchable/filterable list (scope, kind, status, source) over `memories`; edit-as-supersede (`source='user_edited'`), pin/unpin, hard delete — which with `memory_forget_enabled` on becomes two verbs, **Forget** (primary; tombstoned, re-admission suppressed) and **Erase** (explicit; physical, no trace) (§16.1, M44); provenance links into run traces; bi-temporal fields visible on the row detail.
+- **Forgotten section (M44)**: tombstones listed metadata-only (kind, scope, source, forgotten-at, times-suppressed — there is no text to show), each with a working **Unforget**. Suppression must never look like "memory mysteriously won't learn X" — the mechanism is on the page, and the escape hatch beside it. Renders only when `memory_forget_enabled` is on.
 - Review queue: quarantined rows (extracted/inferred `instruction` memories, ambiguous contradictions) approved/rejected inline with an optional note — the HITL card pattern.
 - Layer status: per-table counters, last-consolidation timestamps per job, and the eval axes (injected tokens, recall latency, store growth).
 - Every control maps to the §16 API; the page renders only when `memory_enabled` is on.
@@ -346,6 +350,17 @@ digest preview, approval batch ranked by risk), **Ledger** (fire/hold audit
 with reasons, correlation-chain view for patterns, intervention-precision
 sparkline per category). Chat composer gains nothing — ambient never changes
 the interactive surface when dark. The page renders only when `ambient_enabled` is on.
+
+**Salience on the delivery card (M43).** A §17.5 verdict is shown where the
+delivery already lives, not in a separate queue — a second inbox to triage
+would cost more attention than the feature saves. The card leads with the
+*consequence* in plain language ("Worth your attention" / "Worth
+remembering" / "Looks like noise"), never the mechanism. A proposed verdict
+offers **Do it** and **Leave it**; an applied one states what happened and
+offers **Undo** while undo is still possible, or says why it no longer is.
+Nothing is hidden: an expandable **why this?** carries the judge's reason,
+confidence, the mode that produced it, and the fact that a model made the
+call — demoted below the plain-language line, never omitted.
 
 ### 8.10 Remote Agents (§19)
 
@@ -427,12 +442,17 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M44 | Durable forgetting + feedback-trace completeness (§16.1/§16.2/§17.7/§8.8): user deletion splits into **Forget** (metadata+hash tombstone, embedding copy for suppression only; the §16.2 admission gate suppresses re-admission of forgotten facts — exact hash, cosine ≥ `memory_forget_similarity`, or gray-band cosine ≥ 0.70 with a shared payload-token anchor (the hybrid gate, calibrated live) — so deletion finally keeps its promise; user re-assertion overrides and unforgets) and **Erase** (physical, no trace — privacy by explicit choice; purge clears tombstones too); Memory page gains the Forgotten section with working Unforget; §17.7 pending proposals gain explicit reject (capture-only); overlap-guard overrides logged content-free. `memory_forget_enabled` default false | byte-identity at defaults; §14i-55..57; tombstones have no consumer — a future learner enters under the §17.7 rule |
+| M43 | Salience decision surface + settings completeness (§17.5/§8.9/§8.7): the `propose` mode M42 promised becomes real — a verdict renders on its own delivery card with **Do it** / **Leave it**, plain-language consequence headlines and layered "why this?" disclosure; every applied verdict (human- or auto-) gains a working **Undo** that restores the snapshotted state and retracts only the memories retention created, refusing honestly once a digest has spent the escalation; apply and decline write the judge's own reward onto the salience record — kept separate from the delivery's §17.7 feedback so judging the judge never pollutes §17.3 category precision — making the judge evaluable; decisions are idempotent, conflict-refusing and tenant-scoped. Plus the §8.7 rule that every §3.7 role model has a Settings picker, closing the two that were validated but unreachable (`memory_extraction_model`, `ambient_salience_model` — the latter promised in the M42 §8.7 text and not built) | §14h-52..54; no state change in `propose` until a human acts; undo restores byte-exactly |
+| M42 | Delivery salience + truthful delivery record (§17.5/§18.4/§16): `in_app` becomes a first-class ledger entry written only when the in-app broadcast reached nobody (real-time modes only — a digest reaching an empty room is normal), `seen_at` + an unread nav badge make attention a fact rather than an inference, and the **salience pass** re-judges the CONTENT of unseen tier ≤1 deliveries — deterministic prefilter (urgency, category, `skey` recurrence, previously collapsed and never read as a signal) then a fail-open LLM judge over the fenced body — into three ledgered outcomes: escalate to digest-lead (never re-interrupt), retain into §16 with delivery provenance, or drop on the record. `ambient_salience_mode` default `off` | byte-identity at defaults; §14g-48..51, incl. a randomized regression sample proving unchanged surfaces |
+| M41 | Ambient pursuit (§17.5/§18.4): `ambient_pursuit` ('off'\|'away'\|'always', default 'always' = pre-M41 behavior) gates the external half of `dispatch_delivered` on whether the in-app half reached anyone; the presence oracle is the SSE subscriber set sampled at dispatch — the literal audience of the toast just sent, correct per-process under §18.9 — never the idle timer; strictly subordinate to quiet hours, tiers, and the notification budget; Settings control beside the channel routing it modifies | tri-state matrix green + §14f-45..47 live against local SMTP and SMS-gateway-shaped webhook sinks |
+| M40 | Config hardening + per-chat target pin: the §7.5 composer pin (and history-summary checkbox) become per-conversation state; `a2a_poll_interval_s` wired (tick-bounded watermark); Ambient + A2A + API-guardrail sections on the Settings page; hardcoded constants promoted to live settings (`ambient_tick_interval_s`, `rate_limit_burst`/`rate_limit_per_s`, `overlap_threshold_percent`, `run_stall_after_s`, `agentic_recursion_limit`, `a2a_http_timeout_s`, `a2a_fence_max_chars`) each with validation, defaults equal to the previous constants; auth session TTL moves to env (`AUTH_SESSION_TTL_H`) | byte-identity at defaults; §14e-41..44 |
 
 Each milestone lands with its tests. M1–M4 are API-verifiable via curl before M5 exists.
 
 ## 13. Environment & Conventions
 
-Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false).
+Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40).
 
 Conventions: Python — ruff (lint+format), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
@@ -536,6 +556,115 @@ unless stated):**
     projects the new tool; a parked task's reply/cancel work from the
     Remote Agents task drawer.
 
+**§14e Config-hardening acceptance additions (M40):**
+
+41. (M40) Per-chat pin: pin a sub agent in conversation A; switch to
+    conversation B — the picker shows Orchestrator (auto); send in B and
+    the run is planner-routed; switch back to A — the pin is restored and
+    the next message runs `mode='direct'` against the pinned agent. The
+    history-summary checkbox obeys the same per-conversation scoping.
+42. (M40) Settings completeness: the Ambient and A2A sections toggle their
+    master switches from the page — the corresponding nav entries appear
+    and disappear live; every new knob PATCHes and reads back; invalid
+    values (out-of-bounds) surface the 422 inline.
+43. (M40) Wired knobs behave: raise `a2a_poll_interval_s` above the tick —
+    a parked task is NOT rechecked on the next tick and IS after the
+    interval elapses; lower `overlap_threshold_percent` — a near-duplicate
+    skill save now raises the §4 dialog; change `rate_limit_burst` — the
+    429 boundary moves accordingly.
+44. (M40) Byte-identity at defaults: with every new key left at its
+    default, the §11 suites pass untouched and a fresh boot behaves
+    exactly as before the milestone.
+
+**§14f Ambient pursuit acceptance additions (M41; `ambient_enabled=true`,
+`ambient_channels` routing `interrupt` at both a local SMTP sink and an
+SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
+
+45. (M41) **Pursuit `away`, someone watching**: with a browser holding
+    `/api/v1/ambient/stream`, a tier-0 delivery fires the in-app toast and
+    the external channels do NOT send — the row's `external` ledger stays
+    empty, and neither sink receives anything.
+46. (M41) **Pursuit `away`, nobody watching**: with no subscriber, the
+    same tier-0 delivery reaches both sinks — the email lands in the SMTP
+    sink, the SMS-shaped envelope lands in the webhook sink, and the row's
+    `external` ledger records `ok` per channel. The delivery is otherwise
+    identical (same tier, same budget debit, same Inbox row).
+47. (M41) **Subordination and the tri-state**: inside quiet hours the same
+    tier-0 is demoted to digest and NEITHER a toast nor an external send
+    occurs (pursuit escalates the channel, never the hour); with
+    `'off'` and nobody watching, nothing external fires; with `'always'`
+    and someone watching, the external channels fire exactly as they did
+    pre-M41 — the byte-identity leg.
+
+**§14g Delivery-salience acceptance additions (M42):**
+
+48. (M42) **The record stops lying**: with nobody watching and no external
+    channel configured, a tier-0 delivery records
+    `in_app: {ok:false, "no subscriber"}` and logs `ambient_delivered_unseen`
+    — while the same delivery WITH someone watching leaves `external` null
+    (byte-identity), and a digest flushing to an empty room records nothing.
+    Opening the item in the Inbox sets `seen_at` and decrements the unread
+    badge on the Ambient nav.
+49. (M42) **Salience escalates**: with `ambient_salience_mode='auto'`, an
+    unseen high-urgency alert whose content the judge deems consequential
+    is promoted to lead the next digest — and the ledger shows the verdict,
+    reason, and confidence. It is NOT re-interrupted, and quiet hours are
+    not broken.
+50. (M42) **Salience retains and drops**: a consequential unseen item's
+    content lands in §16 memory through the normal admission path, carrying
+    delivery provenance and visible on the Memory page; a low-value unseen
+    item is dropped with an explicit ledger entry. With the judge forced to
+    fail, both items keep exactly the disposition they already had
+    (fail-open), and adversarial delivery content reaches the judge fenced.
+51. (M42) **Nothing else moved**: with `ambient_salience_mode='off'` (the
+    default) the §11 suites pass untouched, and a **randomized sample of
+    previously captured acceptance frames**, re-captured on the M42 build,
+    matches the archived frames surface for surface.
+
+**§14h Salience decision surface + settings completeness (M43):**
+
+52. (M43) **A proposal is actionable**: with `ambient_salience_mode='propose'`,
+    an unseen alert's verdict renders on its own Inbox card, leading with the
+    consequence in plain language and offering **Do it** / **Leave it**;
+    "why this?" expands to the reason, confidence, mode, and the fact that a
+    model made the call. **Do it** executes the verdict (an escalation leads
+    the next digest, never re-interrupting); **Leave it** changes no state.
+    Both record the decision AND the judge's own reward (`judge_reward`
+    +1/−1 on the salience record) — the delivery's §17.7 feedback stays
+    untouched, so judging the judge never pollutes category precision.
+    Replaying a decision is a no-op; a conflicting one is refused.
+53. (M43) **An applied verdict is reversible**: with
+    `ambient_salience_mode='auto'`, an auto-applied verdict shows what it did
+    and offers **Undo** — restoring the row exactly as snapshotted, and
+    retracting only the memories that retention itself created. Once the
+    escalated item has actually gone out in a digest, Undo refuses with that
+    reason instead of pretending. Cross-tenant, every decision route 404s.
+54. (M43) **No hidden controls**: every §3.7 role model has a select plus
+    params on the Settings page in the section owning that role — including
+    `memory_extraction_model` and `ambient_salience_model`, both of which the
+    settings API already validated while no UI offered them. Provider API
+    keys remain absent from the UI by design (§13).
+
+**§14i Durable forgetting (M44):**
+
+55. (M44) **Forget keeps its promise**: with `memory_forget_enabled` on,
+    Forget a memory from the Memory page; the row is gone, a metadata-only
+    tombstone appears in the Forgotten section, and a later run mentioning
+    the same fact (verbatim AND paraphrased, embedding model configured)
+    does NOT re-admit it — the suppression is logged content-free and the
+    tombstone's times-suppressed count climbs. **Unforget** deletes the
+    tombstone and the next mention admits normally. Explicitly re-stating
+    the fact via `memory.remember` overrides the tombstone in one step.
+56. (M44) **Erase means erase**: Erase leaves no row, no tombstone, no
+    trace; with the master off, deletion behaves exactly as pre-M44
+    (byte-identity), and `mode=forget` is refused naming the setting. §8.7
+    purge removes memories and every tombstone. Tombstones are
+    tenant-scoped: another user's identical fact is not suppressed.
+57. (M44) **Proposal rejection is captured**: in §17.7 propose mode, reject
+    a pending policy proposal — it lands `status='rejected'` with a
+    timestamp, nothing is applied, and the row no longer sits pending
+    forever. Capture-only: no learner consumes rejections yet.
+
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
 Originally deferred; the design below is now implemented as milestone M32,
@@ -576,9 +705,37 @@ Tables (Alembic, one migration): `memories`, `memory_embeddings` (side-table: `m
 
 `memories`: scope ('global'|'conversation') + `conversation_id`, kind ('fact'|'preference'|'entity'|'relation'|'instruction'), `text`, `payload jsonb` (relation s/p/o, preference k/v), `entity_key`, `importance` (1–10, write-time), `confidence` (0–1), source ('extracted'|'user_stated'|'user_edited'|'hitl_note'|'inferred'), status ('active'|'quarantined'|'superseded'|'expired'|'rejected'), bi-temporal columns (`valid_from`/`valid_to` event time; `recorded_at`/`superseded_at` ingestion time), `supersedes`/`superseded_by` chain, provenance (`run_id`/`step_id`, mandatory on machine writes), `last_accessed_at`/`access_count`, `pinned` (always injected + decay-immune), `half_life_days` (NULL = setting default), generated `fts` tsvector. Invariants: pipelines never hard-delete (supersede/expire only; hard delete is a user/purge action); `status='active'` rows form the current view (partial indexes); supersession is append-only (insert replacement + close old row in one transaction, `WHERE superseded_at IS NULL` guard); memory rows are not registry rows (§4 unchanged).
 
+**Durable forgetting (M44).** A physical delete plus existence-only
+reconciliation means the system can re-learn a fact the user deleted —
+deletion silently promised less than it appeared to. User deletion
+therefore splits into two verbs with different guarantees:
+
+- **Forget** (the primary action when `memory_forget_enabled` is on) —
+  deletes the row and writes a `memory_tombstones` record: metadata only
+  (`user_id`, scope/`project_key`, kind, source, confidence-at-admission,
+  importance, age-at-forget, `access_count`, `pinned`, `forgotten_at`,
+  `suppressed_count`/`last_suppressed_at`) plus a SHA-256 of the
+  normalized text and hashes of its distinctive payload tokens, plus — when the row had one — a copy of its embedding,
+  retained **only** for suppression matching and destroyed with the
+  tombstone. Never the text itself.
+- **Erase** (always available, and the only behavior when the master is
+  off) — today's physical delete, no trace of any kind, including no
+  record that something was removed. Privacy by the user's explicit
+  choice. §8.7 purge erases memories AND all tombstones.
+- **Unforget** — deleting a tombstone from the §8.8 Forgotten section;
+  the fact becomes learnable again (the memory itself is already gone).
+
+The tombstone taxonomy, threat notes (hash dictionary-attack caveat,
+embedding quasi-content), and the decision record live in
+`docs/research/feedback_traces/`. Settings: `memory_forget_enabled`
+(default false — byte-identical: deletes stay physical, `mode=forget` is
+a 422 naming the setting) and `memory_forget_similarity` (default 0.85,
+range 0.5–1.0; calibrated live — a real paraphrase pair measured 0.876). Tombstones have no consumer beyond suppression; any
+future learner over them enters under the §17.7 feedback-consumer rule.
+
 ### 16.2 Lifecycle
 
-Post-run, async, debounced until the conversation goes quiet, never blocking the answer, never holding a DB transaction across an LLM call: digest + rollup (L1) → extraction (`prompts/memory_extract.md`, structured output via §2.1) → **deterministic admission gate** (confidence floor, near-duplicate drop by embedding distance, kind/scope allowlist) → per-candidate reconciliation: the LLM answers only *same fact / related / unrelated* against hybrid-nearest active neighbors (`prompts/memory_reconcile.md`); **deterministic code resolves** (same fact + newer event time → bi-temporal supersede; ambiguous timing → quarantine both; unrelated → add). Extracted or `inferred` **instruction-kind memories always quarantine** until approved in the review queue; only explicit user-stated instructions via `memory.remember` activate directly. Scheduler: lifespan asyncio task, `pg_try_advisory_lock` per job class (one replica works), jobs = digest/rollup, extract/reconcile, decay sweep (`importance·exp(−Δt_access/half_life)` below floor → 'expired', pinned immune), reflection (importance-sum trigger; synthesized `inferred` memories carry evidence citations to source ids), contradiction sweep, routing-stats/exemplar harvest, embedding backfill (on `embedding_model` change). Every job emits §10-labeled events + metrics; mutations fire the §7.3 NOTIFY discipline (≤8KB, ids only, cache-hint semantics).
+Post-run, async, debounced until the conversation goes quiet, never blocking the answer, never holding a DB transaction across an LLM call: digest + rollup (L1) → extraction (`prompts/memory_extract.md`, structured output via §2.1) → **deterministic admission gate** (confidence floor, near-duplicate drop by embedding distance, kind/scope allowlist, and — M44, when `memory_forget_enabled` — the **tombstone check**: a candidate whose normalized-text hash matches a live tombstone is **suppressed**; else the **hybrid gate** decides — cosine ≥ `memory_forget_similarity` (default 0.85) suppresses alone, and in the gray band (cosine ≥ 0.70) suppression additionally requires a shared **distinctive-token anchor** (the tombstone also keeps hashes of payload tokens: ≥10 chars, or ≥6 carrying digits/separators — same privacy tier and caveat as the text hash). Calibrated live in stage 32: real paraphrase pairs measured cosine 0.876 and 0.847, so a lone threshold cannot separate 'same fact restated' (shares its payload token) from 'same topic, different fact' (carries a new one — and must stay admissible, or forgetting an outdated value would block learning its replacement). Suppression — not written, `memory_admission_suppressed` logged content-free, the tombstone's `suppressed_count`/`last_suppressed_at` bumped; matching is tenant- and scope-aware like recall, degrades to hash-only with no embedding model, and applies to machine paths only — a **user-stated** write re-asserting a forgotten fact deletes the matching tombstone and admits, ledgered as unforget-by-assertion: the human's newer word beats their older one) → per-candidate reconciliation: the LLM answers only *same fact / related / unrelated* against hybrid-nearest active neighbors (`prompts/memory_reconcile.md`); **deterministic code resolves** (same fact + newer event time → bi-temporal supersede; ambiguous timing → quarantine both; unrelated → add). Extracted or `inferred` **instruction-kind memories always quarantine** until approved in the review queue; only explicit user-stated instructions via `memory.remember` activate directly. Scheduler: lifespan asyncio task, `pg_try_advisory_lock` per job class (one replica works), jobs = digest/rollup, extract/reconcile, decay sweep (`importance·exp(−Δt_access/half_life)` below floor → 'expired', pinned immune), reflection (importance-sum trigger; synthesized `inferred` memories carry evidence citations to source ids), contradiction sweep, routing-stats/exemplar harvest, embedding backfill (on `embedding_model` change). Every job emits §10-labeled events + metrics; mutations fire the §7.3 NOTIFY discipline (≤8KB, ids only, cache-hint semantics).
 
 ### 16.3 Retrieval & injection
 
@@ -685,7 +842,9 @@ watches; returns
 attention_state, decision, reason}`. **No LLM call per raw event, ever**
 (evidence: doc 03 rule 2). Intervention precision per category is computed
 from delivery feedback and surfaces in the UI; persistently low precision
-auto-downgrades the category one tier.
+auto-downgrades the category one tier — gated by
+`ambient_precision_rule_enabled` (M43c): off means the feedback is still
+captured, but no category ever re-tiers behind the user's back.
 
 #### 17.3a Composite patterns (CEP-lite)
 
@@ -753,6 +912,92 @@ the away→active edge emits `user_returned` into the event stream.
 Approvals batch into the digest ranked by risk under a daily escalation
 budget. Feedback (accepted/dismissed/ignored) is captured per item.
 
+**Pursuit (M41).** The tier machinery decides *whether and when* a row is
+delivered; pursuit decides *which channels carry it once that decision is
+already made*. `ambient_pursuit` is `'off'` (in-app only — external
+channels never fire), `'away'` (external channels fire only for a batch
+whose in-app broadcast reached nobody, §18.4), or `'always'` (default —
+external channels fire whenever the routing names them; the pre-M41
+presence-blind behavior). Pursuit is strictly **subordinate** to the tier
+machinery: it never resurrects a row that quiet hours or an exhausted
+notification budget demoted, never re-tiers a row, never debits and never
+bypasses `ambient_notification_budget_per_day`, and never changes which
+rows flush. A tier-0 failure while you are away at 03:00 is therefore
+still demoted by quiet hours and still leads the next digest — **pursuit
+escalates the channel, never the hour**. It is a routing modifier, not a
+second delivery policy.
+
+**Salience (M42).** Tier and urgency are declared *a priori* by the
+producer; nothing re-judges a delivery on the merits of what it actually
+says. The salience pass closes that: for a delivery that was **supposed to
+reach a human in real time and did not** (tier ≤ 1, `seen_at` null, not
+superseded), it asks whether the CONTENT deserves attention or the floor.
+Two stages, cheap first: a deterministic prefilter (urgency, category, and
+the **recurrence count over the row's `skey` lineage** — a thing that keeps
+coming back is evidence in itself, previously collapsed and never read as a
+signal), then an LLM-as-judge over the **fenced** body returning
+`{verdict, reason, confidence}`. Three outcomes, each written to the §17.6
+ledger:
+
+- **escalate** — the row leads the next digest (keeps its urgency, sorts
+  first). It is **never re-interrupted**: salience may raise an item's
+  place in a queue the delivery plane already chose, never re-open a
+  delivery decision, re-tier upward past digest-lead, or break quiet hours.
+- **retain** — the content is handed to §16 through the normal admission
+  path (`reconcile_and_write`) carrying **delivery provenance**, so a fact
+  the agent learned survives even though the notification carrying it was
+  never read.
+- **drop** — recorded explicitly, honoring the existing rule that silence
+  is an explicit, logged decision.
+
+The judge is **advisory and fail-open** (§4 overlap-guard precedent): if it
+errors or is unavailable the row keeps exactly the disposition it already
+had, and the outbox is never blocked. Delivered content is **untrusted**
+(remote-agent output reaches deliveries via §19.6) and passes the §17 fence
+before entering the judge's context. `ambient_salience_mode`
+(`off`|`propose`|`auto`, default `off`, mirroring `ambient_learning_mode`)
+gates the whole pass; in `propose` the verdicts queue for approval instead
+of applying. **Digest deliveries are never candidates** — a digest reaching
+an empty room is its normal condition, not a failure.
+
+**The decision surface (M43).** A queued verdict that nothing can act on is
+a dead end, so `propose` carries a working approval control and `auto`
+carries a working reverse gear — the §17.7 `'auto'` precedent, where every
+ledgered change is one-click revertible, applied to salience:
+
+- **apply** executes the recorded verdict (escalate → digest-lead; retain →
+  the §16 admission path; drop → the row is dismissed by the human, which
+  is the only way a delivery is ever marked seen — the system never marks
+  its own content seen on the user's behalf).
+- **decline** changes no state and records the refusal.
+- **undo** reverses an applied verdict — in either mode, human- or
+  auto-applied — restoring the row to the state snapshotted before the
+  mutation, and retracting exactly the memories that retention created (a
+  memory the run already held is untouched). Undo is bounded by physics,
+  not policy: once an escalated item has actually gone out in a digest the
+  mutation is spent, and the control refuses with that reason rather than
+  pretending. It is an affordance, never a setting — nothing may switch off
+  the user's escape hatch.
+
+Every human decision is a reward for the JUDGE, not for the delivery:
+apply records `judge_reward +1`, decline and undo record `judge_reward −1`,
+all on the salience record itself — the judge accrues its own track
+record, per verdict, and without it it could never be evaluated, only
+trusted. A decision never touches the delivery's §17.7
+`accepted`/`dismissed` feedback or the §17.3 precision rule: "the judge
+misread this alert" and "this alert was worthless" are different facts,
+and undoing an over-eager escalation of a REAL alert must never cast a
+vote toward demoting that alert's whole category. Decisions are
+first-write-wins and idempotent: replaying the same decision is a no-op,
+a conflicting one is refused.
+
+`judge_reward` currently has **no consumer** — it is measurement, accruing
+from day one so any judgment of the judge rests on real history. A future
+salience learner (auto-tuning the urgency floor or per-category judging
+from this ledger) enters under the §17.7 feedback-consumer rule: its own
+`off`/`propose`/`auto` gate, born dark, never a side effect of an existing
+switch.
+
 ### 17.6 Governance, observability, evaluation
 
 Master switch + caps as validated settings (below); `consecutive_failures ≥
@@ -782,13 +1027,35 @@ apply immediately with no approval step, within hard clamps — digest times
 move ≤ 2h from configured, tiers move one step at a time, never into tier 0
 — every change ledgered and one-click revertible), `propose` (optional
 cautious mode: each adjustment lands in the review queue and activates on
-approval — the §16.2 quarantine pattern). Both modes are fully implemented;
+approval — the §16.2 quarantine pattern; M44: a pending proposal can also be
+explicitly **rejected** — `status='rejected'`, timestamped, capture-only —
+because a rejected proposal is itself feedback about the learner, and
+before M44 that signal could only be expressed by letting rows rot). Both modes are fully implemented;
 auto is not gated behind propose. The reward
 is a blend: acceptance + downstream usefulness (the delivered item's run/
 memory was later referenced) − explicit-dismissal penalty, with a
 repetition-decay term (recovering-bandit shape); pure acceptance optimization
 is forbidden by construction. Learner runs as a consolidation-class job;
 byte-identical when `off`.
+
+**The feedback-consumer rule (M43c).** Capture and consumption are
+different acts and are governed differently, everywhere in the system.
+*Capture is always-on*: recording what a human accepted, dismissed,
+decided or undid is inert audit data — cheap, private to its ledger, and
+the raw material every future learner and precision metric depends on; a
+capture kill-switch would only blind the system retroactively. *Every
+consumer is individually gated*: any code path that changes observable
+behavior because of captured feedback carries its own Settings control —
+the §17.7 learner under `ambient_learning_mode`, the §17.3 static rule
+under `ambient_precision_rule_enabled` — and **no consumer ever ships
+ungated**. A new feedback-driven behavior enters dark (`off` or
+`propose`-first, per the §17.7 mode shape), never hot. Deliberate
+non-loops stay non-loops without an explicit spec change: HITL and A2A
+approvals are consent gates, not preference signals — learning "the user
+always approves, stop asking" is automation creep on a safety mechanism
+and is forbidden as a side effect; and §16.1 memory deletion stays
+physical (privacy over trainability), so "the user deleted this memory"
+is deliberately not a captured signal.
 
 
 ## 18. Completion Wave (M26–M36)
@@ -887,6 +1154,42 @@ toast. With ambient on but NO external channel configured, delivery
 behavior (tiers, budgets, outbox rows) is byte-identical to M23–M25; the
 toast is a rendering of flush events that already occur.
 
+**Pursuit and the presence oracle (M41).** Routing alone is
+presence-blind: a configured `email` on `interrupt` sends whether or not
+the toast already landed in front of you. `ambient_pursuit` (§17.5, §3.7)
+gates the external half of the dispatch on whether the in-app half reached
+anyone. The oracle is **the SSE subscriber set itself, sampled at
+dispatch**: `_publish` fans out to exactly the subscribers registered in
+this process, so "the broadcast reached zero subscribers" is not an
+estimate of presence — it is the literal audience of the toast just sent.
+This keeps the rule correct with no second source of truth, and it stays
+correct under §18.9 multi-replica: the hub is per-process, so a tick on
+replica A can only ever toast A's subscribers, and A's count is exactly
+what A delivered to. The `ambient_idle_minutes` presence timer (§17.5) is
+deliberately **not** the oracle — it answers "has the user been clicking",
+not "did the toast land", and would escalate against an open, actively
+watched tab that simply had not been clicked inside the idle window.
+Known and accepted: a forgotten background tab counts as watching, biasing
+pursuit toward fewer external sends — the conservative direction, since
+the row is in the Inbox either way. The per-channel `external` ledger
+records what actually fired, so a suppressed escalation is visible as an
+absent entry rather than a silent one.
+
+**The in-app ledger entry (M42).** Until M42 a flushed row was stamped
+`delivered_at` + `channel` even when the in-app broadcast reached zero
+subscribers and no external channel was configured — the record asserted a
+delivery that reached nobody, and the §17.7 reward substrate could not tell
+"seen and ignored" from "never seen". `in_app` therefore becomes a
+first-class ledger entry, written **only when it did not land**
+(`{"in_app": {"ok": false, "error": "no subscriber", "at": …}}`) and only
+for the real-time modes `interrupt`/`notify`. The happy path still leaves
+`external` null, so byte-identity at defaults is preserved; a digest
+flushing to an empty room writes nothing, because that is its normal
+condition. `seen_at` on the delivery row records the moment a human
+actually opened it, and the Ambient nav carries the unread count — together
+they turn "was this attended to" from an inference into a fact, and they
+are what the §17.5 salience pass keys on.
+
 ### 18.5 Ambient UI completeness (M30)
 
 M23 delivered §8.9's four tabs functionally; M30 closes the remaining
@@ -931,7 +1234,8 @@ contract suite, zero changes outside `app/llm/`.
 `auth_enabled` (env `AUTH_ENABLED`, default false): off ⇒ byte-identical
 single-user behavior, the whole §11 suite untouched. On ⇒ `users` table
 (scrypt password hashes, `admin|member` roles, and a `prefs jsonb` column),
-bearer session tokens (`POST /auth/login`, hashed at rest, TTL), a FastAPI
+bearer session tokens (`POST /auth/login`, hashed at rest, TTL from
+`AUTH_SESSION_TTL_H` env, default 24h — M40), a FastAPI
 dependency guarding `/api/v1` (exempt: health, metrics, `POST /auth/login`,
 and `POST /routines/{id}/fire` — the fire endpoint keeps its own hashed
 fire-token auth, §17.2, which is not a user session), and a bootstrap

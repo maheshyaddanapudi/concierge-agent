@@ -6,7 +6,8 @@ cadence state. Ledger exposes the fire/hold audit with per-category
 intervention precision.
 """
 
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -42,6 +43,8 @@ def _delivery_out(d: Delivery) -> dict[str, Any]:
         "feedback": d.feedback,
         "reward": d.reward,
         "external": d.external,  # §18.4 per-channel send ledger
+        "seen_at": d.seen_at.isoformat() if d.seen_at else None,  # M42
+        "salience": d.salience,  # §17.5 judge verdict, M42
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
@@ -59,6 +62,64 @@ async def list_deliveries(
         query = query.where(Delivery.delivered_at.isnot(None))
     rows = list((await session.execute(query)).scalars())
     return {"items": [_delivery_out(d) for d in rows]}
+
+
+@deliveries_router.get("/unread-count")
+async def unread_count(session: SessionDep) -> dict[str, int]:
+    """M42: delivered-but-never-opened items — the Ambient nav badge. Only
+    what was actually delivered counts; pending rows are not yet news."""
+    rows = list(
+        (
+            await session.execute(
+                scope_to_user(select(Delivery), Delivery).where(
+                    Delivery.delivered_at.isnot(None),
+                    Delivery.seen_at.is_(None),
+                    Delivery.superseded_by.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    return {"count": len(rows), "attention": len([r for r in rows if r.tier <= 1])}
+
+
+@deliveries_router.post("/{delivery_id}/seen")
+async def mark_seen(delivery_id: UUID, session: SessionDep) -> dict[str, Any]:
+    """M42: opening an item in the Inbox stamps seen_at — this is what turns
+    'was it attended to' from an inference into a fact (§18.4)."""
+    row = await session.get(Delivery, delivery_id)
+    if row is None or not owns_row(row):
+        raise HTTPException(404, "no such delivery")
+    if row.seen_at is None:  # idempotent: first open wins
+        row.seen_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(row)
+    return _delivery_out(row)
+
+
+@deliveries_router.post("/{delivery_id}/salience/{action}")
+async def decide_salience(delivery_id: UUID, action: str) -> dict[str, Any]:
+    """M43: act on a §17.5 verdict — apply it, decline it, or undo one that
+    was applied (by a human or by `auto`). First decision wins; a repeat is
+    a no-op, a contradiction is refused, and an escalation already spent by
+    a digest refuses honestly instead of pretending to reverse."""
+    from app.ambient.salience import Action, decide
+
+    if action not in ("apply", "decline", "undo"):
+        raise HTTPException(422, "action must be one of ['apply', 'decline', 'undo']")
+    async with get_session_factory()() as session:
+        existing = await session.get(Delivery, delivery_id)
+    if existing is None or not owns_row(existing):
+        raise HTTPException(404, "no such delivery")
+    outcome, detail = await decide(delivery_id, cast("Action", action))
+    if outcome == "missing":
+        raise HTTPException(404, detail)
+    if outcome == "conflict":
+        raise HTTPException(409, detail)
+    async with get_session_factory()() as session:
+        row = await session.get(Delivery, delivery_id)
+    if row is None:
+        raise HTTPException(404, "no such delivery")
+    return _delivery_out(row) | {"outcome": outcome, "detail": detail}
 
 
 @deliveries_router.get("/digest-preview")
@@ -330,7 +391,9 @@ async def precision(session: SessionDep) -> dict[str, Any]:
         (
             await session.execute(
                 select(AmbientPolicy)
-                .where(AmbientPolicy.source != "learner_proposal")  # inert until approved
+                .where(
+                    AmbientPolicy.source.notin_(["learner_proposal", "learner_rejected"])
+                )  # inert
                 .order_by(AmbientPolicy.created_at)
             )
         )
@@ -420,6 +483,17 @@ async def approve_policy(policy_id: UUID) -> dict[str, Any]:
         "tier_override": row.tier_override,
         "status": "applied",
     }
+
+
+@ledger_router.post("/policies/{policy_id}/reject")
+async def reject_policy(policy_id: UUID) -> dict[str, Any]:
+    """M44 §17.7: reject a queued learner proposal — captured, never applied."""
+    from app.ambient.learn import reject_proposal
+
+    row = await reject_proposal(policy_id)
+    if row is None:
+        raise HTTPException(404, "no learner proposal with that id")
+    return {"id": str(row.id), "category": row.category, "status": "rejected"}
 
 
 @ledger_router.post("/policies/revert")

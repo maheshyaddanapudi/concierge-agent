@@ -85,7 +85,7 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
                     select(AmbientPolicy)
                     .where(
                         AmbientPolicy.category == category,
-                        AmbientPolicy.source != "learner_proposal",
+                        AmbientPolicy.source.notin_(["learner_proposal", "learner_rejected"]),
                         (AmbientPolicy.user_id == user_id) | (AmbientPolicy.user_id.is_(None)),
                     )
                     .order_by(AmbientPolicy.created_at.desc())
@@ -259,9 +259,7 @@ async def _digest_due(
 APPROVAL_CATEGORIES = {"hitl", "learning"}
 
 
-async def _digest_flush(
-    now: datetime, owner: "UUID | None" = None, scoped: bool = False
-) -> int:
+async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool = False) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
     (demoted interrupts lead — they kept urgency 5). Approval items
     (spec §18.1) flush ranked by urgency under
@@ -381,9 +379,7 @@ async def _flush_bucket(
     # out — the user-returned flush stays live because the user is present
     if not quiet:
         async with get_session_factory()() as session:
-            due = await _digest_due(
-                session, now, list(eff["ambient_digest_times"]), owner, scoped
-            )
+            due = await _digest_due(session, now, list(eff["ambient_digest_times"]), owner, scoped)
         if due:
             out["digest"] += await _digest_flush(now, owner, scoped)
 
@@ -491,10 +487,16 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
 
     obs.AMBIENT_OPS.labels(kind="deliver", status=f"feedback_{feedback}").inc()
     # the rule is the STATIC policy: once learning is on (auto|propose) the
-    # §17.7 learner owns re-tiering — reward-weighted, both directions
+    # §17.7 learner owns re-tiering — reward-weighted, both directions.
+    # M43c: the rule is a feedback CONSUMER, so it carries its own gate —
+    # off = a dismissal is still captured (audit, metrics, future learners)
+    # but never re-tiers a category behind the user's back
     from app.registry_cache import get_cache
 
-    if str(await get_cache().setting("ambient_learning_mode")) == "off":
+    cache = get_cache()
+    if str(await cache.setting("ambient_learning_mode")) == "off" and bool(
+        await cache.setting("ambient_precision_rule_enabled")
+    ):
         from app.auth import auth_enabled
 
         await apply_precision_rule(row.category, row.user_id, auth_enabled())

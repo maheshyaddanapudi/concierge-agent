@@ -75,7 +75,9 @@ async def test_injection_does_not_bump_access() -> None:
 
 async def test_explicit_recall_still_bumps_access() -> None:
     await _enable()
-    m = await remember(text="the staging cluster is named aurora", kind="fact", source="user_stated")
+    m = await remember(
+        text="the staging cluster is named aurora", kind="fact", source="user_stated"
+    )
     hits = await recall("staging cluster aurora")
     assert any(h.memory.id == m.id for h in hits)
     fresh = await _mem(m.id)
@@ -91,8 +93,12 @@ def test_cited_ids_matches_eight_char_prefixes() -> None:
 
 async def test_post_run_citation_reinforces_only_cited() -> None:
     await _enable()
-    cited = await remember(text="the user's dog is named Biscuit", kind="fact", source="user_stated")
-    uncited = await remember(text="the user's editor is Neovim", kind="preference", source="user_stated")
+    cited = await remember(
+        text="the user's dog is named Biscuit", kind="fact", source="user_stated"
+    )
+    uncited = await remember(
+        text="the user's editor is Neovim", kind="preference", source="user_stated"
+    )
     run = await _completed_run(
         "what's my dog's name?", f"Your dog is Biscuit [fact {str(cited.id)[:8]}]."
     )
@@ -323,7 +329,9 @@ async def test_gate_scrubs_citation_ids_from_candidate_text() -> None:
     assert scrub_citation_ids("Target missed [fact ab12cd34, ef56ab78] by 25%.").count("[") == 0
     assert scrub_citation_ids("plain fact with no markers") == "plain fact with no markers"
     # a legitimate parenthetical survives
-    assert scrub_citation_ids("Vibration fell to 2.1 mm/s (down from 5.8).").endswith("(down from 5.8).")
+    assert scrub_citation_ids("Vibration fell to 2.1 mm/s (down from 5.8).").endswith(
+        "(down from 5.8)."
+    )
 
     await _enable()
     accepted, dropped = await gate_candidates(

@@ -261,7 +261,11 @@ async def recall_digests(
         return []
     from app.memory.rank import or_tsquery
 
-    params: dict[str, Any] = {"q": or_tsquery(query), "n": _LEG_LIMIT, "excl": exclude_conversation_id}
+    params: dict[str, Any] = {
+        "q": or_tsquery(query),
+        "n": _LEG_LIMIT,
+        "excl": exclude_conversation_id,
+    }
     excl = "AND (CAST(:excl AS uuid) IS NULL OR d.conversation_id != CAST(:excl AS uuid))"
 
     async with get_session_factory()() as session:

@@ -252,12 +252,13 @@ function SkillEditor({
     // pre-save overlap guard (spec §4) — advisory, so check failures fall
     // through to a normal save
     try {
+      // NOTE: only the fields SkillOverlapCheck accepts — an extra field
+      // 422s the advisory check and silently disables the guard (M40 fix)
       const check = await api.post<OverlapCheck>('/skills/check-overlap', {
         name,
         description,
         instructions,
         tool_ids: toolIds,
-        max_tool_iterations: maxIter === '' ? null : Number(maxIter),
         exclude_id: skill?.id ?? null,
       })
       if (check.overlap) {
@@ -277,6 +278,11 @@ function SkillEditor({
           check={overlap}
           entity="skill"
           onConfirm={async () => {
+            // M44: saving past the warning is a captured, content-free event
+            void api.post('/skills/overlap-ack', {
+              draft_type: 'skill',
+              overlap_percent: overlap.overlap_percent,
+            }).catch(() => {})
             setOverlap(null)
             await doSave()
           }}

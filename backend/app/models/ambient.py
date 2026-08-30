@@ -164,7 +164,9 @@ class AmbientWakeup(Base):
     reason: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     created_by: Mapped[str] = mapped_column(String(8), default="agent")  # agent|system|user
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|fired|cancelled|expired
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending"
+    )  # pending|fired|cancelled|expired
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
@@ -198,7 +200,9 @@ class Delivery(Base):
 
     __tablename__ = "deliveries"
     __table_args__ = (
-        Index("deliveries_pending_idx", "tier", "created_at", postgresql_where="delivered_at IS NULL"),
+        Index(
+            "deliveries_pending_idx", "tier", "created_at", postgresql_where="delivered_at IS NULL"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -226,6 +230,11 @@ class Delivery(Base):
     skey: Mapped[str | None] = mapped_column(String(255), default=None)
     # §18.4 per-channel send ledger: {channel: {ok, error, at}}
     external: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # M42: when a human actually opened it (§18.4) — null means unseen, which
+    # is what the §17.5 salience pass keys on
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # M42: the §17.5 salience verdict {verdict, reason, confidence, at, mode}
+    salience: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     feedback: Mapped[str | None] = mapped_column(String(16), default=None)
     reward: Mapped[float | None] = mapped_column(Float, default=None)  # §17.7 substrate
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

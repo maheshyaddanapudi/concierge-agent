@@ -128,9 +128,7 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
                 continue
             entity = (
                 await sess.execute(
-                    sa_select(MemoryEntity).where(
-                        sa_func.lower(MemoryEntity.name) == name.lower()
-                    )
+                    sa_select(MemoryEntity).where(sa_func.lower(MemoryEntity.name) == name.lower())
                 )
             ).scalar_one_or_none()
             if entity is None:
@@ -182,6 +180,10 @@ async def remember(
     text = " ".join(text.split())
     if not text:
         raise MemoryWriteError("text must not be empty")
+    if source == "user_stated":
+        # M44 §16.2: the human re-asserting a forgotten fact beats their
+        # earlier forget — matching tombstones are removed, the write lands
+        await _unforget_by_assertion(text, scope, user_id)
 
     status = "active"
     if kind == "instruction" and (source in {"extracted", "inferred"} or via_tool):
@@ -323,6 +325,206 @@ async def forget(memory_id: UUID) -> bool:
         _notify_invalidate()
         return True
     return False
+
+
+# ── M44 §16.1 durable forgetting ──────────────────────────────────────
+
+
+def normalized_hash(text: str) -> str:
+    """SHA-256 of the whitespace-normalized, lowercased text — the exact
+    re-admission fingerprint a tombstone keeps instead of the text."""
+    import hashlib
+
+    return hashlib.sha256(" ".join(text.split()).lower().encode()).hexdigest()
+
+
+def distinctive_token_hashes(text: str) -> list[str]:
+    """Hashes of the text's distinctive tokens (≥6 chars, punctuation
+    stripped) — the gray-band anchor for the hybrid suppression gate.
+    Live calibration (M44 stage 32) measured real paraphrase pairs at
+    cosine 0.876 and 0.847: a lone threshold cannot separate "same fact
+    restated" from "same topic, different fact", but true restatements
+    share the fact's distinctive payload and value-updates do not."""
+    import hashlib
+    import re
+
+    out = set()
+    for tok in re.split(r"[^a-z0-9\-_.]+", " ".join(text.split()).lower()):
+        tok = tok.strip(".-_")
+        # distinctive = a payload, not a common word: long, or carrying
+        # digits/separators (ids, versions, hosts, emails, bucket names)
+        if len(tok) >= 10 or (len(tok) >= 6 and any(c.isdigit() or c in "-_." for c in tok)):
+            out.add(hashlib.sha256(tok.encode()).hexdigest()[:16])
+    return sorted(out)
+
+
+async def tombstone_forget(memory_id: UUID) -> bool:
+    """FORGET (spec §16.1 M44): delete the row but leave a metadata+hash
+    tombstone (and an embedding copy when one exists, for semantic
+    suppression only). Requires `memory_forget_enabled`."""
+    from app.models import MemoryTombstone
+
+    async with get_session_factory()() as session:
+        row = await session.get(Memory, memory_id)
+        if row is None:
+            return False
+        emb = None
+        key = await active_model_key()
+        if key:
+            emb = await session.get(MemoryEmbedding, (memory_id, "memories", key))
+        age = 0.0
+        if row.recorded_at is not None:
+            age = max((datetime.now(UTC) - row.recorded_at).total_seconds() / 86400.0, 0.0)
+        session.add(
+            MemoryTombstone(
+                user_id=row.user_id,
+                scope=row.scope,
+                project_key=row.project_key,
+                conversation_id=row.conversation_id,
+                kind=row.kind,
+                source=row.source,
+                confidence=row.confidence,
+                importance=row.importance,
+                age_days=age,
+                access_count=row.access_count,
+                pinned=row.pinned,
+                text_hash=normalized_hash(row.text),
+                token_hashes=distinctive_token_hashes(row.text),
+                embedding=emb.embedding if emb is not None else None,
+                model_key=emb.model_key if emb is not None else None,
+            )
+        )
+        await session.commit()
+    logger.info("memory_forget", tier="memory", memory_id=str(memory_id))
+    return await hard_delete(memory_id)
+
+
+async def unforget(tombstone_id: UUID, *, reason: str = "user") -> bool:
+    """Delete a tombstone — the fact becomes learnable again (§8.8)."""
+    from app.models import MemoryTombstone
+
+    async with get_session_factory()() as session:
+        row = await session.get(MemoryTombstone, tombstone_id)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+    logger.info("memory_unforget", tier="memory", tombstone_id=str(tombstone_id), reason=reason)
+    return True
+
+
+async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "list[Any]":
+    """Live tombstones this text would re-admit: exact hash match, else
+    cosine ≥ memory_forget_similarity against same-model embeddings.
+    Tenant- and scope-aware like recall; hash-only when no embedding
+    model is configured (§7.4 degradation)."""
+    from sqlalchemy import select as sa_select
+
+    from app.models import MemoryTombstone
+    from app.registry_cache import get_cache
+
+    owner = (
+        MemoryTombstone.user_id == user_id
+        if user_id is not None
+        else MemoryTombstone.user_id.is_(None)
+    )
+    text_h = normalized_hash(text)
+    async with get_session_factory()() as session:
+        exact = list(
+            (
+                await session.execute(
+                    sa_select(MemoryTombstone).where(
+                        MemoryTombstone.text_hash == text_h,
+                        MemoryTombstone.scope == scope,
+                        owner,
+                    )
+                )
+            ).scalars()
+        )
+    if exact:
+        return exact
+    key = await active_model_key()
+    if not key:
+        return []
+    try:
+        from app.llm import get_embeddings
+        from app.registry_cache import get_cache as _gc
+
+        model = await _gc().setting("embedding_model")
+        vec = (await get_embeddings(str(model), [" ".join(text.split())]))[0]
+    except Exception as exc:  # noqa: BLE001 — degrade to hash-only
+        logger.warning("memory_forget_embed_failed", error=str(exc))
+        return []
+    threshold = float(await get_cache().setting("memory_forget_similarity") or 0.85)
+    async with get_session_factory()() as session:
+        nearest = list(
+            (
+                await session.execute(
+                    sa_select(
+                        MemoryTombstone,
+                        MemoryTombstone.embedding.cosine_distance(vec).label("dist"),
+                    )
+                    .where(
+                        MemoryTombstone.embedding.isnot(None),
+                        MemoryTombstone.model_key == key,
+                        MemoryTombstone.scope == scope,
+                        owner,
+                    )
+                    .order_by(MemoryTombstone.embedding.cosine_distance(vec))
+                    .limit(3)
+                )
+            ).all()
+        )
+    # the hybrid gate (M44 stage-32 calibration): at or above the threshold
+    # cosine alone suppresses; in the gray band down to 0.70 a shared
+    # distinctive-token hash is required — true restatements carry the
+    # fact's payload token, a changed value does not
+    cand_tokens = set(distinctive_token_hashes(text))
+    out = []
+    for row, dist in nearest:
+        cos = 1.0 - float(dist)
+        if cos >= threshold or (cos >= 0.70 and cand_tokens & set(row.token_hashes or [])):
+            out.append(row)
+    return out
+
+
+async def check_suppressed(text: str, scope: str, user_id: UUID | None) -> bool:
+    """§16.2 admission-gate hook: True ⇒ the candidate matches a live
+    tombstone and must not be written. Content-free log; the tombstone's
+    suppressed_count accrues — the signal a future learner would read."""
+    from app.registry_cache import get_cache
+
+    if not bool(await get_cache().setting("memory_forget_enabled")):
+        return False
+    matches = await _matching_tombstones(text, scope, user_id)
+    if not matches:
+        return False
+    async with get_session_factory()() as session:
+        for m in matches:
+            row = await session.get(type(m), m.id)
+            if row is not None:
+                row.suppressed_count += 1
+                row.last_suppressed_at = datetime.now(UTC)
+        await session.commit()
+    logger.info(
+        "memory_admission_suppressed",
+        tier="memory",
+        kind=matches[0].kind,
+        scope=scope,
+        tombstones=len(matches),
+    )
+    return True
+
+
+async def _unforget_by_assertion(text: str, scope: str, user_id: UUID | None) -> None:
+    """A user re-stating a forgotten fact overrides their earlier forget:
+    the matching tombstones are deleted and the write proceeds (§16.2)."""
+    from app.registry_cache import get_cache
+
+    if not bool(await get_cache().setting("memory_forget_enabled")):
+        return
+    for m in await _matching_tombstones(text, scope, user_id):
+        await unforget(m.id, reason="user_assertion")
 
 
 async def hard_delete(memory_id: UUID) -> bool:

@@ -97,7 +97,9 @@ async def get_dataset(dataset_id: UUID, session: SessionDep) -> dict[str, Any]:
     cases = list(
         (
             await session.execute(
-                select(EvalCase).where(EvalCase.dataset_id == dataset_id).order_by(EvalCase.position)
+                select(EvalCase)
+                .where(EvalCase.dataset_id == dataset_id)
+                .order_by(EvalCase.position)
             )
         ).scalars()
     )

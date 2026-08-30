@@ -29,7 +29,9 @@ async def _bootstrap() -> tuple[User, str]:
 
 
 async def _login(client: Any, username: str, password: str) -> str:
-    resp = await client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    resp = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": password}
+    )
     assert resp.status_code == 200, resp.text
     return str(resp.json()["token"])
 
@@ -155,9 +157,9 @@ async def test_work_is_invisible_across_users(seeded_client: Any, auth_on: Any) 
     assert member_runs == []
     member_routines = (await seeded_client.get("/api/v1/routines", headers=_h(member))).json()
     assert member_routines == []
-    member_deliveries = (
-        await seeded_client.get("/api/v1/deliveries", headers=_h(member))
-    ).json()["items"]
+    member_deliveries = (await seeded_client.get("/api/v1/deliveries", headers=_h(member))).json()[
+        "items"
+    ]
     assert member_deliveries == []
     admin_runs = (await seeded_client.get("/api/v1/runs", headers=_h(admin))).json()
     assert len(admin_runs) == 1
@@ -214,9 +216,7 @@ async def test_prefs_override_quiet_hours(client: Any, auth_on: Any) -> None:
     async with get_session_factory()() as session:
         from sqlalchemy import select
 
-        user = (
-            await session.execute(select(User).where(User.username == "admin"))
-        ).scalar_one()
+        user = (await session.execute(select(User).where(User.username == "admin"))).scalar_one()
     eff = await effective_ambient_settings(user.id)
     assert eff["ambient_quiet_hours"] == ["01:00", "02:00"]  # user override
     assert await effective_ambient_settings(None) != eff or True  # global stays global
@@ -228,11 +228,17 @@ async def test_prefs_override_quiet_hours(client: Any, auth_on: Any) -> None:
 
 
 async def test_rate_limit_429(client: Any, auth_on: Any) -> None:
+    # M40: the bucket shape is the live rate_limit_burst / rate_limit_per_s
+    # settings pair — drive it through the real settings API
     from app import auth as auth_mod
 
     token = await _admin_token(client)
-    old = auth_mod.RATE_LIMIT_BURST
-    auth_mod.RATE_LIMIT_BURST = 5
+    resp = await client.patch(
+        "/api/v1/settings",
+        json={"rate_limit_burst": 5, "rate_limit_per_s": 1},
+        headers=_h(token),
+    )
+    assert resp.status_code == 200, resp.text
     auth_mod._buckets.clear()
     try:
         statuses = []
@@ -240,8 +246,18 @@ async def test_rate_limit_429(client: Any, auth_on: Any) -> None:
             statuses.append((await client.get("/api/v1/skills", headers=_h(token))).status_code)
         assert 429 in statuses
     finally:
-        auth_mod.RATE_LIMIT_BURST = old
         auth_mod._buckets.clear()
+        # a throttled token still needs to restore settings — retry briefly
+        for _ in range(20):
+            resp = await client.patch(
+                "/api/v1/settings",
+                json={"rate_limit_burst": 120, "rate_limit_per_s": 10},
+                headers=_h(token),
+            )
+            if resp.status_code == 200:
+                break
+            auth_mod._buckets.clear()
+        assert resp.status_code == 200, resp.text
 
 
 async def test_security_headers_when_auth_on(client: Any, auth_on: Any) -> None:

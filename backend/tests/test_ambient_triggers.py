@@ -151,7 +151,9 @@ async def test_poller_aimd_backoff_and_reset() -> None:
 async def test_poller_expires_intent() -> None:
     await _enable()
 
-    async def source(w: str | None, config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    async def source(
+        w: str | None, config: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str | None]:
         return [], w
 
     register_poll_source("exp-feed", source)
@@ -270,7 +272,14 @@ async def test_significance_judge_gates_intent_events() -> None:
     intent = await _intent(semantic_predicate="only genuinely urgent production issues")
     # significant ⇒ fired, with urgency in the ledger
     fake_llm.push_ai(
-        "", tool_calls=[{"id": "c1", "name": "SignificanceOutput", "args": {"significant": True, "urgency": 4, "reason": "urgent_change"}}]
+        "",
+        tool_calls=[
+            {
+                "id": "c1",
+                "name": "SignificanceOutput",
+                "args": {"significant": True, "urgency": 4, "reason": "urgent_change"},
+            }
+        ],
     )
     e1 = await emit_event(kind="intent_poll_item", source="poll", intent_id=intent.id)
     assert e1 is not None
@@ -279,7 +288,14 @@ async def test_significance_judge_gates_intent_events() -> None:
     assert v1[2]["tier"] == 2 and v1[2]["urgency"] == 4
     # not significant ⇒ held
     fake_llm.push_ai(
-        "", tool_calls=[{"id": "c2", "name": "SignificanceOutput", "args": {"significant": False, "urgency": 1, "reason": "noise"}}]
+        "",
+        tool_calls=[
+            {
+                "id": "c2",
+                "name": "SignificanceOutput",
+                "args": {"significant": False, "urgency": 1, "reason": "noise"},
+            }
+        ],
     )
     e2 = await emit_event(kind="intent_poll_item", source="poll", intent_id=intent.id)
     assert e2 is not None

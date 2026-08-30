@@ -23,7 +23,10 @@ def upgrade() -> None:
         sa.Column("level", sa.String(16), nullable=False),
         sa.Column("target_id", UUID(as_uuid=True), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
         ),
     )
     op.create_table(
@@ -58,7 +61,10 @@ def upgrade() -> None:
         sa.Column("error_cases", sa.Integer, nullable=False, server_default="0"),
         sa.Column("langsmith_url", sa.String(512), nullable=True),
         sa.Column(
-            "started_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+            "started_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
         ),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -78,7 +84,10 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
-            "run_id", UUID(as_uuid=True), sa.ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+            "run_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("runs.id", ondelete="SET NULL"),
+            nullable=True,
         ),
         sa.Column("status", sa.String(16), nullable=False, server_default="graded"),
         sa.Column("passed", sa.Boolean, nullable=False, server_default="false"),
@@ -87,9 +96,7 @@ def upgrade() -> None:
         sa.Column("answer", sa.Text, nullable=False, server_default=""),
     )
     # §15 eval provenance on ordinary runs
-    op.add_column(
-        "runs", sa.Column("is_eval", sa.Boolean, nullable=False, server_default="false")
-    )
+    op.add_column("runs", sa.Column("is_eval", sa.Boolean, nullable=False, server_default="false"))
     op.add_column("runs", sa.Column("eval_skill_id", UUID(as_uuid=True), nullable=True))
 
 

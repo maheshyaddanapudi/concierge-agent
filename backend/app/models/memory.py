@@ -22,7 +22,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -110,6 +110,49 @@ class MemoryEmbedding(Base):
     embedding: Mapped[Any] = mapped_column(Vector(None))
     embedded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryTombstone(Base):
+    """M44 §16.1 durable forgetting: the trace a FORGET leaves. Metadata +
+    normalized-text hash — never the text — plus an optional embedding copy
+    used only for suppression matching and destroyed with the tombstone.
+    ERASE and §8.7 purge write nothing here, by design."""
+
+    __tablename__ = "memory_tombstones"
+    __table_args__ = (
+        Index("memory_tombstones_hash_idx", "text_hash"),
+        Index("memory_tombstones_owner_idx", "user_id", "scope"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(default=None)  # §18.8 tenancy
+    scope: Mapped[str] = mapped_column(String(16), default="global")
+    project_key: Mapped[str | None] = mapped_column(String(128), default=None)
+    # deliberately no FK: the tombstone must outlive its conversation
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    kind: Mapped[str] = mapped_column(String(16))
+    source: Mapped[str] = mapped_column(String(16))
+    confidence: Mapped[float] = mapped_column(Float, default=0.7)
+    importance: Mapped[int] = mapped_column(Integer, default=5)
+    age_days: Mapped[float] = mapped_column(Float, default=0.0)
+    access_count: Mapped[int] = mapped_column(Integer, default=0)
+    pinned: Mapped[bool] = mapped_column(default=False)
+    # SHA-256 of the whitespace-normalized, lowercased text
+    text_hash: Mapped[str] = mapped_column(String(64))
+    # hashes of the text's distinctive tokens (≥6 chars) — the gray-band
+    # anchor for the hybrid gate; same privacy caveat as text_hash
+    token_hashes: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # embedding copy for semantic suppression; NULL = hash-only matching
+    embedding: Mapped[Any] = mapped_column(Vector(None), nullable=True, default=None)
+    model_key: Mapped[str | None] = mapped_column(String(255), default=None)
+    forgotten_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # the accruing signal: how often the forgotten fact tried to come back
+    suppressed_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_suppressed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
     )
 
 

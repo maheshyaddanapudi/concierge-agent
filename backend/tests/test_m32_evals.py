@@ -47,11 +47,7 @@ def test_parse_csv_happy_path() -> None:
 
 def test_parse_rejects_mixed_targets_and_bad_grader() -> None:
     a, b = str(uuid4()), str(uuid4())
-    mixed = (
-        "level,target_id,input,expected\n"
-        f"skill,{a},q1,a1\n"
-        f"skill,{b},q2,a2\n"
-    )
+    mixed = f"level,target_id,input,expected\nskill,{a},q1,a1\nskill,{b},q2,a2\n"
     with pytest.raises(EvalParseError, match="single target"):
         parse_eval_file("cases.csv", mixed.encode())
     bad = f"level,target_id,input,expected,judge_notes,grader\nskill,{a},q,a,,vibes\n"
@@ -182,7 +178,7 @@ async def test_hidden_skill_is_evaluable(seeded_client: Any) -> None:
     await seeded_client.patch(f"/api/v1/skills/{skill['id']}", json={"direct_exposure": False})
     csv = (
         "level,target_id,input,expected,judge_notes,grader\n"
-        f"skill,{skill['id']},\"what is 3+3?\",\"6\",,exact\n"
+        f'skill,{skill["id"]},"what is 3+3?","6",,exact\n'
     )
     upload = await seeded_client.post(
         "/api/v1/evals/datasets",
