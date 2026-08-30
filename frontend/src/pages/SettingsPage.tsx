@@ -644,6 +644,11 @@ export function SettingsPage() {
                   ))}
                 </Select>
               </Field>
+              <BoolSetting
+                label="Precision auto-downgrade"
+                k="ambient_precision_rule_enabled"
+                hint="§17.3 static rule (learning off): your ✕ clicks train the tiering — a chronically dismissed category drops one tier. Off = feedback is still captured, but never re-tiers a category"
+              />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <ListSetting

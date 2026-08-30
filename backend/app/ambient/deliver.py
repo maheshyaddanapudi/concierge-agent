@@ -487,10 +487,16 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
 
     obs.AMBIENT_OPS.labels(kind="deliver", status=f"feedback_{feedback}").inc()
     # the rule is the STATIC policy: once learning is on (auto|propose) the
-    # §17.7 learner owns re-tiering — reward-weighted, both directions
+    # §17.7 learner owns re-tiering — reward-weighted, both directions.
+    # M43c: the rule is a feedback CONSUMER, so it carries its own gate —
+    # off = a dismissal is still captured (audit, metrics, future learners)
+    # but never re-tiers a category behind the user's back
     from app.registry_cache import get_cache
 
-    if str(await get_cache().setting("ambient_learning_mode")) == "off":
+    cache = get_cache()
+    if str(await cache.setting("ambient_learning_mode")) == "off" and bool(
+        await cache.setting("ambient_precision_rule_enabled")
+    ):
         from app.auth import auth_enabled
 
         await apply_precision_rule(row.category, row.user_id, auth_enabled())

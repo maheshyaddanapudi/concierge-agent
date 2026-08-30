@@ -361,3 +361,23 @@ fresh alerts, real judge: Do it → `judge_reward 1.0`, `feedback null`;
 Undo → `judge_reward -1.0`, row restored, `feedback` still null;
 Leave it → `declined`, `judge_reward -1.0`, delivery untouched.
 The frames `04`/`05`/`07` above are kept as the record of the flaw.
+
+### Stage 31 addendum 2 — the feedback-consumer rule (M43c)
+
+Auditing the M43b separation raised the wider question: which
+approval/rejection signals feed loops, and are all consumers gated? The
+answer became spec §17.7's **feedback-consumer rule**: capture is
+always-on (inert audit data, the raw material of every future learner);
+every consumer of feedback carries its own Settings gate; no consumer
+ever ships hot. The audit found exactly one ungated consumer — the §17.3
+precision rule, which with learning off silently re-tiered a chronically
+dismissed category. It now sits behind `ambient_precision_rule_enabled`
+(default true = byte-identical), toggle beside Learning mode with the
+hint saying plainly that ✕ clicks train the tiering (frame `11`; the
+live PATCH round-trip is in the transcript record). Off = the dismissal
+is still captured — feedback and reward land on the row — but no
+category ever re-tiers behind the user's back (two new contract tests).
+Deliberate non-loops are now spec'd as such: HITL/A2A approvals stay
+consent gates, never preference signals; §16.1 memory deletion stays
+physical (privacy over trainability); and the future salience learner
+must enter under its own off/propose/auto gate.

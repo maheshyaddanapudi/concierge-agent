@@ -77,6 +77,9 @@ DEFAULTS: dict[str, Any] = {
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
     "ambient_learning_mode": "off",
+    # M43c: the §17.3 rule-based auto-downgrade is a feedback CONSUMER and
+    # gets its own gate (capture stays always-on); true = pre-M43c behavior
+    "ambient_precision_rule_enabled": True,
     # §18.4 per-tier channel routing, e.g. {"digest": ["in_app", "email"]};
     # empty ⇒ in-app only, byte-identical to M23–M25
     "ambient_channels": {},
@@ -163,6 +166,7 @@ _BOOL_KEYS = {
     "memory_reflection_enabled",
     "procedural_learning_enabled",
     "ambient_enabled",
+    "ambient_precision_rule_enabled",
     "a2a_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
