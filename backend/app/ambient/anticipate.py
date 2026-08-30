@@ -66,6 +66,11 @@ async def run_anticipation(now: datetime | None = None) -> list[UUID] | None:
     from app.prompts import load_prompt
     from app.registry_cache import get_cache
 
+    # M48 §3.7.1: the only feature that initiates contact unprompted, so
+    # it answers to a switch — not only to the hit-rate floor learning it
+    if not bool(await get_cache().setting("ambient_anticipation_enabled")):
+        return None
+
     now = now or datetime.now(UTC)
     window_key = f"anticipation:{now.strftime('%Y%m%d%H')}"
     async with get_session_factory()() as session:
