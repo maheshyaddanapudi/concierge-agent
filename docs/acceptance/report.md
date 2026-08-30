@@ -336,3 +336,28 @@ after each click).
 - `seen_at` is set on these rows by hovering the card, which is M42's
   existing "opening an item stamps seen" behavior, not something M43
   changed.
+
+### Stage 31 addendum — the judge's reward moved off the delivery (M43b)
+
+The stage-31 evidence above proved the loop working — and in doing so
+exposed a design flaw in what it proved. Frame `05`'s state read
+`feedback: dismissed, reward: -1` on the payments-webhook alert after
+Undo. That alert was REAL; the user undid the judge's over-eager
+escalation, not the alert. But `record_feedback` feeds §17.3 category
+precision, so undoing (or declining) verdicts was quietly voting to
+demote the alert's whole category — conflating "the judge misread this"
+with "this alert was worthless."
+
+Fixed by separation: decisions now write `judge_reward` (+1 apply, −1
+decline/undo) onto the **salience record**, and never touch the
+delivery's `feedback`/`reward` or the precision rule. The two ledgers
+answer different questions and both remain writable — after declining
+the judge, the human can still rate the delivery itself `accepted`.
+Spec §17.5/§14h/§12 amended to say so; two guard tests added (one
+monkeypatches `record_feedback` to raise if `decide()` ever calls it).
+
+Re-proven live (frames `08`–`10`, transcript `transcript-decisions-v2.txt`),
+fresh alerts, real judge: Do it → `judge_reward 1.0`, `feedback null`;
+Undo → `judge_reward -1.0`, row restored, `feedback` still null;
+Leave it → `declined`, `judge_reward -1.0`, delivery untouched.
+The frames `04`/`05`/`07` above are kept as the record of the flaw.
