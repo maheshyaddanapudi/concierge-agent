@@ -23,6 +23,7 @@ const SETTINGS: Record<string, unknown> = {
   ambient_pursuit: 'always',
   ambient_salience_mode: 'off',
   ambient_salience_min_urgency: 3,
+  ambient_salience_learning: 'off',
   ambient_tick_interval_s: 60,
   run_stall_after_s: 300,
   overlap_threshold_percent: 70,

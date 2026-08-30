@@ -391,7 +391,11 @@ async def _apply_special(category: str, reason: str) -> None:
     """Apply an approved non-tier proposal (settings / intent thresholds)."""
     from app.settings_store import update_settings
 
-    if category == "setting:ambient_digest_times" and "proposed=" in reason:
+    if category == "setting:ambient_salience_min_urgency" and "proposed=" in reason:
+        value = int(reason.rsplit("proposed=", 1)[1].split()[0])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"ambient_salience_min_urgency": value})
+    elif category == "setting:ambient_digest_times" and "proposed=" in reason:
         proposed = reason.rsplit("proposed=", 1)[1].split(",")
         async with get_session_factory()() as session:
             await update_settings(session, {"ambient_digest_times": proposed})

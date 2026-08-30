@@ -703,6 +703,20 @@ export function SettingsPage() {
                   />
                 </div>
               </div>
+              <Field
+                label="Salience learning"
+                hint="FLE: the tuner over your Do it / Leave it decisions — proposes category mutes and floor moves; propose queues them for approval, auto applies within clamps"
+              >
+                <Select
+                  value={String(settings.ambient_salience_learning ?? 'off')}
+                  onChange={(e) => patch.mutate({ ambient_salience_learning: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'propose', 'auto'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+              </Field>
               {/* M43 §8.7: every role model has a picker in the section that
                   owns it — this one was validated by the API since M42 with
                   no UI to reach it */}
