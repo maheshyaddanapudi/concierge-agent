@@ -511,9 +511,11 @@ class TestProposeIsActionable:
         assert fresh.salience["decision"] == "applied"
         assert fresh.salience["applied"] is True
         assert fresh.salience["decided_by"] == "user"
-        # the §17.7 reward signal is what makes the judge evaluable at all
-        assert fresh.feedback == "accepted"
-        assert fresh.reward is not None
+        # the judge's reward lands on the SALIENCE record; the delivery's
+        # own §17.7 feedback stays untouched — "the judge read this right"
+        # and "this alert was useful" are different facts (spec §17.5)
+        assert fresh.salience["judge_reward"] == 1.0
+        assert fresh.feedback is None and fresh.reward is None
 
     async def test_leave_it_declines_without_touching_the_row(
         self, client: Any, monkeypatch: Any
@@ -526,7 +528,8 @@ class TestProposeIsActionable:
         assert fresh.salience["applied"] is False
         # declining is a verdict on the JUDGE, not on the delivery
         assert fresh.tier == 0 and fresh.seen_at is None
-        assert fresh.feedback == "dismissed"
+        assert fresh.salience["judge_reward"] == -1.0
+        assert fresh.feedback is None and fresh.reward is None
 
     async def test_applying_drop_is_the_only_thing_that_marks_it_seen(
         self, client: Any, monkeypatch: Any
@@ -572,6 +575,7 @@ class TestUndo:
         assert fresh.salience["decision"] == "undone"
         # the verdict that produced it stays on the record — undo is not erasure
         assert fresh.salience["verdict"] == "escalate"
+        assert fresh.salience["judge_reward"] == -1.0
 
     async def test_auto_applied_verdicts_are_undoable_too(
         self, client: Any, monkeypatch: Any
@@ -704,3 +708,40 @@ class TestDecisionsAreTenantScoped:
             assert resp.status_code == 404, (action, resp.text)
         ok = await client.post(f"{API}/deliveries/{mine.id}/salience/apply", headers=ah)
         assert ok.status_code == 200, ok.text
+
+
+class TestJudgeRewardStaysOffTheDelivery:
+    """The M43b separation (spec §17.5): a decision rewards the JUDGE on
+    the salience record and must never touch the delivery's §17.7
+    feedback/reward or feed the §17.3 precision rule — undoing an
+    over-eager escalation of a REAL alert is not a vote to demote the
+    alert's category."""
+
+    async def test_decide_never_calls_record_feedback(self, client: Any, monkeypatch: Any) -> None:
+        row = await _proposed("real alert, wrong escalation", "escalate", monkeypatch)
+
+        async def forbidden(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("decide() must never write delivery feedback")
+
+        monkeypatch.setattr("app.ambient.deliver.record_feedback", forbidden)
+        assert (await client.post(f"{API}/deliveries/{row.id}/salience/apply")).status_code == 200
+        assert (await client.post(f"{API}/deliveries/{row.id}/salience/undo")).status_code == 200
+        fresh = await _fresh(row.id)
+        assert fresh.feedback is None and fresh.reward is None
+        assert fresh.salience["judge_reward"] == -1.0
+
+    async def test_delivery_feedback_still_works_independently(
+        self, client: Any, monkeypatch: Any
+    ) -> None:
+        """After declining the judge, the human can still rate the DELIVERY
+        itself accepted — the two ledgers answer different questions."""
+        row = await _proposed("judge was wrong, alert was good", "drop", monkeypatch)
+        assert (await client.post(f"{API}/deliveries/{row.id}/salience/decline")).status_code == 200
+        rated = await client.post(
+            f"{API}/deliveries/{row.id}/feedback", json={"feedback": "accepted"}
+        )
+        assert rated.status_code == 200, rated.text
+        fresh = await _fresh(row.id)
+        assert fresh.feedback == "accepted" and fresh.reward is not None
+        assert fresh.salience["decision"] == "declined"
+        assert fresh.salience["judge_reward"] == -1.0

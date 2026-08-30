@@ -441,7 +441,7 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
-| M43 | Salience decision surface + settings completeness (§17.5/§8.9/§8.7): the `propose` mode M42 promised becomes real — a verdict renders on its own delivery card with **Do it** / **Leave it**, plain-language consequence headlines and layered "why this?" disclosure; every applied verdict (human- or auto-) gains a working **Undo** that restores the snapshotted state and retracts only the memories retention created, refusing honestly once a digest has spent the escalation; apply and decline both write the §17.7 reward signal, so the judge becomes evaluable; decisions are idempotent, conflict-refusing and tenant-scoped. Plus the §8.7 rule that every §3.7 role model has a Settings picker, closing the two that were validated but unreachable (`memory_extraction_model`, `ambient_salience_model` — the latter promised in the M42 §8.7 text and not built) | §14h-52..54; no state change in `propose` until a human acts; undo restores byte-exactly |
+| M43 | Salience decision surface + settings completeness (§17.5/§8.9/§8.7): the `propose` mode M42 promised becomes real — a verdict renders on its own delivery card with **Do it** / **Leave it**, plain-language consequence headlines and layered "why this?" disclosure; every applied verdict (human- or auto-) gains a working **Undo** that restores the snapshotted state and retracts only the memories retention created, refusing honestly once a digest has spent the escalation; apply and decline write the judge's own reward onto the salience record — kept separate from the delivery's §17.7 feedback so judging the judge never pollutes §17.3 category precision — making the judge evaluable; decisions are idempotent, conflict-refusing and tenant-scoped. Plus the §8.7 rule that every §3.7 role model has a Settings picker, closing the two that were validated but unreachable (`memory_extraction_model`, `ambient_salience_model` — the latter promised in the M42 §8.7 text and not built) | §14h-52..54; no state change in `propose` until a human acts; undo restores byte-exactly |
 | M42 | Delivery salience + truthful delivery record (§17.5/§18.4/§16): `in_app` becomes a first-class ledger entry written only when the in-app broadcast reached nobody (real-time modes only — a digest reaching an empty room is normal), `seen_at` + an unread nav badge make attention a fact rather than an inference, and the **salience pass** re-judges the CONTENT of unseen tier ≤1 deliveries — deterministic prefilter (urgency, category, `skey` recurrence, previously collapsed and never read as a signal) then a fail-open LLM judge over the fenced body — into three ledgered outcomes: escalate to digest-lead (never re-interrupt), retain into §16 with delivery provenance, or drop on the record. `ambient_salience_mode` default `off` | byte-identity at defaults; §14g-48..51, incl. a randomized regression sample proving unchanged surfaces |
 | M41 | Ambient pursuit (§17.5/§18.4): `ambient_pursuit` ('off'\|'away'\|'always', default 'always' = pre-M41 behavior) gates the external half of `dispatch_delivered` on whether the in-app half reached anyone; the presence oracle is the SSE subscriber set sampled at dispatch — the literal audience of the toast just sent, correct per-process under §18.9 — never the idle timer; strictly subordinate to quiet hours, tiers, and the notification budget; Settings control beside the channel routing it modifies | tri-state matrix green + §14f-45..47 live against local SMTP and SMS-gateway-shaped webhook sinks |
 | M40 | Config hardening + per-chat target pin: the §7.5 composer pin (and history-summary checkbox) become per-conversation state; `a2a_poll_interval_s` wired (tick-bounded watermark); Ambient + A2A + API-guardrail sections on the Settings page; hardcoded constants promoted to live settings (`ambient_tick_interval_s`, `rate_limit_burst`/`rate_limit_per_s`, `overlap_threshold_percent`, `run_stall_after_s`, `agentic_recursion_limit`, `a2a_http_timeout_s`, `a2a_fence_max_chars`) each with validation, defaults equal to the previous constants; auth session TTL moves to env (`AUTH_SESSION_TTL_H`) | byte-identity at defaults; §14e-41..44 |
@@ -627,10 +627,10 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     "why this?" expands to the reason, confidence, mode, and the fact that a
     model made the call. **Do it** executes the verdict (an escalation leads
     the next digest, never re-interrupting); **Leave it** changes no state.
-    Both record the decision AND a §17.7 reward signal on the delivery
-    (`accepted` / `dismissed`), so the judge accrues the evidence by which it
-    can be evaluated. Replaying a decision is a no-op; a conflicting one is
-    refused.
+    Both record the decision AND the judge's own reward (`judge_reward`
+    +1/−1 on the salience record) — the delivery's §17.7 feedback stays
+    untouched, so judging the judge never pollutes category precision.
+    Replaying a decision is a no-op; a conflicting one is refused.
 53. (M43) **An applied verdict is reversible**: with
     `ambient_salience_mode='auto'`, an auto-applied verdict shows what it did
     and offers **Undo** — restoring the row exactly as snapshotted, and
@@ -927,10 +927,15 @@ ledgered change is one-click revertible, applied to salience:
   pretending. It is an affordance, never a setting — nothing may switch off
   the user's escape hatch.
 
-Every human decision — apply and decline alike — is written to the §17.7
-feedback substrate as `accepted`/`dismissed` on the delivery, so the judge
-accrues the same reward signal the delivery policy already learns from.
-Without it the judge could never be evaluated, only trusted. Decisions are
+Every human decision is a reward for the JUDGE, not for the delivery:
+apply records `judge_reward +1`, decline and undo record `judge_reward −1`,
+all on the salience record itself — the judge accrues its own track
+record, per verdict, and without it it could never be evaluated, only
+trusted. A decision never touches the delivery's §17.7
+`accepted`/`dismissed` feedback or the §17.3 precision rule: "the judge
+misread this alert" and "this alert was worthless" are different facts,
+and undoing an over-eager escalation of a REAL alert must never cast a
+vote toward demoting that alert's whole category. Decisions are
 first-write-wins and idempotent: replaying the same decision is a no-op,
 a conflicting one is refused.
 

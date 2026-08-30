@@ -61,7 +61,7 @@ interface WatchRow {
   created_at: string | null
 }
 
-interface DeliveryRow {
+export interface DeliveryRow {
   id: string
   run_id: string | null
   category: string
@@ -839,7 +839,7 @@ const APPLIED: Record<string, string> = {
   drop: 'Dismissed.',
 }
 
-function SalienceBlock({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
+export function SalienceBlock({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
   const s = row.salience
   const [why, setWhy] = useState(false)
   const [busy, setBusy] = useState(false)

@@ -44,7 +44,6 @@ logger = structlog.get_logger("ambient")
 
 # how much fenced content the judge sees; the fence itself must never fail open
 _MAX_JUDGED_CHARS = 4000
-Verdict = Literal["escalate", "retain", "drop"]
 
 
 class SalienceVerdict(BaseModel):
@@ -257,7 +256,6 @@ async def decide(row_id: UUID, action: Action) -> tuple[str, str]:
         prior, memory_ids = await _perform(row_id, verdict, by_human=True)
         ledger |= {"applied": True, "prior": prior or None, "memory_ids": memory_ids}
         await _close(row_id, ledger, "applied")
-        await _reward(row_id, "accepted")
         return "ok", verdict
 
     if action == "decline":
@@ -267,7 +265,6 @@ async def decide(row_id: UUID, action: Action) -> tuple[str, str]:
             return "conflict", f"already {decision}"
         # a decline changes NO state — it only says the verdict was wrong
         await _close(row_id, ledger, "declined")
-        await _reward(row_id, "dismissed")
         return "ok", verdict
 
     if decision != "applied":
@@ -297,7 +294,6 @@ async def decide(row_id: UUID, action: Action) -> tuple[str, str]:
             except Exception as exc:  # noqa: BLE001 — a gone memory is still undone
                 logger.warning("salience_undo_memory_failed", memory_id=str(mid), error=str(exc))
     await _close(row_id, ledger, "undone")
-    await _reward(row_id, "dismissed")
     return "ok", verdict
 
 
@@ -305,9 +301,19 @@ def _parse(value: Any) -> datetime | None:
     return datetime.fromisoformat(str(value)) if value else None
 
 
+# the judge's own track record: apply endorses the verdict, decline and
+# undo repudiate it. This is a reward for the JUDGE and lives on the
+# salience record — never on the delivery. "The judge misread this alert"
+# and "this alert was worthless" are different facts: writing dismissed
+# onto a real-but-mishandled alert would feed §17.3 precision and could
+# demote the alert's whole category for the judge's mistake.
+_JUDGE_REWARD = {"applied": 1.0, "declined": -1.0, "undone": -1.0}
+
+
 async def _close(row_id: UUID, ledger: dict[str, Any], decision: str) -> None:
-    """Stamp the decision onto the ledger. Append-only in spirit: the
-    verdict, reason and confidence that produced it are never rewritten."""
+    """Stamp the decision and the judge's reward onto the ledger.
+    Append-only in spirit: the verdict, reason and confidence that
+    produced it are never rewritten."""
     async with get_session_factory()() as session:
         row = await session.get(Delivery, row_id)
         if row is None:
@@ -317,6 +323,7 @@ async def _close(row_id: UUID, ledger: dict[str, Any], decision: str) -> None:
             "decided_at": datetime.now(UTC).isoformat(),
             "decided_by": "user",
             "applied": decision == "applied",
+            "judge_reward": _JUDGE_REWARD[decision],
         }
         await session.commit()
     logger.info(
@@ -326,19 +333,8 @@ async def _close(row_id: UUID, ledger: dict[str, Any], decision: str) -> None:
         delivery_id=str(row_id),
         decision=decision,
         verdict=ledger.get("verdict"),
+        judge_reward=_JUDGE_REWARD[decision],
     )
-
-
-async def _reward(row_id: UUID, feedback: str) -> None:
-    """Feed the §17.7 substrate. Without this the judge could never be
-    measured, only trusted — so a failure here is logged, never swallowed
-    into silence."""
-    try:
-        from app.ambient.deliver import record_feedback
-
-        await record_feedback(row_id, feedback)
-    except Exception as exc:  # noqa: BLE001 — never block the decision itself
-        logger.warning("salience_reward_failed", delivery_id=str(row_id), error=str(exc))
 
 
 async def run_salience_pass(limit: int = 20) -> dict[str, int]:
