@@ -365,6 +365,11 @@ async def run_salience_pass(limit: int = 20) -> dict[str, int]:
         )
     for row in rows:
         out["considered"] += 1
+        from app.ambient.salience_learn import salience_muted
+
+        if await salience_muted(row.category, row.user_id):
+            out["skipped"] += 1  # FLE-3: the learner muted this category
+            continue
         ok, why = await prefilter(row, min_urgency)
         if not ok:
             out["skipped"] += 1

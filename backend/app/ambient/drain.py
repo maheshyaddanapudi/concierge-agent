@@ -194,8 +194,10 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> 
                     # flush so this tick's misses are already visible, and
                     # is a no-op while ambient_salience_mode is off
                     from app.ambient.salience import run_salience_pass
+                    from app.ambient.salience_learn import run_salience_tuner
 
                     await run_salience_pass()
+                    await run_salience_tuner()  # FLE-3: no-op unless gated on
                     if await is_platform_idle(idle_minutes):
                         from app.ambient.anticipate import run_anticipation
 

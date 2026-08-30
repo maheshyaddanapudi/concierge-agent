@@ -93,6 +93,8 @@ DEFAULTS: dict[str, Any] = {
     # M42 salience: off is byte-identical — the pass does not run at all
     "ambient_salience_mode": "off",
     "ambient_salience_min_urgency": 3,
+    # FLE-3 (feedback_loop_exp): the salience tuner's own §17.7 gate
+    "ambient_salience_learning": "off",
     "ambient_salience_model": None,
     "ambient_salience_model_params": None,
     # §19 a2a keys — dark by default
@@ -302,6 +304,8 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("ambient_pursuit must be one of: off, away, always")
         elif key == "ambient_learning_mode" and value not in {"off", "auto", "propose"}:
             errors.append("ambient_learning_mode must be one of: off, auto, propose")
+        elif key == "ambient_salience_learning" and value not in {"off", "auto", "propose"}:
+            errors.append("ambient_salience_learning must be one of: off, auto, propose")
         elif key == "ambient_channels":
             from app.ambient.channels import DELIVERY_MODES, registered_channels
 

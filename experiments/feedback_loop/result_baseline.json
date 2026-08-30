@@ -48,5 +48,32 @@
       },
       "total_judge_reward": 11.0
     }
-  ]
+  ],
+  "learner": {
+    "mode": "learner_auto",
+    "start_floor": 3,
+    "judge_calls": 55,
+    "proposals_decided": 55,
+    "proposal_precision": 0.655,
+    "missed_critical": 0,
+    "per_category_endorsement": {
+      "prod-incidents": 0.9,
+      "build-noise": 0.1,
+      "batch-info": 0.533
+    },
+    "floor_track": [
+      3,
+      3,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "clamp_violations": 0,
+    "mutes": [
+      "salience:build-noise"
+    ],
+    "total_judge_reward": 17.0
+  }
 }
