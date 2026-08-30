@@ -22,6 +22,7 @@ from app.config import get_config  # noqa: E402
 from app.db import get_engine, get_session_factory, reset_db_state  # noqa: E402
 from app.llm import fake as fake_llm  # noqa: E402
 from app.llm.registry import register_builtin_providers  # noqa: E402
+from app.memory import scheduler as memory_scheduler  # noqa: E402
 from app.models import Base  # noqa: E402
 
 get_config.cache_clear()
@@ -41,9 +42,19 @@ async def _database() -> AsyncIterator[None]:
     await engine.dispose()
 
 
+# The fire-and-forget §16.2 post-run pipeline debounces 1s in prod; under
+# suite load a task spawned by test N can land DURING test N+1, racing its
+# fake-LLM script queue and the truncate below (the test_memory_semantic
+# order-flake shape). Tests shrink the debounce and drain at every boundary.
+memory_scheduler._POST_RUN_DEBOUNCE_S = 0.01
+
+
 @pytest.fixture(autouse=True)
 async def _clean_tables(_database: None) -> AsyncIterator[None]:
     yield
+    # no §16.2 background task may cross a test boundary — settle them
+    # BEFORE the truncate so none replays against the next test's world
+    await memory_scheduler.drain()
     engine = get_engine()
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:
