@@ -94,8 +94,15 @@ row itself persists as `status='rejected'` — that path was never physical.
 In `reconcile_and_write`, before any write:
 
 1. candidate normalized-text SHA-256 equals a live tombstone's hash → **suppressed**;
-2. else, if the tombstone carries an embedding and the candidate embeds:
-   cosine ≥ `memory_forget_similarity` (default **0.85**; the first draft said 0.88 and the live campaign measured a real paraphrase pair at **0.876** — calibration by evidence, not intuition) → **suppressed**.
+2. else, the **hybrid gate**: cosine ≥ `memory_forget_similarity`
+   (default **0.85**) suppresses alone; in the gray band (≥ 0.70) a shared
+   **distinctive-token anchor** is also required — the tombstone keeps
+   payload-token hashes (Tier-2 privacy, same dictionary caveat). The
+   live campaign measured real paraphrase pairs at **0.876** and
+   **0.847**: a lone threshold cannot separate restatements from
+   value-updates, but true restatements carry the fact's payload token
+   and updates carry a new one — the anchor separates what cosine
+   cannot. Calibration by evidence, not intuition.
 
 Matching is tenant-scoped (`user_id` under auth) and scope-aware, mirroring
 recall. A suppressed admission is not silent: it logs

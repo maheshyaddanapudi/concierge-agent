@@ -22,7 +22,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -140,6 +140,9 @@ class MemoryTombstone(Base):
     pinned: Mapped[bool] = mapped_column(default=False)
     # SHA-256 of the whitespace-normalized, lowercased text
     text_hash: Mapped[str] = mapped_column(String(64))
+    # hashes of the text's distinctive tokens (≥6 chars) — the gray-band
+    # anchor for the hybrid gate; same privacy caveat as text_hash
+    token_hashes: Mapped[list[str]] = mapped_column(JSONB, default=list)
     # embedding copy for semantic suppression; NULL = hash-only matching
     embedding: Mapped[Any] = mapped_column(Vector(None), nullable=True, default=None)
     model_key: Mapped[str | None] = mapped_column(String(255), default=None)

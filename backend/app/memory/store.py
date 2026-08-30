@@ -338,6 +338,26 @@ def normalized_hash(text: str) -> str:
     return hashlib.sha256(" ".join(text.split()).lower().encode()).hexdigest()
 
 
+def distinctive_token_hashes(text: str) -> list[str]:
+    """Hashes of the text's distinctive tokens (≥6 chars, punctuation
+    stripped) — the gray-band anchor for the hybrid suppression gate.
+    Live calibration (M44 stage 32) measured real paraphrase pairs at
+    cosine 0.876 and 0.847: a lone threshold cannot separate "same fact
+    restated" from "same topic, different fact", but true restatements
+    share the fact's distinctive payload and value-updates do not."""
+    import hashlib
+    import re
+
+    out = set()
+    for tok in re.split(r"[^a-z0-9\-_.]+", " ".join(text.split()).lower()):
+        tok = tok.strip(".-_")
+        # distinctive = a payload, not a common word: long, or carrying
+        # digits/separators (ids, versions, hosts, emails, bucket names)
+        if len(tok) >= 10 or (len(tok) >= 6 and any(c.isdigit() or c in "-_." for c in tok)):
+            out.add(hashlib.sha256(tok.encode()).hexdigest()[:16])
+    return sorted(out)
+
+
 async def tombstone_forget(memory_id: UUID) -> bool:
     """FORGET (spec §16.1 M44): delete the row but leave a metadata+hash
     tombstone (and an embedding copy when one exists, for semantic
@@ -369,6 +389,7 @@ async def tombstone_forget(memory_id: UUID) -> bool:
                 access_count=row.access_count,
                 pinned=row.pinned,
                 text_hash=normalized_hash(row.text),
+                token_hashes=distinctive_token_hashes(row.text),
                 embedding=emb.embedding if emb is not None else None,
                 model_key=emb.model_key if emb is not None else None,
             )
@@ -454,7 +475,17 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
                 )
             ).all()
         )
-    return [row for row, dist in nearest if (1.0 - float(dist)) >= threshold]
+    # the hybrid gate (M44 stage-32 calibration): at or above the threshold
+    # cosine alone suppresses; in the gray band down to 0.70 a shared
+    # distinctive-token hash is required — true restatements carry the
+    # fact's payload token, a changed value does not
+    cand_tokens = set(distinctive_token_hashes(text))
+    out = []
+    for row, dist in nearest:
+        cos = 1.0 - float(dist)
+        if cos >= threshold or (cos >= 0.70 and cand_tokens & set(row.token_hashes or [])):
+            out.append(row)
+    return out
 
 
 async def check_suppressed(text: str, scope: str, user_id: UUID | None) -> bool:

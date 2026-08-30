@@ -289,3 +289,86 @@ class TestCaptureRiders:
             f"{API}/skills/overlap-ack", json={"draft_type": "tool", "overlap_percent": 84}
         )
         assert bad.status_code == 422
+
+
+class TestHybridGate:
+    """M44 stage-32 calibration: live paraphrase pairs measured cosine
+    0.876 and 0.847 — a lone threshold cannot separate 'same fact
+    restated' from 'same topic, different fact'. The gate therefore
+    suppresses at the threshold alone, or in the gray band (≥ 0.70) only
+    WITH a shared distinctive-token anchor."""
+
+    async def _forgotten(
+        self, client: Any, text: str, vecs: dict[str, list[float]], monkeypatch: Any
+    ) -> None:
+        async def fake_embeddings(_m: str, texts: list[str]) -> list[list[float]]:
+            return [vecs.get(t, [0.5, 0.5, 0.5]) for t in texts]
+
+        monkeypatch.setattr("app.llm.get_embeddings", fake_embeddings)
+        await _set(embedding_model="fake:scripted")
+        row = await _stored(text)
+        assert (await client.delete(f"{API}/memories/{row.id}?mode=forget")).status_code == 204
+
+    async def test_gray_band_with_anchor_suppresses(self, client: Any, monkeypatch: Any) -> None:
+        # cosine ≈ 0.80 (< 0.85 threshold) but the payload token is shared
+        vecs = {
+            "the billing api key lives in vault path secret/acme-billing-key": [1.0, 0.0, 0.0],
+            "acme-billing-key is kept in vault": [0.8, 0.6, 0.0],
+        }
+        try:
+            await self._forgotten(
+                client,
+                "the billing api key lives in vault path secret/acme-billing-key",
+                vecs,
+                monkeypatch,
+            )
+            assert (
+                await check_suppressed("acme-billing-key is kept in vault", "global", None) is True
+            )
+        finally:
+            await _set(embedding_model=None)
+
+    async def test_gray_band_without_anchor_admits(self, client: Any, monkeypatch: Any) -> None:
+        # same cosine, but a DIFFERENT payload — a value update, not a restatement
+        vecs = {
+            "the billing api key lives in vault path secret/acme-billing-key": [1.0, 0.0, 0.0],
+            "the billing key moved to secret/new-billing-key2": [0.8, 0.6, 0.0],
+        }
+        try:
+            await self._forgotten(
+                client,
+                "the billing api key lives in vault path secret/acme-billing-key",
+                vecs,
+                monkeypatch,
+            )
+            assert (
+                await check_suppressed(
+                    "the billing key moved to secret/new-billing-key2", "global", None
+                )
+                is False
+            )
+        finally:
+            await _set(embedding_model=None)
+
+    async def test_below_the_floor_even_an_anchor_admits(
+        self, client: Any, monkeypatch: Any
+    ) -> None:
+        vecs = {
+            "the billing api key lives in vault path secret/acme-billing-key": [1.0, 0.0, 0.0],
+            "unrelated note that merely mentions acme-billing-key once": [0.5, 0.86, 0.0],
+        }
+        try:
+            await self._forgotten(
+                client,
+                "the billing api key lives in vault path secret/acme-billing-key",
+                vecs,
+                monkeypatch,
+            )
+            assert (
+                await check_suppressed(
+                    "unrelated note that merely mentions acme-billing-key once", "global", None
+                )
+                is False
+            )
+        finally:
+            await _set(embedding_model=None)
