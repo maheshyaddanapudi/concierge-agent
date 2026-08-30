@@ -186,8 +186,18 @@ async def remember(
         await _unforget_by_assertion(text, scope, user_id)
 
     status = "active"
+    review_note: str | None = None
     if kind == "instruction" and (source in {"extracted", "inferred"} or via_tool):
         status = "quarantined"  # behavior-changing writes gate through review
+    elif source in MACHINE_SOURCES:
+        # M47 §16.2: a kind the extraction tuner routed through review —
+        # machine writes only; the human's own words always land directly
+        from app.registry_cache import get_cache
+
+        routed = await get_cache().setting("memory_quarantine_kinds") or []
+        if kind in routed:
+            status = "quarantined"
+            review_note = "extraction learner: kind routed through review"
 
     row = Memory(
         user_id=user_id,
@@ -196,6 +206,7 @@ async def remember(
         scope=scope,
         source=source,
         status=status,
+        review_note=review_note,
         conversation_id=conversation_id,
         project_key=project_key if scope == "project" else None,
         payload=payload,
@@ -578,6 +589,13 @@ async def gate_candidates(
     accepted: list[Candidate] = []
     dropped: list[tuple[Candidate, str]] = []
 
+    # M47: the floor is a live setting (default = the old constant,
+    # byte-identical) so the §17.7 extraction tuner has a dial to move
+    from app.registry_cache import get_cache
+
+    raw_floor = await get_cache().setting("memory_admission_min_confidence")
+    floor = float(raw_floor) if raw_floor is not None else GATE_MIN_CONFIDENCE
+
     seen_texts: set[str] = set()
     for cand in candidates:
         text = scrub_citation_ids(" ".join(cand.text.split()))
@@ -586,8 +604,8 @@ async def gate_candidates(
         if cand.kind not in KINDS or cand.scope not in SCOPES:
             dropped.append((cand, "invalid kind/scope"))
             continue
-        if cand.confidence < GATE_MIN_CONFIDENCE:
-            dropped.append((cand, f"confidence {cand.confidence:.2f} < {GATE_MIN_CONFIDENCE}"))
+        if cand.confidence < floor:
+            dropped.append((cand, f"confidence {cand.confidence:.2f} < {floor}"))
             continue
         if not (GATE_MIN_CHARS <= len(text) <= GATE_MAX_CHARS):
             dropped.append((cand, f"length {len(text)} outside bounds"))

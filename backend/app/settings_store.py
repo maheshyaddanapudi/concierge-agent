@@ -65,6 +65,12 @@ DEFAULTS: dict[str, Any] = {
     # physical); similarity is the semantic suppression threshold
     "memory_forget_enabled": False,
     "memory_forget_similarity": 0.85,
+    # M47 §16.2/§17.7 extraction admission: the gate floor promoted to a
+    # live setting (default = the constant it replaces, byte-identical),
+    # the machine-write kind router, and the extraction tuner's own gate
+    "memory_admission_min_confidence": 0.5,
+    "memory_quarantine_kinds": [],
+    "memory_extraction_learning": "off",
     # §18.6 community breadth: its own budget line; 0 disables the section
     "memory_community_budget_tokens": 150,
     # §17 ambient keys — dark by default
@@ -306,6 +312,23 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("ambient_learning_mode must be one of: off, auto, propose")
         elif key == "ambient_salience_learning" and value not in {"off", "auto", "propose"}:
             errors.append("ambient_salience_learning must be one of: off, auto, propose")
+        elif key == "memory_extraction_learning" and value not in {"off", "auto", "propose"}:
+            errors.append("memory_extraction_learning must be one of: off, auto, propose")
+        elif key == "memory_admission_min_confidence" and (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not 0.0 <= float(value) <= 0.9
+        ):
+            # 0.9 cap: a floor above it would refuse even the extractor's
+            # most certain output — the learner's clamp, enforced at rest
+            errors.append("memory_admission_min_confidence must be a number between 0.0 and 0.9")
+        elif key == "memory_quarantine_kinds":
+            from app.memory.store import KINDS
+
+            if not isinstance(value, list) or not all(
+                isinstance(k, str) and k in KINDS for k in value
+            ):
+                errors.append(f"memory_quarantine_kinds must be a list drawn from {sorted(KINDS)}")
         elif key == "ambient_channels":
             from app.ambient.channels import DELIVERY_MODES, registered_channels
 

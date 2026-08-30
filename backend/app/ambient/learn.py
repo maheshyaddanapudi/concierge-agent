@@ -395,6 +395,17 @@ async def _apply_special(category: str, reason: str) -> None:
         value = int(reason.rsplit("proposed=", 1)[1].split()[0])
         async with get_session_factory()() as session:
             await update_settings(session, {"ambient_salience_min_urgency": value})
+    elif category == "setting:memory_admission_min_confidence" and "proposed=" in reason:
+        floor = float(reason.rsplit("proposed=", 1)[1].split()[0])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"memory_admission_min_confidence": floor})
+    elif category == "setting:memory_quarantine_kinds" and "proposed=+" in reason:
+        kind = reason.rsplit("proposed=+", 1)[1].split()[0]
+        from app.registry_cache import get_cache
+
+        routed = set(await get_cache().setting("memory_quarantine_kinds") or [])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"memory_quarantine_kinds": sorted(routed | {kind})})
     elif category == "setting:ambient_digest_times" and "proposed=" in reason:
         proposed = reason.rsplit("proposed=", 1)[1].split(",")
         async with get_session_factory()() as session:
