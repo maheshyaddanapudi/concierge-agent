@@ -152,6 +152,16 @@ Two invariants, both auditable from code rather than asserted:
    are four different consequences and take four different switches. The
    M48 audit found four consolidation jobs, the anticipation job, and the
    §15 eval surface running with no gate of their own; all six now have one.
+
+   **The gate is enforced inside the behavior, never only at its caller.**
+   These jobs are documented as directly awaitable (tests, the experiment
+   harnesses, any future caller), so a check that lives only in the
+   scheduler is a check every other path walks past. The scheduler reads
+   the same `JOB_GATES` map — one source of truth, no drift — purely to
+   skip taking an advisory lock for work that would return immediately.
+   A structural test asserts every scheduled job appears in that map and
+   that every entry names a real §3.7 key, so the next job cannot ship
+   ungated and a renamed key cannot silently orphan a gate.
 2. **Every §3.7 key has a control in the section of §8.7 that owns it**
    — the M43 rule, restated because M48's audit found two keys
    (`memory_digest_compact_days`, `memory_community_budget_tokens`) that

@@ -108,11 +108,16 @@ async def rebuild_communities() -> int:
     """The §18.6 consolidation job: recompute communities, keep summaries
     for unchanged member sets, re-summarize changed ones, drop vanished
     rows. Returns the number of communities present after the pass."""
-    # M48 §3.7.1 corollary — a zero budget READS as off, so it must BE
-    # off: before this, budget 0 silenced the injected section while the
-    # rebuild kept spending one summarization call per changed community
+    # M48 §3.7.1: gated in-function so no call path rebuilds behind the
+    # switch. Two ways off: the named gate, or — the corollary — a zero
+    # budget, which READS as off and so must BE off; before M48 a zero
+    # budget silenced the injected section while this job kept spending
+    # one summarization call per changed community.
+    from app.memory.lifecycle import JOB_COMMUNITIES, JOB_GATES, gate_open
     from app.registry_cache import get_cache
 
+    if not await gate_open(JOB_GATES[JOB_COMMUNITIES]):
+        return 0
     if int(await get_cache().setting("memory_community_budget_tokens") or 0) <= 0:
         return 0
 

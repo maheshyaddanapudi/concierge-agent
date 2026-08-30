@@ -188,13 +188,13 @@ Spec-driven: read `CLAUDE.md` first. Tests: `cd backend && pytest` · lint: `ruf
 
 Backend dev setup: `cd backend && uv sync` (Python 3.12). The pytest suite needs a Postgres it can own: `docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=postgres postgres:16`, create a `concierge_test` database, or point `TEST_DATABASE_URL` at your own instance. Schema is managed by Alembic (`alembic upgrade head`, run automatically at app startup).
 
-## Before exposing this beyond localhost
+## Deciding what runs unattended
 
-The defaults are tuned for a local POC, not for a shared or public deployment. Three deliberate choices to revisit:
+Every behavior the system performs on its own answers to a named switch (spec §3.7.1) — enforced inside the behavior, not at its caller, and asserted by test so a new job cannot ship ungated. Three masters (`memory_enabled`, `ambient_enabled`, `a2a_enabled`) are off by default; under them, the switches worth a deliberate decision are:
 
-- **`AUTH_ENABLED` is off by default** (env, `config.py`). Off is byte-identical single-user mode with no login and no tenancy scoping — correct locally, wrong anywhere else. Turn it on, take the one-time bootstrap admin password printed at boot, and tune `rate_limit_burst` / `rate_limit_per_s` for your traffic (the §18.8 token bucket only enforces while auth is on).
-- **Decide what may run unattended.** Every autonomous behavior has a named switch (§3.7.1, M48). The one worth an explicit decision is `ambient_anticipation_enabled` — it composes briefings and delivers them without being asked. The learners (`ambient_salience_learning`, `memory_extraction_learning`, `ambient_learning_mode`) all ship off.
-- **Provider keys are env-only** and never enter the database, the UI, or logs. Keep them that way when you wire up deployment secrets.
+- **`ambient_anticipation_enabled`** — composes briefings and delivers them without being asked. The only feature that initiates contact, so it is the one to decide about explicitly rather than discover.
+- **The three learners** (`ambient_learning_mode`, `ambient_salience_learning`, `memory_extraction_learning`) — all ship `off`; `propose` routes every change through the review queue, `auto` applies within clamps.
+- **`memory_compaction_enabled`** — the one consolidation job with an irreversible effect (it hard-deletes folded run digests).
 
 ## Scope notes
 

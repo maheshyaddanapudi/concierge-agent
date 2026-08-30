@@ -64,6 +64,121 @@ class TestSettingsCoverage:
         assert undocumented == [], f"keys absent from spec §3.7: {undocumented}"
 
 
+class TestGateStructure:
+    """The map is the single source of truth, and it must stay complete —
+    this is what stops the next job from shipping ungated."""
+
+    def test_every_scheduled_job_declares_a_gate(self) -> None:
+        from app.memory import lifecycle
+
+        job_ids = {
+            value
+            for name, value in vars(lifecycle).items()
+            if name.startswith("JOB_") and isinstance(value, int)
+        }
+        assert job_ids == set(lifecycle.JOB_GATES), (
+            "spec §3.7.1: every scheduled job needs an entry in JOB_GATES; "
+            f"ungated: {sorted(job_ids - set(lifecycle.JOB_GATES))}"
+        )
+
+    def test_every_gate_names_a_real_setting(self) -> None:
+        from app.memory.lifecycle import JOB_GATES
+
+        unknown = sorted(k for k in JOB_GATES.values() if k not in DEFAULTS)
+        assert unknown == [], f"JOB_GATES names settings that do not exist: {unknown}"
+
+    async def test_gate_open_handles_all_three_gate_shapes(self, client: Any) -> None:
+        """Boolean switch, off|propose|auto mode, nullable model ref."""
+        from app.memory.lifecycle import gate_open
+
+        await _set(
+            memory_decay_enabled=False,
+            memory_extraction_learning="off",
+            embedding_model=None,
+        )
+        assert not await gate_open("memory_decay_enabled")
+        assert not await gate_open("memory_extraction_learning")
+        assert not await gate_open("embedding_model")
+        await _set(
+            memory_decay_enabled=True,
+            memory_extraction_learning="propose",
+            embedding_model="fake:scripted",
+        )
+        assert await gate_open("memory_decay_enabled")
+        assert await gate_open("memory_extraction_learning")
+        assert await gate_open("embedding_model")
+        await _set(memory_extraction_learning="off", embedding_model=None)
+
+
+class TestGatesHoldOnDirectCalls:
+    """The enforcement point is the job, not the dispatcher. These jobs are
+    documented as directly awaitable (tests, harnesses), so a gate only the
+    scheduler honors is a gate every other call path walks past."""
+
+    @pytest.fixture(autouse=True)
+    async def _memory_on(self, client: Any) -> Any:
+        await _set(memory_enabled=True)
+        yield
+        await _set(memory_enabled=False, **{k: True for k in GATED_JOBS.values()})
+
+    async def test_decay_refuses_to_expire_behind_its_switch(self, client: Any) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select
+
+        from app.models import Memory
+
+        stale = datetime.now(UTC) - timedelta(days=3650)
+        async with get_session_factory()() as session:
+            row = Memory(
+                text="ancient and unloved",
+                kind="fact",
+                scope="global",
+                source="user_stated",
+                importance=1,
+            )
+            session.add(row)
+            await session.flush()
+            row.last_accessed_at = stale
+            row.recorded_at = stale
+            await session.commit()
+            row_id = row.id
+
+        from app.memory.lifecycle import decay_sweep
+
+        await _set(memory_decay_enabled=False)
+        assert await decay_sweep() == 0
+        async with get_session_factory()() as session:
+            assert (await session.get(Memory, row_id)).status == "active"
+
+        await _set(memory_decay_enabled=True)
+        assert await decay_sweep() >= 1
+        async with get_session_factory()() as session:
+            assert (await session.get(Memory, row_id)).status == "expired"
+        async with get_session_factory()() as session:  # leave a clean world
+            for m in (await session.execute(select(Memory))).scalars():
+                await session.delete(m)
+            await session.commit()
+
+    async def test_contradiction_refuses_to_quarantine_behind_its_switch(self, client: Any) -> None:
+        from app.memory.lifecycle import contradiction_sweep
+
+        await _set(memory_contradiction_enabled=False)
+        assert await contradiction_sweep() == 0
+
+    async def test_compaction_refuses_to_delete_behind_its_switch(self, client: Any) -> None:
+        from app.memory.episodic import compact_digests
+
+        await _set(memory_compaction_enabled=False)
+        assert await compact_digests() == 0
+
+    async def test_communities_refuses_to_rebuild_behind_its_switch(self, client: Any) -> None:
+        from app.memory.communities import rebuild_communities
+
+        await _set(memory_communities_enabled=False)
+        assert await rebuild_communities() == 0
+
+
 class TestJobGates:
     """Invariant 1: each consolidation job stops on its own key alone."""
 

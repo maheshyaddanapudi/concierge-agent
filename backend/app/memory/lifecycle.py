@@ -30,6 +30,38 @@ JOB_COMMUNITIES = 6  # §18.6 label-propagation rebuild
 JOB_BACKFILL = 7  # §16.2 embedding backfill (on embedding_model change)
 JOB_EXTRACT_TUNE = 8  # M47 §17.7 extraction tuner (own gate, born dark)
 
+# M48 §3.7.1 — the switchability map: for every job that runs on its own
+# schedule, the §3.7 key that silences it. ENFORCEMENT LIVES INSIDE EACH
+# JOB, because these are documented as directly awaitable (tests, the
+# experiment harnesses) and a gate only the dispatcher honors is a gate
+# any other call path walks straight past. The dispatcher consults the
+# same map purely to skip taking an advisory lock for work that would
+# return immediately. A structural test asserts every JOB_* id appears
+# here, so a new job cannot ship ungated.
+JOB_GATES: dict[int, str] = {
+    JOB_DECAY: "memory_decay_enabled",
+    JOB_REFLECT: "memory_reflection_enabled",
+    JOB_CONTRADICT: "memory_contradiction_enabled",
+    JOB_MINE: "procedural_learning_enabled",
+    JOB_COMPACT: "memory_compaction_enabled",
+    JOB_COMMUNITIES: "memory_communities_enabled",
+    JOB_BACKFILL: "embedding_model",  # null ⇒ nothing to embed against
+    JOB_EXTRACT_TUNE: "memory_extraction_learning",  # off|propose|auto
+}
+
+
+async def gate_open(key: str) -> bool:
+    """Is the named §3.7 gate letting its job run? Uniform over the three
+    shapes a gate takes: a boolean switch, an `off|propose|auto` mode, and
+    a nullable model reference."""
+    from app.registry_cache import get_cache
+
+    value = await get_cache().setting(key)
+    if isinstance(value, str):
+        return value != "off"
+    return bool(value)
+
+
 # GA-style reflection trigger: summed importance of unreflected memories
 REFLECTION_IMPORTANCE_TRIGGER = 150
 _REFLECTION_WINDOW = 50
@@ -52,7 +84,10 @@ _LAST_RUN: dict[int, float] = {}
 
 async def decay_sweep() -> int:
     """MemoryBank-style access-recency decay; pinned rows immune. Returns the
-    number of rows expired (archived, never deleted)."""
+    number of rows expired (archived, never deleted). Gated in-function
+    (M48 §3.7.1) so no call path expires memories behind the switch."""
+    if not await gate_open(JOB_GATES[JOB_DECAY]):
+        return 0
     now = datetime.now(UTC)
     expired = 0
     async with get_session_factory()() as session:
@@ -169,7 +204,10 @@ async def reflection() -> int:
 async def contradiction_sweep() -> int:
     """Deterministic drift catcher: two ACTIVE rows sharing an entity_key
     should not coexist (supersession handles the normal path) — quarantine
-    the newer of each pair for human review. Returns rows quarantined."""
+    the newer of each pair for human review. Returns rows quarantined.
+    Gated in-function (M48 §3.7.1)."""
+    if not await gate_open(JOB_GATES[JOB_CONTRADICT]):
+        return 0
     quarantined = 0
     async with get_session_factory()() as session:
         rows = list(
@@ -314,17 +352,11 @@ async def run_due_jobs() -> dict[str, int]:
         JOB_BACKFILL: ("backfill", embedding_backfill),
         JOB_EXTRACT_TUNE: ("extract_tune", _extraction_tuner_moves),
     }
-    # M48 §3.7.1: a job the system runs on its own needs its own gate —
-    # the master alone is not enough when the consequences differ
-    gates = {
-        JOB_DECAY: "memory_decay_enabled",
-        JOB_CONTRADICT: "memory_contradiction_enabled",
-        JOB_COMMUNITIES: "memory_communities_enabled",
-        JOB_COMPACT: "memory_compaction_enabled",
-    }
+    # M48 §3.7.1: each job enforces its own gate in-function; this loop
+    # reads the SAME map only to avoid taking an advisory lock for work
+    # that would immediately return. One source of truth, no drift.
     for job_id, (name, fn) in jobs.items():
-        gate = gates.get(job_id)
-        if gate is not None and not bool(await get_cache().setting(gate)):
+        if not await gate_open(JOB_GATES[job_id]):
             continue
         if job_id == JOB_COMMUNITIES and (
             int(await get_cache().setting("memory_community_budget_tokens") or 0) <= 0
