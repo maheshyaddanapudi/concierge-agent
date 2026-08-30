@@ -543,7 +543,7 @@ export function SettingsPage() {
           >
             <div className="space-y-1">
               <TextInput
-                defaultValue={String(settings.memory_forget_similarity ?? 0.88)}
+                defaultValue={String(settings.memory_forget_similarity ?? 0.85)}
                 className="max-w-28"
                 onBlur={(e) => patch.mutate({ memory_forget_similarity: Number(e.target.value) })}
               />

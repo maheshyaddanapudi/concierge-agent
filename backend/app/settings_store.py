@@ -64,7 +64,7 @@ DEFAULTS: dict[str, Any] = {
     # M44 §16.1 durable forgetting — off is byte-identical (deletes stay
     # physical); similarity is the semantic suppression threshold
     "memory_forget_enabled": False,
-    "memory_forget_similarity": 0.88,
+    "memory_forget_similarity": 0.85,
     # §18.6 community breadth: its own budget line; 0 disables the section
     "memory_community_budget_tokens": 150,
     # §17 ambient keys — dark by default

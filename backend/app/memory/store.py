@@ -434,7 +434,7 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
     except Exception as exc:  # noqa: BLE001 — degrade to hash-only
         logger.warning("memory_forget_embed_failed", error=str(exc))
         return []
-    threshold = float(await get_cache().setting("memory_forget_similarity") or 0.88)
+    threshold = float(await get_cache().setting("memory_forget_similarity") or 0.85)
     async with get_session_factory()() as session:
         nearest = list(
             (

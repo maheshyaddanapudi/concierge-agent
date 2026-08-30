@@ -95,7 +95,7 @@ In `reconcile_and_write`, before any write:
 
 1. candidate normalized-text SHA-256 equals a live tombstone's hash → **suppressed**;
 2. else, if the tombstone carries an embedding and the candidate embeds:
-   cosine ≥ `memory_forget_similarity` (default **0.88**) → **suppressed**.
+   cosine ≥ `memory_forget_similarity` (default **0.85**; the first draft said 0.88 and the live campaign measured a real paraphrase pair at **0.876** — calibration by evidence, not intuition) → **suppressed**.
 
 Matching is tenant-scoped (`user_id` under auth) and scope-aware, mirroring
 recall. A suppressed admission is not silent: it logs
@@ -125,7 +125,7 @@ so it enters dark (house discipline, and §17.7's "no consumer ships hot"):
 - `memory_forget_enabled` (default **false** — byte-identical: deletion
   stays physical, no tombstones, no suppression, `mode=forget` is a 422
   naming the setting).
-- `memory_forget_similarity` (default 0.88, range 0.5–1.0) — the semantic
+- `memory_forget_similarity` (default 0.85, range 0.5–1.0) — the semantic
   suppression threshold; hint states hash-only fallback when no embedding
   model is configured.
 

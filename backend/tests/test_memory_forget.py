@@ -186,7 +186,7 @@ class TestSuppression:
             suppressed = await check_suppressed(
                 "payroll executes every month on the 25th", "global", None
             )
-            assert suppressed is True  # cosine ≈ 0.98 ≥ 0.88
+            assert suppressed is True  # cosine ≈ 0.98 ≥ 0.85
             unrelated = await check_suppressed("the office plants need watering", "global", None)
             assert unrelated is False
         finally:
