@@ -314,7 +314,22 @@ async def run_due_jobs() -> dict[str, int]:
         JOB_BACKFILL: ("backfill", embedding_backfill),
         JOB_EXTRACT_TUNE: ("extract_tune", _extraction_tuner_moves),
     }
+    # M48 §3.7.1: a job the system runs on its own needs its own gate —
+    # the master alone is not enough when the consequences differ
+    gates = {
+        JOB_DECAY: "memory_decay_enabled",
+        JOB_CONTRADICT: "memory_contradiction_enabled",
+        JOB_COMMUNITIES: "memory_communities_enabled",
+        JOB_COMPACT: "memory_compaction_enabled",
+    }
     for job_id, (name, fn) in jobs.items():
+        gate = gates.get(job_id)
+        if gate is not None and not bool(await get_cache().setting(gate)):
+            continue
+        if job_id == JOB_COMMUNITIES and (
+            int(await get_cache().setting("memory_community_budget_tokens") or 0) <= 0
+        ):
+            continue  # §3.7.1 corollary: a zero budget is off, not quiet
         if not await _due(job_id, now):
             continue
         async with get_session_factory()() as session:

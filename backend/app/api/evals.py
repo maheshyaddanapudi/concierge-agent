@@ -5,14 +5,25 @@ import asyncio
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select
 
 from app.api.deps import SessionDep
 from app.evals.parse import EvalParseError, parse_eval_file
 from app.models import EvalCase, EvalDataset, EvalResult, EvalRun, Skill, SubAgent
 
-router = APIRouter(prefix="/evals", tags=["evals"])
+
+async def _require_evals_on() -> None:
+    """M48 §3.7.1: the §15 surface answers to a switch. The feature is
+    passive, so this removes surface area rather than changing behavior —
+    datasets and prior runs survive a flip in either direction."""
+    from app.registry_cache import get_cache
+
+    if not bool(await get_cache().setting("evals_enabled")):
+        raise HTTPException(409, "evals are disabled (evals_enabled=false)")
+
+
+router = APIRouter(prefix="/evals", tags=["evals"], dependencies=[Depends(_require_evals_on)])
 
 _RUN_TASKS: dict[UUID, asyncio.Task[Any]] = {}
 

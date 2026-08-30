@@ -72,7 +72,16 @@ DEFAULTS: dict[str, Any] = {
     "memory_quarantine_kinds": [],
     "memory_extraction_learning": "off",
     # §18.6 community breadth: its own budget line; 0 disables the section
+    # AND (M48 §3.7.1 corollary) short-circuits the rebuild job
     "memory_community_budget_tokens": 150,
+    # M48 §3.7.1: every autonomous job carries its own gate. Defaults equal
+    # the behavior they replace, so the promotion is byte-identical; the
+    # four differ in consequence (expire / quarantine / spend / DELETE),
+    # which is exactly why one family switch would not have been enough.
+    "memory_decay_enabled": True,
+    "memory_contradiction_enabled": True,
+    "memory_communities_enabled": True,
+    "memory_compaction_enabled": True,
     # §17 ambient keys — dark by default
     "ambient_enabled": False,
     "ambient_max_routines": 10,
@@ -103,6 +112,13 @@ DEFAULTS: dict[str, Any] = {
     "ambient_salience_learning": "off",
     "ambient_salience_model": None,
     "ambient_salience_model_params": None,
+    # M48 §3.7.1: anticipation is the only feature that INITIATES contact
+    # unprompted, so silence must be statable, not only learnable via the
+    # hit-rate floor. Default true = byte-identical to pre-M48.
+    "ambient_anticipation_enabled": True,
+    # M48: the §15 eval surface is passive, so this removes surface area
+    # rather than changing behavior; off ⇒ every /evals route 409s
+    "evals_enabled": True,
     # §19 a2a keys — dark by default
     "a2a_enabled": False,
     "a2a_card_refresh_interval_s": 300,
@@ -181,6 +197,13 @@ _BOOL_KEYS = {
     "ambient_precision_rule_enabled",
     "memory_forget_enabled",
     "a2a_enabled",
+    # M48 §3.7.1 job gates
+    "memory_decay_enabled",
+    "memory_contradiction_enabled",
+    "memory_communities_enabled",
+    "memory_compaction_enabled",
+    "ambient_anticipation_enabled",
+    "evals_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}

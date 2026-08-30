@@ -36,7 +36,6 @@ DEFAULT_BUDGETS: dict[str, Any] = {
     "wall_clock_s": 900,
     "tokens_without_progress": 30_000,
 }
-STALL_AFTER_S = 300  # H3: 5 min = 5× the 60s tick cadence
 _TERMINAL = {"completed", "failed", "cancelled", "stalled"}
 
 

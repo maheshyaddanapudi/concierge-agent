@@ -537,6 +537,15 @@ export function SettingsPage() {
             k="memory_forget_enabled"
             hint="§16.1 — deletes become Forget (content-free tombstone, re-admission suppressed, undo via the Forgotten list) with Erase as the explicit no-trace verb. Off = deletes are physical and the system may re-learn a deleted fact"
           />
+          {/* M48 §3.7.1 corollary: this configuration is legal but degraded,
+              and used to be silently so — say it at the control */}
+          {Boolean(settings.memory_forget_enabled) && !settings.embedding_model && (
+            <p className="-mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              Forgetting is on, but no embedding model is configured — suppression falls back to
+              exact-text matching. A paraphrase of a forgotten fact will be re-learned. Set an
+              embedding model above for semantic suppression.
+            </p>
+          )}
           <Field
             label="Forget similarity (0.5–1)"
             hint="semantic suppression threshold — paraphrases of a forgotten fact at or above this cosine similarity are refused; hash-only matching when no embedding model is set"
@@ -609,6 +618,38 @@ export function SettingsPage() {
             label="Reflection (L4)"
             k="memory_reflection_enabled"
             hint="idle-time synthesis of higher-order memories (evidence-cited)"
+          />
+          {/* M48 §3.7.1: the consolidation jobs run on their own schedule,
+              so each answers to its own switch — they differ in consequence */}
+          <BoolSetting
+            label="Decay sweep"
+            k="memory_decay_enabled"
+            hint="expires unpinned memories whose access-weighted importance falls below the floor; pinned rows are immune"
+          />
+          <BoolSetting
+            label="Contradiction sweep"
+            k="memory_contradiction_enabled"
+            hint="quarantines the newer of two active memories that claim the same fact identity"
+          />
+          <BoolSetting
+            label="Community rebuild"
+            k="memory_communities_enabled"
+            hint="§18.6 — groups related memories and summarizes each group with the extraction model; costs one model call per changed community"
+          />
+          <BoolSetting
+            label="Digest compaction"
+            k="memory_compaction_enabled"
+            hint="folds old run digests into per-conversation period digests and HARD-DELETES the originals — the one consolidation job with an irreversible effect"
+          />
+          <IntSetting
+            label="Compact digests after (days)"
+            k="memory_digest_compact_days"
+            hint="run digests older than this fold into a period digest"
+          />
+          <IntSetting
+            label="Community budget (tokens)"
+            k="memory_community_budget_tokens"
+            hint="budget for the injected community-summary block; 0 turns communities off entirely — no injection and no rebuild"
           />
           <BoolSetting
             label="Procedural learning (L3)"
@@ -702,6 +743,13 @@ export function SettingsPage() {
                 label="Interrupt threshold"
                 k="ambient_interrupt_threshold"
                 hint="urgency at or above this may break quiet hours"
+              />
+              {/* M48 §3.7.1: the only feature that starts a conversation on
+                  its own, so silence is a setting rather than only an outcome */}
+              <BoolSetting
+                label="Anticipation briefings"
+                k="ambient_anticipation_enabled"
+                hint="composes a short briefing of likely next asks when you have been idle. The only feature that contacts you without being asked — off means it never runs, regardless of how useful it has been"
               />
               <Field
                 label="Learning mode"
@@ -854,6 +902,11 @@ export function SettingsPage() {
             hint="tokens restored per second per user"
           />
         </div>
+        <BoolSetting
+          label="Evals surface"
+          k="evals_enabled"
+          hint="§15 — dataset upload and graded batch runs on skill and sub-agent pages. Nothing runs on its own; off removes the routes entirely, leaving datasets and past results intact for when it is turned back on"
+        />
       </Section>
 
       <Section title="Observability">
