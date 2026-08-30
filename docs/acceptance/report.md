@@ -381,3 +381,42 @@ Deliberate non-loops are now spec'd as such: HITL/A2A approvals stay
 consent gates, never preference signals; §16.1 memory deletion stays
 physical (privacy over trainability); and the future salience learner
 must enter under its own off/propose/auto gate.
+
+## Stage 32 — Durable forgetting (spec §14i steps 55–56 + riders, M44)
+
+`32-durable-forgetting/`. M44 code from source against the compose DB
+(same caveat as stage 31), anthropic theme, real `openrouter:qwen/qwen3.8-max`
+runs, real §16.2 extraction, real `openai:text-embedding-3-small`
+embeddings. **This stage earned its keep: it took four legs, and each of
+the two failures produced a design correction that is now in the spec.**
+
+| Frames | Step | Proof |
+|---|---|---|
+| `00` | §14h-54/§8.7 | The two new Settings controls — Durable forgetting toggle (hint says plainly: off = deletes are physical and the system may re-learn a deleted fact) + Forget similarity |
+| `01` | §14i-55 | A real chat run stated a fact and REAL extraction admitted it: "The team's invoice bucket is s3://acme-invoices-prod." — no scripted inserts |
+| `02`, `03` | §14i-55/56 | The drawer offers **Forget** and **Erase completely** with honest confirm copy; Forget leaves the metadata-only tombstone in the Forgotten tab — kind, scope, source, never the text |
+| `04` | **honest miss #1** | A second live run restated the fact; extraction phrased it differently ("The invoice **S3** bucket…" vs "The **team's** invoice bucket…"), the exact hash missed, and with no embedding model configured the documented hash-only degradation **re-admitted it**. Real extraction variance made the taxonomy's warning concrete |
+| `05` | §14i-55 | Unforget works — tombstone gone, fact learnable again |
+| `06`, `07` | §14i-57 | The queued §17.7 learner proposal with **Approve / Reject**; Reject captures it (`learner_rejected`, still inert — both effective-policy filters proven by contract test) instead of letting it rot pending |
+| `08` | §14i-55 | Embedding model on; the re-created fact embeds write-through; Forget now copies the embedding onto the tombstone |
+| — | **honest miss #2 → calibration → design** | The semantic leg then measured what no unit test could: two REAL paraphrase pairs at cosine **0.8763** and **0.8466** — the first under the 0.88 draft default, the second under the calibrated 0.85. Conclusion recorded in §16.2: paraphrase and same-topic-different-fact cosines overlap; **no single threshold separates them**. The gate became hybrid: threshold alone, OR gray band ≥ 0.70 WITH a shared distinctive-payload-token hash (URI-aware, so `s3://acme-invoices-prod` anchors bare `acme-invoices-prod`; verified on the real triple — paraphrase 1 anchor, value-update 0, unrelated 0) |
+| `09` | §14i-55 | **The hybrid gate holds live**: a fifth run restated the fact in new words, real extraction produced yet another phrasing, and the gate refused it — Forgotten shows `1× suppressed`, ACTIVE memories 0, nothing re-admitted |
+
+Transcripts for all four legs are kept, the failures included
+(`transcript-leg1…leg4`). Every number above was measured, not assumed;
+the two spec-recorded cosines are the campaign's lasting contribution —
+the future tombstone learner starts from real data.
+
+**Additional honest findings.**
+- **The §16.2 "embedding backfill on `embedding_model` change" job does
+  not exist for memories** — only the registry-side backfill does; memory
+  embeddings are write-through only. Discovered when the forgotten row
+  (written before the model was configured) could never gain an
+  embedding. Recorded here as a known gap for a future completeness pack;
+  the stage worked around it by re-creating the row.
+- The stage ran from source against the compose DB (the container-build
+  proxy limitation from stage 31 stands); migrations `o4c5d6e7f8a9` and
+  `p5d6e7f8a9b0` were applied and round-tripped on the live DB.
+- Settings during the stage: `memory_idle_minutes=1` to make idle
+  extraction observable; the OpenAI key came from the environment, never
+  from DB or UI (§13 discipline).
