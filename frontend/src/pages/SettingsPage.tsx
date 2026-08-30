@@ -550,6 +550,61 @@ export function SettingsPage() {
               <ErrorNote error={patch.error} />
             </div>
           </Field>
+          <Field
+            label="Admission floor (0–0.9)"
+            hint="§16.2 — minimum extraction confidence to admit a machine write; the M47 learner moves this within [0.5, 0.9] when enabled"
+          >
+            <div className="space-y-1">
+              <TextInput
+                defaultValue={String(settings.memory_admission_min_confidence ?? 0.5)}
+                className="max-w-28"
+                onBlur={(e) =>
+                  patch.mutate({ memory_admission_min_confidence: Number(e.target.value) })
+                }
+              />
+              <ErrorNote error={patch.error} />
+            </div>
+          </Field>
+          <Field
+            label="Extraction learning"
+            hint="M47 §17.7: the tombstone-informed tuner — routes chronically forgotten kinds through review and walks the admission floor; propose queues changes for approval, auto applies within clamps"
+          >
+            <Select
+              value={String(settings.memory_extraction_learning ?? 'off')}
+              onChange={(e) => patch.mutate({ memory_extraction_learning: e.target.value })}
+              className="max-w-36"
+            >
+              {['off', 'propose', 'auto'].map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </Select>
+          </Field>
+          {Array.isArray(settings.memory_quarantine_kinds) &&
+            settings.memory_quarantine_kinds.length > 0 && (
+              <Field
+                label="Kinds under review"
+                hint="machine writes of these kinds land in the review queue instead of activating — clear a kind to trust it again"
+              >
+                <div className="flex flex-wrap gap-2">
+                  {(settings.memory_quarantine_kinds as string[]).map((k) => (
+                    <button
+                      key={k}
+                      className="rounded border border-slate-800/70 px-2 py-0.5 text-xs hover:opacity-70"
+                      title="remove this kind from review routing"
+                      onClick={() =>
+                        patch.mutate({
+                          memory_quarantine_kinds: (
+                            settings.memory_quarantine_kinds as string[]
+                          ).filter((x) => x !== k),
+                        })
+                      }
+                    >
+                      {k} ×
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            )}
           <BoolSetting
             label="Reflection (L4)"
             k="memory_reflection_enabled"

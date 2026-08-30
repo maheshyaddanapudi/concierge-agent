@@ -28,6 +28,7 @@ JOB_MINE = 4
 JOB_COMPACT = 5
 JOB_COMMUNITIES = 6  # §18.6 label-propagation rebuild
 JOB_BACKFILL = 7  # §16.2 embedding backfill (on embedding_model change)
+JOB_EXTRACT_TUNE = 8  # M47 §17.7 extraction tuner (own gate, born dark)
 
 # GA-style reflection trigger: summed importance of unreflected memories
 REFLECTION_IMPORTANCE_TRIGGER = 150
@@ -44,6 +45,7 @@ _INTERVALS_S = {
     JOB_COMPACT: 6 * 3600,
     JOB_COMMUNITIES: 3600,
     JOB_BACKFILL: 3600,
+    JOB_EXTRACT_TUNE: 3600,
 }
 _LAST_RUN: dict[int, float] = {}
 
@@ -275,6 +277,14 @@ async def embedding_backfill(limit: int = 500) -> int:
     return embedded
 
 
+async def _extraction_tuner_moves() -> int:
+    """Job adapter: the M47 tuner reports a breakdown; the loop counts moves."""
+    from app.memory.extract_learn import run_extraction_tuner
+
+    out = await run_extraction_tuner()
+    return out["kind_routes"] + out["floor_moves"]
+
+
 async def _due(job_id: int, now: float) -> bool:
     last = _LAST_RUN.get(job_id)
     if last is None:
@@ -302,6 +312,7 @@ async def run_due_jobs() -> dict[str, int]:
         JOB_COMPACT: ("compact", compact_digests),
         JOB_COMMUNITIES: ("communities", rebuild_communities),
         JOB_BACKFILL: ("backfill", embedding_backfill),
+        JOB_EXTRACT_TUNE: ("extract_tune", _extraction_tuner_moves),
     }
     for job_id, (name, fn) in jobs.items():
         if not await _due(job_id, now):

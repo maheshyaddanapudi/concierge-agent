@@ -65,19 +65,85 @@ re-ship a default** — it is precisely the knob a future forget-tuner
 should adjust from real per-install suppression history, which is why
 `memory_forget_similarity` is a live setting.
 
-## 3. Scope decision
+## 3. Extraction tuner vs the static frontier (M47, closure_pack)
 
-The extraction tuner (tombstone-metadata consumer) was deliberately NOT
-built in this pass: the evidence-first discipline says one learner
-proves the pattern before the second is written, and its harness
-(forget-gate sweep) currently measures the gate, not a learner. It
-remains the next candidate, entering under `memory_extraction_learning`
-when built.
+The second consumer, built after the first proved the pattern (the
+scope decision the original §3 of this report recorded). Harness:
+`extraction_eval.py` — real `gate_candidates` (live floor), real
+`remember()` (live kind router), real `tombstone_forget`, real review
+transitions, real tuner; two worlds, one per lever. Bar set in the
+harness docstring before the learner existed.
+
+**World A — kind-concentrated junk** (`entity` 90%-forgotten at
+confidence 0.55–0.75, overlapping `preference` from 0.72; no static
+floor can separate them):
+
+| condition | junk admitted | valuable blocked | tombstones (human forget workload) | clamps |
+|---|---|---|---|---|
+| static 0.5 (shipped default) | 60 | 0 | 75 | — |
+| static 0.6 | 42 | 0 | 58 | — |
+| static 0.7 | 15 | **24** | 28 | — |
+| static 0.75 | 5 | **42** | 16 | — |
+| **learner (auto, start 0.5)** | **10** | **0** | **30** | **0** |
+
+The learner routed `entity` after its first window and beat every
+zero-loss static point (10 vs 42–60) with zero valuable loss; the
+statics that admit less junk pay for it in blocked valuable writes.
+**Honest cost:** routing converts junk admissions into review-queue
+items — 45 rejections landed in the review queue. Cheaper per item
+than active-memory pollution, but not free; the counter is reported.
+The floor never moved in this world (the junk is not band-local) —
+routing did all the work, which is the division of labor by design.
+
+**World B — cross-kind low-confidence junk** (everything below
+confidence 0.62 is junk regardless of kind; no kind crosses the
+routing rate — only the floor can act):
+
+| condition | junk admitted | valuable blocked | clamps |
+|---|---|---|---|
+| static 0.5 (shipped default) | 66 | 0 | — |
+| static 0.6 (retrospective oracle) | 12 | 0 | — |
+| static 0.65 | 0 | **18** | — |
+| **learner (auto, start 0.5)** | **36** | **0** | **0** |
+
+Floor track `0.5→0.5→0.55→0.60→0.60…`: the walk found the
+zero-collateral point (0.60) and stopped — the band above is mostly
+kept, so it never took the 0.65 step that blocks valuable writes.
+
+**Bar item 1 FAILS in world B as literally stated**, and that is
+reported, not reworded: the learner (36) does not beat the
+retrospective oracle static (12). A learner whose only lever is the
+same dial the static uses cannot beat that dial's oracle inside the
+window — it can only converge to it, and the 24-admission gap is the
+price of learning 0.62 instead of being told. What world B does prove:
+the walk is correct, the stop is at the zero-collateral point, nothing
+valuable was blocked, no clamp was violated, and against the shipped
+default — the honest production comparison, since no one knows the
+oracle in advance — it wins 36 vs 66. World A, where the learner has a
+lever no static has, clears its bar outright. The ship decision rests
+on that full picture, plus: the gate is born dark (`off`), `propose`
+routes every change through the review queue, and both dials remain
+plain Settings fields a human can override in one edit.
+
+**Rule refinement forced by the harness** (recorded in the tuner
+docstring, the §1 precedent): the research doc's floor trigger — "a
+kind's forget-rate is persistently high" — ratchets the floor against
+confidence-independent repudiation until it starves valuable kinds.
+The shipped trigger is band-local: the floor rises only when the band
+a +0.05 bump would newly refuse is itself ≥ 60% repudiated, which the
+tombstones' confidence-at-admission metadata makes measurable. Known
+limitation, stated: a band walk cannot jump a gap — junk that is not
+contiguous with the floor is the router's job or a human's.
 
 ## 4. Exit criterion, applied
 
-Per the FLE-1 bar: (1) precision ≥ baseline ✅ (2) missed-critical no
-worse ✅ (3) zero clamp violations ✅ (4) this report keeps the
-counter-evidence visible (the precision-vs-reward trade in §1, the
-threshold sensitivity in §2). The branch is therefore eligible for a PR
-to `dev` as milestone M45.
+Per the FLE-1 bar, for M45: (1) precision ≥ baseline ✅ (2)
+missed-critical no worse ✅ (3) zero clamp violations ✅ (4) this report
+keeps the counter-evidence visible (the precision-vs-reward trade in
+§1, the threshold sensitivity in §2). The branch was merged to `dev` as
+milestone M45 (PR #20).
+
+For M47 (§3): world A clears the bar outright; world B fails bar item 1
+against the retrospective oracle and that failure is analyzed above at
+full prominence — the ship rationale is convergence-to-oracle at zero
+collateral plus the world-A win, with the gate dark by default.
