@@ -114,6 +114,13 @@ async def _judge_neighbors(cand: Candidate, neighbors: list[Memory]) -> dict[UUI
     return verdicts
 
 
+def _candidate_owner() -> "UUID | None":
+    """§18.8: extraction runs in the requester's context when there is one."""
+    from app.auth import current_user_id
+
+    return current_user_id()
+
+
 async def reconcile_and_write(cand: Candidate, run_id: UUID) -> Memory | None:
     """Resolve one gated candidate against the active store.
 
@@ -124,6 +131,11 @@ async def reconcile_and_write(cand: Candidate, run_id: UUID) -> Memory | None:
       'same' → supersede the matched row (extraction is post-run ⇒ candidate
       carries the newest event time); no 'same' → plain add
     """
+    from app.memory.store import check_suppressed
+
+    if await check_suppressed(cand.text, cand.scope, _candidate_owner()):
+        return None  # M44 §16.2: the user forgot this — do not re-learn it
+
     if cand.kind == "instruction":
         return await remember(
             text=cand.text,

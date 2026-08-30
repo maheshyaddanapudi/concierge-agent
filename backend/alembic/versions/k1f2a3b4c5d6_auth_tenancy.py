@@ -35,7 +35,10 @@ def upgrade() -> None:
         sa.Column("role", sa.String(16), nullable=False, server_default="member"),
         sa.Column("prefs", JSONB, nullable=True),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
         ),
     )
     op.create_table(
@@ -50,7 +53,10 @@ def upgrade() -> None:
         sa.Column("token_hash", sa.String(128), nullable=False, unique=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
         ),
     )
     for table in _WORK_TABLES:

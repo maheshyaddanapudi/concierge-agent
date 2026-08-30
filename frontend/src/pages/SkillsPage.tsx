@@ -278,6 +278,11 @@ function SkillEditor({
           check={overlap}
           entity="skill"
           onConfirm={async () => {
+            // M44: saving past the warning is a captured, content-free event
+            void api.post('/skills/overlap-ack', {
+              draft_type: 'skill',
+              overlap_percent: overlap.overlap_percent,
+            }).catch(() => {})
             setOverlap(null)
             await doSave()
           }}

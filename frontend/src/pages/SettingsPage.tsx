@@ -533,6 +533,24 @@ export function SettingsPage() {
             allowInherit
           />
           <BoolSetting
+            label="Durable forgetting"
+            k="memory_forget_enabled"
+            hint="§16.1 — deletes become Forget (content-free tombstone, re-admission suppressed, undo via the Forgotten list) with Erase as the explicit no-trace verb. Off = deletes are physical and the system may re-learn a deleted fact"
+          />
+          <Field
+            label="Forget similarity (0.5–1)"
+            hint="semantic suppression threshold — paraphrases of a forgotten fact at or above this cosine similarity are refused; hash-only matching when no embedding model is set"
+          >
+            <div className="space-y-1">
+              <TextInput
+                defaultValue={String(settings.memory_forget_similarity ?? 0.88)}
+                className="max-w-28"
+                onBlur={(e) => patch.mutate({ memory_forget_similarity: Number(e.target.value) })}
+              />
+              <ErrorNote error={patch.error} />
+            </div>
+          </Field>
+          <BoolSetting
             label="Reflection (L4)"
             k="memory_reflection_enabled"
             hint="idle-time synthesis of higher-order memories (evidence-cited)"

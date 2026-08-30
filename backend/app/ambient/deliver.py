@@ -85,7 +85,7 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
                     select(AmbientPolicy)
                     .where(
                         AmbientPolicy.category == category,
-                        AmbientPolicy.source != "learner_proposal",
+                        AmbientPolicy.source.notin_(["learner_proposal", "learner_rejected"]),
                         (AmbientPolicy.user_id == user_id) | (AmbientPolicy.user_id.is_(None)),
                     )
                     .order_by(AmbientPolicy.created_at.desc())

@@ -32,6 +32,21 @@ interface MemoryRow {
   review_note: string | null
 }
 
+export interface TombstoneRow {
+  id: string
+  scope: string
+  kind: string
+  source: string
+  project_key: string | null
+  importance: number
+  confidence: number
+  age_days: number
+  pinned: boolean
+  forgotten_at: string | null
+  suppressed_count: number
+  last_suppressed_at: string | null
+}
+
 interface MemoryStatus {
   counts: Record<string, number>
   by_kind: Record<string, number>
@@ -88,7 +103,15 @@ function KindBadge({ kind }: { kind: string }) {
   )
 }
 
-function MemoryDetail({ row, onDone }: { row: MemoryRow; onDone: () => void }) {
+function MemoryDetail({
+  row,
+  onDone,
+  forgetEnabled,
+}: {
+  row: MemoryRow
+  onDone: () => void
+  forgetEnabled: boolean
+}) {
   const invalidate = useInvalidate()
   const [text, setText] = useState(row.text)
   const [note, setNote] = useState('')
@@ -221,24 +244,111 @@ function MemoryDetail({ row, onDone }: { row: MemoryRow; onDone: () => void }) {
         >
           {row.pinned ? 'Unpin' : 'Pin (always injected)'}
         </Button>
+        {forgetEnabled && (
+          <Button
+            variant="danger"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Forget this memory? It is removed and will NOT be re-learned — a content-free tombstone suppresses re-admission (undo via the Forgotten list).',
+                )
+              ) {
+                void act(() => api.delete(`/memories/${row.id}?mode=forget`))
+              }
+            }}
+          >
+            Forget
+          </Button>
+        )}
         <Button
           variant="danger"
           onClick={() => {
-            if (window.confirm('Hard-delete this memory? This is the only destructive path.')) {
+            if (
+              window.confirm(
+                forgetEnabled
+                  ? 'Erase completely? No trace remains — and the system MAY re-learn this fact later.'
+                  : 'Hard-delete this memory? This is the only destructive path.',
+              )
+            ) {
               void act(() => api.delete(`/memories/${row.id}`))
             }
           }}
         >
-          Delete permanently
+          {forgetEnabled ? 'Erase completely' : 'Delete permanently'}
         </Button>
       </div>
     </div>
   )
 }
 
+// M44 §8.8: tombstones — metadata only, there is no text to show. The
+// escape hatch (Unforget) sits beside every entry so suppression is never
+// invisible or irreversible.
+export function ForgottenSection() {
+  const invalidate = useInvalidate()
+  const { data } = useQuery({
+    queryKey: ['memories', 'tombstones'],
+    queryFn: () => api.get<{ items: TombstoneRow[] }>('/memories/tombstones'),
+    refetchInterval: 15000,
+  })
+  const rows = data?.items ?? []
+  return (
+    <div className="overflow-x-auto rounded-lg border border-slate-800" data-testid="forgotten-section">
+      <table className="w-full text-left text-sm">
+        <thead className="bg-void-950/80 font-mono text-[10px] uppercase tracking-widest text-slate-500">
+          <tr>
+            <th className="px-3 py-2">Kind</th>
+            <th className="px-3 py-2">Scope</th>
+            <th className="px-3 py-2">Source</th>
+            <th className="px-3 py-2">Forgotten</th>
+            <th className="px-3 py-2">Tried to return</th>
+            <th className="px-3 py-2"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((t) => (
+            <tr key={t.id} className="border-t border-slate-800/60">
+              <td className="px-3 py-2"><KindBadge kind={t.kind} /></td>
+              <td className="px-3 py-2 font-mono text-[11px] text-slate-400">
+                {t.scope}
+                {t.project_key ? ` · ${t.project_key}` : ''}
+              </td>
+              <td className="px-3 py-2 font-mono text-[11px] text-slate-400">{t.source}</td>
+              <td className="px-3 py-2 font-mono text-[11px] text-slate-500">
+                {t.forgotten_at ? new Date(t.forgotten_at).toLocaleString() : '—'}
+              </td>
+              <td className="px-3 py-2 font-mono text-[11px] text-slate-400">
+                {t.suppressed_count > 0 ? `${t.suppressed_count}× suppressed` : 'never'}
+              </td>
+              <td className="px-3 py-2 text-right">
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    void api.delete(`/memories/tombstones/${t.id}`).then(() => invalidate('memories'))
+                  }
+                >
+                  Unforget
+                </Button>
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-500">
+                nothing forgotten — deletes leave a trace here only when Forget is used
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function MemoryPage() {
   const { data: settings } = useSettings()
-  const [tab, setTab] = useState<'store' | 'review'>('store')
+  const forgetEnabled = Boolean(settings?.memory_forget_enabled)
+  const [tab, setTab] = useState<'store' | 'review' | 'forgotten'>('store')
   const [kind, setKind] = useState('')
   const [status, setStatus] = useState('')
   const [q, setQ] = useState('')
@@ -285,7 +395,17 @@ export function MemoryPage() {
         <Button variant={tab === 'review' ? 'primary' : 'ghost'} onClick={() => setTab('review')}>
           Review queue{stat && stat.quarantined > 0 ? ` (${stat.quarantined})` : ''}
         </Button>
+        {forgetEnabled && (
+          <Button
+            variant={tab === 'forgotten' ? 'primary' : 'ghost'}
+            onClick={() => setTab('forgotten')}
+          >
+            Forgotten
+          </Button>
+        )}
       </div>
+
+      {tab === 'forgotten' && <ForgottenSection />}
 
       {tab === 'store' && (
         <div className="mb-3 flex flex-wrap items-end gap-2">
@@ -343,6 +463,7 @@ export function MemoryPage() {
         </div>
       )}
 
+      {tab !== 'forgotten' && (
       <div className="overflow-x-auto rounded-lg border border-slate-800">
         <table className="w-full text-left text-sm">
           <thead className="bg-void-950/80 font-mono text-[10px] uppercase tracking-widest text-slate-500">
@@ -391,9 +512,12 @@ export function MemoryPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Drawer open={selected !== null} onClose={() => setSelected(null)} title="Memory detail">
-        {selected && <MemoryDetail row={selected} onDone={() => setSelected(null)} />}
+        {selected && (
+          <MemoryDetail row={selected} onDone={() => setSelected(null)} forgetEnabled={forgetEnabled} />
+        )}
       </Drawer>
     </div>
   )

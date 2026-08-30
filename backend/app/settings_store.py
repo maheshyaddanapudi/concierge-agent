@@ -61,6 +61,10 @@ DEFAULTS: dict[str, Any] = {
     "memory_half_life_days": 30.0,
     "memory_idle_minutes": 10,
     "memory_digest_compact_days": 14,
+    # M44 §16.1 durable forgetting — off is byte-identical (deletes stay
+    # physical); similarity is the semantic suppression threshold
+    "memory_forget_enabled": False,
+    "memory_forget_similarity": 0.88,
     # §18.6 community breadth: its own budget line; 0 disables the section
     "memory_community_budget_tokens": 150,
     # §17 ambient keys — dark by default
@@ -167,6 +171,7 @@ _BOOL_KEYS = {
     "procedural_learning_enabled",
     "ambient_enabled",
     "ambient_precision_rule_enabled",
+    "memory_forget_enabled",
     "a2a_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
@@ -275,6 +280,10 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("a2a_fence_max_chars must be an integer >= 500")
         elif key in _INT_KEYS and (not isinstance(value, int) or value < 1):
             errors.append(f"{key} must be a positive integer")
+        elif key == "memory_forget_similarity" and (
+            not isinstance(value, int | float) or not 0.5 <= float(value) <= 1.0
+        ):
+            errors.append("memory_forget_similarity must be a number between 0.5 and 1.0")
         elif key == "memory_score_floor" and (
             not isinstance(value, int | float) or not 0.0 <= float(value) <= 1.0
         ):

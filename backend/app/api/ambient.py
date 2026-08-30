@@ -391,7 +391,9 @@ async def precision(session: SessionDep) -> dict[str, Any]:
         (
             await session.execute(
                 select(AmbientPolicy)
-                .where(AmbientPolicy.source != "learner_proposal")  # inert until approved
+                .where(
+                    AmbientPolicy.source.notin_(["learner_proposal", "learner_rejected"])
+                )  # inert
                 .order_by(AmbientPolicy.created_at)
             )
         )
@@ -481,6 +483,17 @@ async def approve_policy(policy_id: UUID) -> dict[str, Any]:
         "tier_override": row.tier_override,
         "status": "applied",
     }
+
+
+@ledger_router.post("/policies/{policy_id}/reject")
+async def reject_policy(policy_id: UUID) -> dict[str, Any]:
+    """M44 §17.7: reject a queued learner proposal — captured, never applied."""
+    from app.ambient.learn import reject_proposal
+
+    row = await reject_proposal(policy_id)
+    if row is None:
+        raise HTTPException(404, "no learner proposal with that id")
+    return {"id": str(row.id), "category": row.category, "status": "rejected"}
 
 
 @ledger_router.post("/policies/revert")

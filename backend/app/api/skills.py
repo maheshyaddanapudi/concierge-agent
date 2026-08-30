@@ -20,6 +20,7 @@ from app.models import Skill, SubAgent, Tool, sub_agent_skills
 from app.overlap import OverlapCheckOut, check_skill_overlap
 from app.registry_cache import get_cache
 from app.retrieval import schedule_embedding
+from app.schemas.common import ApiModel
 from app.schemas.skill import SkillCreate, SkillOut, SkillOverlapCheck, SkillPatch
 from app.schemas.sub_agent import SubAgentOut
 from app.skilldoc import validate_mentions
@@ -93,6 +94,34 @@ async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
     await get_cache().invalidate("skills")
     schedule_embedding("skills", str(skill.id))
     return skill
+
+
+class OverlapAck(ApiModel):
+    """M44: content-free record that a human saved past the §4 overlap
+    warning — the capture a future threshold-tuner would need."""
+
+    draft_type: str  # 'skill' | 'sub_agent'
+    overlap_percent: int
+
+
+@router.post("/overlap-ack", status_code=204)
+async def overlap_ack(body: OverlapAck) -> None:
+    import structlog
+
+    from app import obs
+    from app.registry_cache import get_cache
+
+    if body.draft_type not in ("skill", "sub_agent"):
+        raise HTTPException(422, "draft_type must be 'skill' or 'sub_agent'")
+    threshold = int(await get_cache().setting("overlap_threshold_percent") or 70)
+    structlog.get_logger("registry").info(
+        "overlap_override",
+        tier="registry",
+        kind=body.draft_type,
+        overlap_percent=max(0, min(100, body.overlap_percent)),
+        threshold=threshold,
+    )
+    obs.OVERLAP_OVERRIDES.labels(draft_type=body.draft_type).inc()
 
 
 @router.post("/check-overlap", response_model=OverlapCheckOut)

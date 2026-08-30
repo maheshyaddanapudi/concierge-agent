@@ -1118,6 +1118,11 @@ function LedgerTab() {
     await api.post(`/ambient/policies/${id}/approve`)
     invalidate('ambient-precision', 'ambient-policies')
   }
+  const reject = async (id: string) => {
+    // M44 §17.7: captured, never applied — the proposal stops sitting pending
+    await api.post(`/ambient/policies/${id}/reject`)
+    invalidate('ambient-precision', 'ambient-policies')
+  }
 
   return (
     <div className="space-y-6">
@@ -1135,6 +1140,9 @@ function LedgerTab() {
                 <Chip>{p.category}</Chip>
                 <span className="flex-1 text-xs text-slate-300">{p.reason}</span>
                 <Button onClick={() => void approve(p.id)}>Approve</Button>
+                <Button variant="ghost" onClick={() => void reject(p.id)}>
+                  Reject
+                </Button>
               </div>
             ))}
           </div>
