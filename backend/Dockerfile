@@ -5,24 +5,7 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
 
-# Optional build-time CA, for building behind a TLS-intercepting proxy
-# (corporate MITM, or a sandboxed CI runner). Entirely a no-op when the
-# secret is absent, so ordinary builds are unaffected:
-#   docker build --secret id=proxy_ca,src=/path/to/ca-bundle.crt .
-# Needed because this image fetches from PyPI and npm at six separate
-# steps; trusting the CA once beats disabling verification per command.
-# uv ships its own rustls roots (hence UV_NATIVE_TLS) and node ships its
-# own bundle (hence NODE_EXTRA_CA_CERTS) — neither reads the system store
-# by default, so both are pointed at it explicitly.
-ENV UV_NATIVE_TLS=1 \
-    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
-
-RUN --mount=type=secret,id=proxy_ca,target=/tmp/proxy-ca.crt \
-    if [ -s /tmp/proxy-ca.crt ]; then \
-      cp /tmp/proxy-ca.crt /usr/local/share/ca-certificates/proxy-ca.crt \
-      && update-ca-certificates; \
-    fi \
-    && apt-get update \
+RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
