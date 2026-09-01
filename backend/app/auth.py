@@ -208,7 +208,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:  # M40: live rate-limit shape; a settings hiccup falls back to defaults
             burst = float(await get_cache().setting("rate_limit_burst"))
             per_s = float(await get_cache().setting("rate_limit_per_s"))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — a settings hiccup falls back to the defaults
             burst, per_s = float(RATE_LIMIT_BURST), RATE_LIMIT_REFILL_PER_S
         if _rate_limited(user["id"], burst, per_s):
             return _harden(JSONResponse({"detail": "rate limit exceeded"}, status_code=429))

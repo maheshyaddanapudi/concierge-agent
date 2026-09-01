@@ -189,7 +189,8 @@ async def create(body: MemoryCreate) -> Memory:
 
         async with get_session_factory()() as session:
             fresh = await session.get(Memory, row.id)
-            assert fresh is not None
+            if fresh is None:
+                raise RuntimeError("fresh vanished mid-operation")
             fresh.pinned = True
             await session.commit()
             await session.refresh(fresh)
@@ -216,7 +217,8 @@ async def patch(memory_id: UUID, body: MemoryPatch, session: SessionDep) -> Memo
             raise HTTPException(409, str(exc)) from exc
         if body.pinned is not None:
             fresh = await session.get(Memory, new.id)
-            assert fresh is not None
+            if fresh is None:
+                raise RuntimeError("fresh vanished mid-operation")
             fresh.pinned = body.pinned
             await session.commit()
             await session.refresh(fresh)

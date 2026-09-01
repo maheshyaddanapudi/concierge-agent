@@ -35,6 +35,7 @@ dependencies = [
     "openpyxl>=3.1",
     "a2a-sdk>=0.3,<0.4",
     "authlib>=1.6",
+    "defusedxml>=0.7.1",
 ]
 
 [dependency-groups]
@@ -48,6 +49,7 @@ dev = [
     "types-pyyaml",
     "types-croniter>=6.2.4.20260711",
     "types-authlib>=1.7.2.20260827",
+    "types-defusedxml>=0.7.0.20260504",
 ]
 
 [tool.ruff]
@@ -55,8 +57,18 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+# M49: BLE (blind except) and S (bandit) are ON. Every surviving `noqa: BLE001`
+# carries a one-line justification — a loop or pipeline that must survive
+# anything — and app/ code has no `assert` on a runtime path (S101: asserts
+# vanish under `python -O`; explicit checks raise instead).
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "BLE", "S"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests assert by nature and use throwaway credentials on purpose
+"tests/**" = ["S101", "S105", "S106", "S108", "BLE001"]
+# migrations run fixed DDL/DML strings; there is no user input to inject
+"alembic/**" = ["S608"]
 
 [tool.mypy]
 python_version = "3.12"

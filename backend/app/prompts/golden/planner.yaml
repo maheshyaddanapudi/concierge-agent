@@ -1,0 +1,31 @@
+# Golden set for planner.md (spec §7.1 graph mode): the refusal contract
+# (direct_answer / no_confident_match), the entry shape with its escaped
+# JSON braces, the spin_worker allowlist rule, and the step budget wiring.
+consumer: app/orchestrator/planner.py
+render: format
+cases:
+  - name: refusal_and_shape_contract
+    vars:
+      task: "research pgvector and save a summary"
+      history: "(new conversation)"
+      sub_agent_cards: "- research-concierge (id 1111): researches a topic and saves findings"
+      direct_capabilities: "- tool fetch_fetch (id 2222): fetch a URL"
+      max_plan_steps: "6"
+      memory_block: ""
+    must_contain:
+      - "Decompose the user's request into a small plan over the available capabilities, or answer directly"
+      - "return an empty entries list and put the reply in direct_answer"
+      - "set no_confident_match to true"
+      - "Do not guess."
+      - "Otherwise return 1-6 entries"
+      - '{"type": "direct_tool"|"direct_skill"|"sub_agent"|"spin_worker"'
+      - '{"type": "spin_worker", "skill_ids": ["<uuid>", ...]}'
+      - "depends_on: ids of entries whose output this entry needs"
+      - "spin_worker composes ONLY the skills listed below as directly usable"
+      - "Entries with no dependency run in parallel"
+      - "research-concierge (id 1111)"
+      - "tool fetch_fetch (id 2222)"
+      - "User request:"
+      - "research pgvector and save a summary"
+    must_not_contain:
+      - "{{"

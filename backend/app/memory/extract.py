@@ -75,7 +75,8 @@ async def extract_candidates(run: Run, hitl_notes: list[str]) -> list[Candidate]
             hitl_notes="\n".join(f"- {n}" for n in hitl_notes) or "(none)",
         )
         out = await structured.ainvoke(prompt)
-        assert isinstance(out, ExtractionOutput)
+        if not isinstance(out, ExtractionOutput):
+            raise TypeError(f"expected ExtractionOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — extraction never fails the pipeline
         logger.info("memory_extract_failed", run_id=str(run.id), error=str(exc))
         return []
@@ -103,8 +104,9 @@ async def _judge_neighbors(cand: Candidate, neighbors: list[Memory]) -> dict[UUI
         listing = "\n".join(f"{i + 1}. {m.text}" for i, m in enumerate(neighbors))
         prompt = load_prompt("memory_reconcile").format(candidate=cand.text, neighbors=listing)
         out = await structured.ainvoke(prompt)
-        assert isinstance(out, ReconcileOutput)
-    except Exception as exc:  # noqa: BLE001
+        if not isinstance(out, ReconcileOutput):
+            raise TypeError(f"expected ReconcileOutput, got {type(out).__name__}")
+    except Exception as exc:  # noqa: BLE001 — reconcile failure degrades to "related", never fails extraction
         logger.info("memory_reconcile_failed", error=str(exc))
         return {m.id: "related" for m in neighbors}
     verdicts: dict[UUID, str] = {m.id: "related" for m in neighbors}

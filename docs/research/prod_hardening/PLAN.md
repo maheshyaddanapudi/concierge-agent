@@ -8,6 +8,19 @@ horizontal scale, forkability, and release mechanics.
 **Goal state:** a horizontally-scalable OSS core that a company can fork, implement one port against, and
 run as an enterprise system — the Conductor model.
 
+## Status
+
+| Stage | State | Evidence |
+|---|---|---|
+| M49 | ✅ done | `docs/acceptance/prod/M49/` — baseline (before any fix), prompt-harness proof, ruff triage |
+| M50 | ☐ | |
+| M51 | ☐ | |
+| M52 | ☐ | |
+| M53 | ☐ | |
+| M54 | ☐ | |
+| M55 | ☐ | |
+| M56 | ☐ | |
+
 ## Scope decisions, recorded
 
 | Decision | Consequence in this plan |

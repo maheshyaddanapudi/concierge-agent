@@ -243,7 +243,7 @@ class A2AManager:
                     await asyncio.sleep(_DARK_SLEEP_S)
                     continue
                 interval = int(await get_cache().setting("a2a_card_refresh_interval_s"))
-            except Exception:  # cache not up yet — stay quiet, retry
+            except Exception:  # noqa: BLE001 — cache not up yet: stay quiet, retry
                 await asyncio.sleep(_DARK_SLEEP_S)
                 continue
             await asyncio.sleep(max(interval, 5))

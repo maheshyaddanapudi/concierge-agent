@@ -109,7 +109,7 @@ async def _embed_ref(session: AsyncSession, ref_id: UUID, table_ref: str, text: 
             )
         else:
             existing.embedding = vec
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — embedding failure degrades this row to lexical-only
         logger.warning("memory_embed_failed", ref=str(ref_id), error=str(exc))
 
 
@@ -137,7 +137,7 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
                 await sess.flush()
             sess.add(MemoryEntityLink(memory_id=memory_id, entity_id=entity.id))
         await sess.flush()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — entity linking is best-effort decoration
         logger.warning("memory_entity_link_failed", memory_id=str(memory_id), error=str(exc))
 
 

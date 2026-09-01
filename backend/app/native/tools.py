@@ -49,7 +49,7 @@ def build_summarize_graph() -> Any:
         prompt = load_prompt("summarize_and_structure").format(text=state["text"])
         try:
             result = await model.ainvoke(prompt, config=config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — parser/validation error types vary by adapter; one repair retry
             # strict schema + one repair retry (same pattern as planner
             # validation, spec §7.1): feed the validation errors back once
             repair = (
@@ -58,7 +58,8 @@ def build_summarize_graph() -> Any:
                 "entities MUST be JSON arrays of strings."
             )
             result = await model.ainvoke(repair, config=config)
-        assert isinstance(result, StructuredSummary)
+        if not isinstance(result, StructuredSummary):
+            raise TypeError(f"expected StructuredSummary, got {type(result).__name__}")
         return {"result": result.model_dump()}
 
     graph = StateGraph(_SummarizeState)

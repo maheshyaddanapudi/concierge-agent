@@ -1,0 +1,15 @@
+# Golden set for history_summary.md (spec §7.5 M11): the opt-in
+# one-call summary — verbatim identifiers, outcomes not process, 150 words.
+consumer: app/orchestrator/direct_mode.py
+render: format
+cases:
+  - name: compress
+    vars:
+      history: "user: rename report.md to q3-report.md\nassistant: done, the file is now /workspace/q3-report.md"
+    must_contain:
+      - "compressing a conversation so a specialist agent can handle the user's next request"
+      - "Preserve verbatim anything the next request could refer back to: file paths, names, ids, numbers, decisions made"
+      - "State outcomes, not process"
+      - "Resolve references"
+      - "150 words or fewer"
+      - "/workspace/q3-report.md"

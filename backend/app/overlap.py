@@ -127,7 +127,8 @@ async def _judge(draft_type: str, draft: str, candidates: list[str]) -> OverlapV
         model = get_model(model_ref, params)
         structured = model.with_structured_output(OverlapVerdict)
         verdict = await structured.ainvoke(prompt)
-        assert isinstance(verdict, OverlapVerdict)
+        if not isinstance(verdict, OverlapVerdict):
+            raise TypeError(f"expected OverlapVerdict, got {type(verdict).__name__}")
         return verdict
     except Exception as exc:  # noqa: BLE001 — the guard must never block saves
         logger.warning("overlap_judge_unavailable", error=str(exc))

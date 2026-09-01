@@ -125,7 +125,7 @@ async def recall(
         WHERE m.fts @@ tsq AND {where}
         ORDER BY ts_rank_cd(m.fts, tsq) DESC
         LIMIT :n
-        """
+        """  # noqa: S608 — fragments are code constants; values are bound params
     )
     qvec = await _query_vector(query)
     model_key = await active_model_key() if qvec is not None else None
@@ -144,7 +144,7 @@ async def recall(
                 WHERE {where}
                 ORDER BY e.embedding <=> CAST(:qvec AS vector)
                 LIMIT :n
-                """
+                """  # noqa: S608 — fragments are code constants; values are bound params
             ).bindparams(bindparam("qvec"), bindparam("model_key"))
             vec_rows = (
                 await session.execute(

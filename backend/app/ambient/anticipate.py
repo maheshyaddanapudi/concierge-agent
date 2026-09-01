@@ -123,7 +123,8 @@ async def run_anticipation(now: datetime | None = None) -> list[UUID] | None:
     )
     try:
         out = await model.with_structured_output(AnticipationOutput).ainvoke(prompt)
-        assert isinstance(out, AnticipationOutput)
+        if not isinstance(out, AnticipationOutput):
+            raise TypeError(f"expected AnticipationOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — anticipation never breaks the tick
         logger.warning("ambient_anticipation_failed", error=str(exc))
         return None

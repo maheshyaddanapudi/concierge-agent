@@ -1,0 +1,17 @@
+# Golden set for memory_digest.md (spec §16.3 M14): the episodic digest —
+# concrete nouns are the search keys, no preamble.
+consumer: app/memory/episodic.py
+render: format
+cases:
+  - name: digest
+    vars:
+      task: "what is the capital of Portugal?"
+      answer: "The capital of Portugal is Lisbon."
+      status: "completed"
+    must_contain:
+      - "one-to-two-sentence digest of this completed agent run"
+      - "keeping concrete nouns (names, files, numbers, topics)"
+      - "No preamble, no markdown"
+      - "User asked: what is the capital of Portugal?"
+      - "The capital of Portugal is Lisbon."
+      - "Run outcome: completed"

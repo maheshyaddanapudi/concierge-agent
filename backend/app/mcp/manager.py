@@ -251,7 +251,7 @@ class McpManager:
                 try:
                     await asyncio.wait_for(session.send_ping(), timeout=PING_TIMEOUT_S)
                     ok = True
-                except BaseException:  # noqa: BLE001
+                except BaseException:  # noqa: BLE001 — a ping failure of any kind marks the server unhealthy
                     ok = False
             if not ok:
                 await self._teardown(server_id)

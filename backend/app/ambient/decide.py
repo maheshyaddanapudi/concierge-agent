@@ -104,7 +104,8 @@ async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> Si
         event=str(event.payload)[:2000],
     )
     out = await structured.ainvoke(prompt)
-    assert isinstance(out, dict)
+    if not isinstance(out, dict):
+        raise TypeError(f"expected dict, got {type(out).__name__}")
     parsed = out.get("parsed")
     if not isinstance(parsed, SignificanceOutput):
         raise ValueError(f"judge parse failed: {out.get('parsing_error')}")

@@ -243,7 +243,7 @@ async def evaluate_state_conditions(now: datetime | None = None) -> int:
             continue
         try:
             value = await _STATE_PROBES[probe_name](dict(compiled.get("config") or {}))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a broken probe never kills the tick
             logger.warning("ambient_probe_failed", intent=str(intent.id), error=str(exc))
             continue
         op = compiled.get("op", ">=")

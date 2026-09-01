@@ -284,7 +284,7 @@ async def recall_digests(
                     WHERE d.fts @@ tsq {excl}
                     ORDER BY ts_rank_cd(d.fts, tsq) DESC
                     LIMIT :n
-                    """
+                    """  # noqa: S608 — fragments are code constants; values are bound params
                 ),
                 params,
             )
@@ -305,7 +305,7 @@ async def recall_digests(
                         WHERE true {excl}
                         ORDER BY e.embedding <=> CAST(:qvec AS vector)
                         LIMIT :n
-                        """
+                        """  # noqa: S608 — fragments are code constants; values are bound params
                     ).bindparams(bindparam("qvec"), bindparam("model_key")),
                     {**params, "qvec": str(list(qvec)), "model_key": model_key},
                 )

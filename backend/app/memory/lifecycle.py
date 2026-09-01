@@ -170,7 +170,8 @@ async def reflection() -> int:
         structured = model.with_structured_output(ReflectionOutput)  # type: ignore[attr-defined]
         listing = "\n".join(f"{i + 1}. [{m.kind}] {m.text}" for i, m in enumerate(fresh))
         out = await structured.ainvoke(load_prompt("memory_reflect").format(memories=listing))
-        assert isinstance(out, ReflectionOutput)
+        if not isinstance(out, ReflectionOutput):
+            raise TypeError(f"expected ReflectionOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — reflection is optional cognition
         logger.info("memory_reflection_failed", error=str(exc))
         return 0
@@ -192,7 +193,7 @@ async def reflection() -> int:
                 run_id=fresh[0].run_id,  # provenance: newest evidence run
             )
             written += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — one insight's write failure never loses the others
             logger.warning("memory_reflection_write_failed", error=str(exc))
     from app import obs
 
@@ -221,7 +222,8 @@ async def contradiction_sweep() -> int:
         )
         by_key: dict[tuple[str, str], list[Memory]] = {}
         for m in rows:
-            assert m.entity_key is not None
+            if m.entity_key is None:
+                continue  # selected non-null; defensive, never an assert
             by_key.setdefault((m.scope, m.entity_key), []).append(m)
         for group in by_key.values():
             for extra in group[1:]:  # keep the oldest-validity row active
@@ -380,7 +382,7 @@ async def run_due_jobs() -> dict[str, int]:
                 try:
                     results["mine"] = len(await mine_fallback_skills())
                     _LAST_RUN[JOB_MINE] = now
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 — jobs are independent
                     logger.warning("memory_job_failed", job="mine", error=str(exc))
                 finally:
                     await release_job_lock(session, JOB_MINE)

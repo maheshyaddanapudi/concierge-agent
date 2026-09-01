@@ -26,6 +26,7 @@ from xml.etree import ElementTree
 
 import httpx
 import structlog
+from defusedxml import ElementTree as DefusedElementTree
 from sqlalchemy import func, select
 
 from app.db import get_session_factory
@@ -150,7 +151,7 @@ async def rss_source(
         resp = await client.get(url)
         resp.raise_for_status()
         text = resp.text
-    root = ElementTree.fromstring(text)
+    root = DefusedElementTree.fromstring(text)  # untrusted body: entity/bomb-safe (M49)
     items: list[dict[str, Any]] = []
     for entry in root.iter("item"):  # RSS 2.0
         link = _first_text(entry, "link")

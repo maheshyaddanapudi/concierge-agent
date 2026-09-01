@@ -1,0 +1,14 @@
+# Golden set for router.md (spec §3.5 conditional edges): pick one index.
+consumer: app/factory/worker.py
+render: format
+cases:
+  - name: pick_index
+    vars:
+      output: "Found three relevant sources."
+      conditions: "0. if research found results\n1. if nothing found"
+    must_contain:
+      - "You are routing a workflow to its next step"
+      - "pick the single condition below that best matches what happened"
+      - "Answer with the index of the chosen condition"
+      - "Found three relevant sources."
+      - "0. if research found results"

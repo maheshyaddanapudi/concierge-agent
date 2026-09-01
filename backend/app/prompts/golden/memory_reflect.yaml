@@ -1,0 +1,17 @@
+# Golden set for memory_reflect.md (spec §16.6 M17): generative reflection —
+# at most 3 cited insights, each combining at least two memories.
+consumer: app/memory/lifecycle.py
+render: format
+cases:
+  - name: reflect
+    vars:
+      memories: "1. [preference] prefers terse answers\n2. [preference] dislikes emoji\n3. [fact] works in Lisbon"
+    must_contain:
+      - "synthesize a few HIGHER-ORDER insights"
+      - "At most 3 insights; zero is a fine answer"
+      - "Each insight must cite the numbers of the source memories"
+      - "An insight you cannot cite does not exist"
+      - "Kinds: fact | preference | instruction"
+      - "it will go to human review before taking effect"
+      - "Never restate a single memory; an insight must combine at least two"
+      - "3. [fact] works in Lisbon"

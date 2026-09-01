@@ -1,0 +1,24 @@
+# Golden set for overlap_judge.md (spec §4 overlap guard): the curator's
+# percentage bands, purpose-over-wording rule, and the OverlapVerdict shape.
+consumer: app/overlap.py
+render: replace
+placeholders: [draft_type, draft, candidates]
+cases:
+  - name: curator
+    vars:
+      draft_type: "skill"
+      draft: "name: web-lookup\ndescription: fetch a page and summarize it"
+      candidates: "- skill 1a2b web-research: research a topic on the web"
+    must_contain:
+      - "You are a registry curator for an agent platform"
+      - "90–100: near-duplicate"
+      - "70–89: substantial overlap"
+      - "40–69: partial overlap"
+      - "0–39: distinct"
+      - "Judge by purpose and capability, not by wording similarity"
+      - "DRAFT (skill):"
+      - "name: web-lookup"
+      - "EXISTING RECORDS:"
+      - "web-research: research a topic on the web"
+      - "Return the single best match via the OverlapVerdict tool"
+      - 'return overlap_percent 0 and match_type "none"'

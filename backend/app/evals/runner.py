@@ -44,7 +44,8 @@ async def _await_run(run_id: UUID) -> Run:
                 await asyncio.wait_for(asyncio.shield(task), timeout=CASE_TIMEOUT_S)
         async with get_session_factory()() as session:
             run = await session.get(Run, run_id)
-            assert run is not None
+            if run is None:
+                raise RuntimeError("run vanished mid-operation")
             status = run.status
         if status == "paused_hitl":
             logger.info("eval_hitl_auto_approve", tier="evals", kind="hitl", run_id=str(run_id))
@@ -54,7 +55,8 @@ async def _await_run(run_id: UUID) -> Run:
         if status != "running":
             async with get_session_factory()() as session:
                 final = await session.get(Run, run_id)
-                assert final is not None
+                if final is None:
+                    raise RuntimeError("final vanished mid-operation")
                 return final
         if asyncio.get_event_loop().time() > deadline:
             raise TimeoutError(f"eval case run {run_id} exceeded {CASE_TIMEOUT_S}s")
@@ -85,7 +87,8 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
             session.add(eval_run)
         else:
             eval_run = await session.get(EvalRun, eval_run_id)  # type: ignore[assignment]
-            assert eval_run is not None
+            if eval_run is None:
+                raise RuntimeError("eval_run vanished mid-operation")
             eval_run.total_cases = len(cases)
         settings = await load_settings_snapshot()
         eval_run.config_snapshot = {
@@ -159,13 +162,15 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
                     )
                 )
                 row = await session.get(EvalRun, run_row_id)
-                assert row is not None
+                if row is None:
+                    raise RuntimeError("row vanished mid-operation")
                 row.passed_cases, row.failed_cases, row.error_cases = passed, failed, errored
                 await session.commit()
         langsmith_url = await _maybe_publish(run_row_id)
         async with get_session_factory()() as session:
             row = await session.get(EvalRun, run_row_id)
-            assert row is not None
+            if row is None:
+                raise RuntimeError("row vanished mid-operation")
             row.status = "completed"
             row.langsmith_url = langsmith_url
             row.finished_at = datetime.now(UTC)
@@ -176,7 +181,8 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
         logger.warning("eval_run_failed", tier="evals", kind="run", error=str(exc))
         async with get_session_factory()() as session:
             row = await session.get(EvalRun, run_row_id)
-            assert row is not None
+            if row is None:
+                raise RuntimeError("row vanished mid-operation") from exc
             row.status = "failed"
             row.finished_at = datetime.now(UTC)
             await session.commit()

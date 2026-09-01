@@ -1,0 +1,19 @@
+# Golden set for memory_reconcile.md (spec §16.2 M15): identity-only
+# verdicts — same / related / unrelated — never correctness.
+consumer: app/memory/extract.py
+render: format
+cases:
+  - name: dedupe
+    vars:
+      candidate: "the deploy branch is release-2026"
+      neighbors: "1. the deploy branch is main\n2. the user prefers terse answers"
+    must_contain:
+      - "deduplicating a long-term memory store"
+      - "- same: the candidate is about the SAME single fact/preference"
+      - 'a newer value for the same thing is still "same"'
+      - "- related: same topic, but a DIFFERENT fact that can coexist"
+      - "- unrelated: different topic"
+      - "Judge only identity"
+      - "never which one is correct"
+      - "Candidate: the deploy branch is release-2026"
+      - "1. the deploy branch is main"

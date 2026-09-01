@@ -1,0 +1,12 @@
+# Golden set for tool_guidance.md (spec §3.3 worker prompt tail): appended
+# verbatim — its `{tool:...}` braces are literal, never format placeholders.
+consumer: app/factory/worker.py
+render: verbatim
+cases:
+  - name: guidance
+    must_contain:
+      - "use only the tools provided to you, and only when a step calls for them"
+      - "`{tool:...}` mentions in your instructions with punctuation replaced by underscores"
+      - "`{tool:fetch.fetch}` is the tool `fetch_fetch`"
+      - "never draw an ASCII/text chart of the same data"
+      - "reply with your final result as plain text"

@@ -23,6 +23,11 @@ COPY . .
 # Pure offline validation: no DB, no API keys, no network.
 RUN python -m app.doclint
 
+# prompt golden sets (M49, spec §15): a prompt edit that drops a binding
+# sentence or renames a placeholder fails HERE, not at request time. Same
+# offline discipline as doclint — no DB, no keys, no network.
+RUN python -m app.prompts.check
+
 # pre-warm the seeded MCP servers into local caches so first connect is fast
 # and works without registry access at runtime
 # This prewarm must SUCCEED, not silently pass. With `|| true` a network

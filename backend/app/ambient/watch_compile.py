@@ -74,7 +74,8 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
     )
     try:
         out = await model.with_structured_output(WatchCompile).ainvoke(prompt)
-        assert isinstance(out, WatchCompile)
+        if not isinstance(out, WatchCompile):
+            raise TypeError(f"expected WatchCompile, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — compile failure is a clean refusal
         return {"status": "rejected", "error": f"could not compile the watch: {exc}"}
 

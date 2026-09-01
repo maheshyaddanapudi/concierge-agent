@@ -122,7 +122,8 @@ async def judge(row: Delivery) -> SalienceVerdict | None:
         model = get_model(model_ref, model_params)
         structured = model.with_structured_output(SalienceVerdict)
         verdict = await structured.ainvoke(prompt)
-        assert isinstance(verdict, SalienceVerdict)
+        if not isinstance(verdict, SalienceVerdict):
+            raise TypeError(f"expected SalienceVerdict, got {type(verdict).__name__}")
         return verdict
     except Exception as exc:  # noqa: BLE001 — advisory: never blocks the outbox
         logger.warning("salience_judge_unavailable", tier="ambient", kind="deliver", error=str(exc))

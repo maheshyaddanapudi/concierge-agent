@@ -235,7 +235,7 @@ class RegistryCache:
                 try:
                     redis = await self._get_redis()
                     await redis.delete(f"{_REDIS_PREFIX}{reg}")
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 — redis invalidation is best-effort; Postgres is the truth
                     logger.warning("cache_redis_invalidate_failed", registry=reg, error=str(exc))
             queue.extend(dependents.get(reg, ()))
         if registry == "settings":
@@ -265,7 +265,7 @@ class RegistryCache:
                     {"ch": _NOTIFY_CHANNEL, "payload": f"{self._origin}:{registry}"},
                 )
                 await session.commit()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — NOTIFY is advisory; replicas reload on their next dirty read
             logger.warning("cache_notify_failed", registry=registry, error=str(exc))
 
     async def start_listener(self) -> None:
@@ -293,7 +293,7 @@ class RegistryCache:
             await conn.add_listener(_NOTIFY_CHANNEL, _on_notify)
             self._listener_conn = conn
             logger.info("cache_listener_started", channel=_NOTIFY_CHANNEL, origin=self._origin)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the listener is optional; the cache falls back to dirty reloads
             logger.warning("cache_listener_unavailable", error=str(exc))
 
     async def stop_listener(self) -> None:
@@ -381,11 +381,18 @@ class RegistryCache:
                 self._dirty.discard(registry)
             return self._data[registry]
 
+    async def _rows(self, registry: Registry) -> list[dict[str, Any]]:
+        """`_ensure` for the list-shaped registries, checked at the boundary
+        rather than asserted — asserts vanish under `python -O` (M49)."""
+        rows = await self._ensure(registry)
+        if not isinstance(rows, list):
+            raise TypeError(f"registry {registry!r} cached as {type(rows).__name__}, expected list")
+        return rows
+
     # ── typed reads (consumers) ──────────────────────────────────
 
     async def tools(self, *, exposed_only: bool) -> list[dict[str, Any]]:
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         return [
             t
             for t in rows
@@ -394,19 +401,16 @@ class RegistryCache:
 
     async def tools_by_ids(self, ids: list[UUID | str]) -> list[dict[str, Any]]:
         """Order-preserving, active-only — mirrors factory.resolve_tools_by_ids."""
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         by_id = {t["id"]: t for t in rows if t["status"] == "active"}
         return [by_id[str(i)] for i in ids if str(i) in by_id]
 
     async def tool_by_id(self, tool_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         return next((t for t in rows if t["id"] == str(tool_id)), None)
 
     async def skills(self, *, exposed_only: bool) -> list[dict[str, Any]]:
-        rows = await self._ensure("skills")
-        assert isinstance(rows, list)
+        rows = await self._rows("skills")
         return [
             s
             for s in rows
@@ -414,19 +418,16 @@ class RegistryCache:
         ]
 
     async def skill_by_id(self, skill_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("skills")
-        assert isinstance(rows, list)
+        rows = await self._rows("skills")
         return next((s for s in rows if s["id"] == str(skill_id)), None)
 
     async def sub_agents(self) -> list[dict[str, Any]]:
         """Active only, created_at order (rung-3 precedence relies on it)."""
-        rows = await self._ensure("sub_agents")
-        assert isinstance(rows, list)
+        rows = await self._rows("sub_agents")
         return [a for a in rows if a["status"] == "active"]
 
     async def sub_agent_by_id(self, agent_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("sub_agents")
-        assert isinstance(rows, list)
+        rows = await self._rows("sub_agents")
         return next((a for a in rows if a["id"] == str(agent_id)), None)
 
     async def sub_agent_cards(self) -> list[dict[str, Any]]:
@@ -474,7 +475,8 @@ class RegistryCache:
 
     async def setting(self, key: str) -> Any:
         data = await self._ensure("settings")
-        assert isinstance(data, dict)
+        if not isinstance(data, dict):
+            raise TypeError(f"settings cached as {type(data).__name__}, expected dict")
         return data[key]
 
 

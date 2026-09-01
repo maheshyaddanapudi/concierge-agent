@@ -144,7 +144,7 @@ def _reserved_agent_names() -> set[str]:
 
         scan_native()
         names |= set(native_sub_agents())
-    except Exception:  # noqa: BLE001 - lint must not die on an import problem
+    except Exception:  # noqa: BLE001, S110 - lint must not die on an import problem; offline, nowhere to log
         pass
     return names
 

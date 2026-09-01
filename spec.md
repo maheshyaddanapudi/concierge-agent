@@ -481,6 +481,7 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M49 | Production-hardening foundation (`docs/research/prod_hardening/PLAN.md` M49 — measurement before fixes): the **prompt regression harness** (§15 golden sets — every prompt file has a golden set beside it, rendered the way its consumer renders it and graded by the §15 `contains` grader; placeholder drift, a dropped binding sentence, and a consumer-less prompt all fail; pytest gate + Docker build gate; the dead `answer_ui.md` it found is removed), the **load harness** (`experiments/load/`) driving the shipped API, and the **baseline captured before any fix** — read-path latency, run-table growth, concurrent chat runs, the SSE subscriber ceiling, recall by corpus size with the vector leg's query plan, ambient backlog drain, and the connection peak of each — plus ruff `BLE`/`S` enabled with every violation triaged (31 runtime asserts replaced by explicit checks, every surviving suppression justified in one line, `defusedxml` for the RSS body) | §14l-64..66; a deliberate prompt regression fails the harness; the baseline is the number M50/M54/M56 must beat |
 | M48 | The switchability rule made true (§3.7.1, from an independent pre-public audit of every gate's enforcement site): six behaviors the system performed on its own with no switch of their own get one — the four consolidation jobs (`memory_decay_enabled`, `memory_contradiction_enabled`, `memory_communities_enabled`, `memory_compaction_enabled` — the last hard-deletes, so it mattered most), the anticipation job (`ambient_anticipation_enabled` — the only feature that initiates contact unprompted), and the §15 eval surface (`evals_enabled`). Every default equals the behavior it replaces, so the promotion is byte-identical. Plus the two §3.7.1 corollary fixes: `memory_community_budget_tokens = 0` now skips the rebuild instead of silencing injection while the job kept spending tokens, and the Settings page labels the legal-but-degraded `memory_forget_enabled`-without-`embedding_model` case. Settings coverage closed to 89/89 (`memory_digest_compact_days`, `memory_community_budget_tokens` were validated and unreachable) and is now **asserted by test**, so a future key with no control fails the suite. Dead `STALL_AFTER_S` removed | §14k-61..63; byte-identity at defaults; coverage assertion is the regression guard |
 | M47 | Extraction tuner (§17.7 second consumer — the learner the M44 no-consumer note reserved): deterministic rules over machine-write tombstones (confidence-at-admission metadata) + quarantine rejections, MACHINE_SOURCES only; **kind routing** into `memory_quarantine_kinds` (≥ 50% repudiated over ≥ 5; per-kind chips in Settings clear it) and **band-local admission-floor moves** (±0.05, [0.5, 0.9], `setting:` proposals through `_apply_special`; the floor rises only when the band a bump would refuse is itself ≥ 60% repudiated — the raw-rate trigger ratchets, a harness finding); own gate `memory_extraction_learning` off\|propose\|auto default off. Evidence on the two-world harness: world A (kind-concentrated junk) learner 10 junk admissions at zero valuable-blocked vs 42–60 for every zero-loss static — no static floor separates entity junk (≤ .75) from preference (≥ .72); world B (cross-kind low-confidence junk) the floor walks 0.5→0.55→0.60 and stops at the zero-collateral point, beating the shipped default 36 vs 66 but NOT the retrospective oracle static (12) — a single-dial learner converges to its dial's oracle, it cannot beat it in-window; reported as counter-evidence, not tuned away | §14j-59..60; 17 contract tests; born dark — no live consumer until a human flips the gate |
 | M46 | Embedding backfill job (§16.2 — the promised scheduler job, built): the `MemoryEmbedding` side-table contract ("a model switch re-embeds in the background and flips") gains its worker — an advisory-locked hourly job that embeds every live row lacking a vector under the ACTIVE model key, across all three `_embed_ref` surfaces (memories active+quarantined, run digests, active plan exemplars), batched, pass-bounded, old-key rows coexisting untouched. Also repairs write-through failures. Tombstones deliberately excluded: they keep no text, so pre-switch tombstones degrade to hash+anchor matching permanently — privacy over recall, by explicit design | §14j-58; closes the stage-32 known gap; 10 contract tests |
@@ -497,7 +498,7 @@ Each milestone lands with its tests. M1–M4 are API-verifiable via curl before 
 
 Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40).
 
-Conventions: Python — ruff (lint+format), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
+Conventions: Python — ruff (lint+format; rule sets `E F I UP B SIM ASYNC BLE S` since M49 — blind excepts and bandit checks are on, every surviving `noqa: BLE001` carries a one-line justification, and `app/` has no runtime `assert`), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
 **Seed-document lint** (`python -m app.doclint`, `app/doclint.py`): the `.skill.md` (§3.3) and `.agent.md` (§3.4) formats are validated *offline* — no DB, no keys, no network — by the same rules the seed applies at boot: document parsing, `{tool:...}` mentions resolving to bound tools, tool-key hygiene, duplicate names across files, `model` as a `provider:model` reference, `model_params` against the live `ModelParams` contract (§2.1, so a typo'd key or effort value fails here), by-name skill references resolving to scanned skill files, and the full §3.5 structural DAG + form-gate validation. Errors fail; warnings flag legal-but-questionable documents (filename/name mismatch, empty description or persona, unknown frontmatter keys, uuid skill references that can only be checked at seed time). It runs three places: as a **Docker build gate** (`RUN python -m app.doclint` — a malformed document fails the image build instead of surfacing at boot as a missing skill or an agent stuck at `status='error'`), as a **pytest regression gate** over the documents this repo ships, and by hand during authoring. Seed-time validation is unchanged and remains authoritative for everything only the registry can know (skill status, dynamic records).
 
@@ -745,6 +746,30 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     every `/evals` route answers 409 naming the setting; flipping it back
     restores the surface with datasets and prior runs intact.
 
+**§14l Production-hardening foundation (M49):**
+
+64. (M49) **A prompt cannot drift silently**: `python -m app.prompts.check`
+    reports every prompt file green against its golden set; delete the
+    planner's `no_confident_match` sentence, or rename `{conditions}` in
+    the router prompt while `worker.py` still passes `conditions`, and the
+    same command exits 1 naming the prompt, the case, and the missing
+    sentence or placeholder. The Docker build runs the same check, so the
+    regression fails the image, not a request.
+65. (M49) **There is a number to beat**: `experiments/load/harness.py`
+    against the shipped stack on the fake provider captures, in one JSON
+    record with a markdown summary, read-path p50/p95, `/runs` latency as
+    the table grows 10×, concurrent chat runs to a terminal state, the
+    stream count at which a probe request first fails, recall latency by
+    corpus size with the vector leg's query plan, ambient webhook backlog
+    drain time, and the Postgres connection peak of each — every seeded
+    row removed and every touched setting restored afterwards.
+66. (M49) **Blind catches and asserts are accounted for**: `ruff check .`
+    with `BLE` and `S` in the rule set passes; `grep -rn "noqa: BLE001$"
+    app` is empty (every surviving suppression carries its reason on the
+    same line) and `app/` has no runtime `assert` — a wrong structured
+    output or a vanished row raises a named error instead of passing
+    silently under `python -O`.
+
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
 Originally deferred; the design below is now implemented as milestone M32,
@@ -778,6 +803,17 @@ answers 409 naming the setting.
   table with pass/fail chips and grader reasons) plus a launcher on the
   skill / sub agent detail drawers.
 - **Why the POC already supports this**: the factory builds arbitrary single-skill workers, snapshots freeze configs, settings hot-reload, and the trace label set carries tier/kind/entity — the eval feature is an upload parser, a batch runner, and a publisher. No schema or architecture change anticipated.
+- **Golden sets (M49)**: every prompt file in `backend/app/prompts/` has a
+  golden set beside it in `prompts/golden/<stem>.yaml` — the consumer
+  module that loads it, the render mechanism (`format` / `replace` /
+  `verbatim`), and cases of vars plus the sentences that must survive
+  rendering (`must_contain`, optionally `must_not_contain`).
+  `python -m app.prompts.check` renders each prompt exactly as its consumer
+  does and grades the result with the `contains` grader above; a renamed
+  or removed placeholder, a dropped binding sentence, or a prompt no module
+  loads fails the check. It runs as a pytest gate, by hand, and as a Docker
+  build gate — the evals machinery pointed at the thing most likely to
+  drift.
 
 ## 16. Memory Layers
 

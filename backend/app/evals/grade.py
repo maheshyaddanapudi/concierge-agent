@@ -53,7 +53,8 @@ async def grade_case(
         )
         _, model = await _extraction_model()
         out = await model.with_structured_output(EvalVerdict).ainvoke(prompt)  # type: ignore[attr-defined]
-        assert isinstance(out, EvalVerdict)
+        if not isinstance(out, EvalVerdict):
+            raise TypeError(f"expected EvalVerdict, got {type(out).__name__}")
         return {
             "status": "graded",
             "passed": out.passed,
