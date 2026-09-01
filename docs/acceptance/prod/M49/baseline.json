@@ -1,0 +1,671 @@
+{
+  "meta": {
+    "label": "baseline",
+    "captured_at": "2026-09-01T22:30:03+00:00",
+    "git_sha": "68eafb7",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "api",
+      "runs-scale",
+      "chat",
+      "sse",
+      "recall",
+      "ambient"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "baseline",
+      "out": "../docs/acceptance/prod/M49/baseline.json",
+      "scenarios": [
+        "api",
+        "runs-scale",
+        "chat",
+        "sse",
+        "recall",
+        "ambient"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": "openai:text-embedding-3-small",
+      "memory_enabled": true,
+      "ambient_enabled": false,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "api": {
+      "requests_per_endpoint": 100,
+      "concurrency": 10,
+      "endpoints": {
+        "GET /runs": {
+          "n": 100,
+          "p50_ms": 30.33,
+          "p95_ms": 191.31,
+          "p99_ms": 264.25,
+          "max_ms": 265.0,
+          "mean_ms": 56.97,
+          "errors": {},
+          "bytes": 1077
+        },
+        "GET /conversations": {
+          "n": 100,
+          "p50_ms": 38.28,
+          "p95_ms": 179.34,
+          "p99_ms": 193.41,
+          "max_ms": 194.19,
+          "mean_ms": 67.51,
+          "errors": {},
+          "bytes": 223
+        },
+        "GET /skills": {
+          "n": 100,
+          "p50_ms": 38.69,
+          "p95_ms": 181.24,
+          "p99_ms": 196.83,
+          "max_ms": 202.27,
+          "mean_ms": 52.98,
+          "errors": {},
+          "bytes": 21992
+        },
+        "GET /tools": {
+          "n": 100,
+          "p50_ms": 41.03,
+          "p95_ms": 180.86,
+          "p99_ms": 194.28,
+          "max_ms": 195.11,
+          "mean_ms": 61.82,
+          "errors": {},
+          "bytes": 25026
+        },
+        "GET /settings": {
+          "n": 100,
+          "p50_ms": 23.84,
+          "p95_ms": 176.96,
+          "p99_ms": 213.76,
+          "max_ms": 249.33,
+          "mean_ms": 49.7,
+          "errors": {},
+          "bytes": 2689
+        },
+        "GET /memories/recall": {
+          "n": 100,
+          "p50_ms": 337.37,
+          "p95_ms": 1284.48,
+          "p99_ms": 1474.07,
+          "max_ms": 2209.68,
+          "mean_ms": 483.52,
+          "errors": {},
+          "bytes": 1980
+        }
+      },
+      "connections": {
+        "peak_connections": 20,
+        "peak_active": 3,
+        "samples": 48
+      },
+      "elapsed_s": 9.6
+    },
+    "runs-scale": {
+      "levels": [
+        {
+          "loadgen_runs": 1000,
+          "total_runs": 1001,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 348.28,
+            "p95_ms": 406.12,
+            "p99_ms": 428.42,
+            "max_ms": 434.0,
+            "mean_ms": 259.78,
+            "bytes": 945863,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 343.98,
+            "p95_ms": 371.7,
+            "p99_ms": 379.69,
+            "max_ms": 381.68,
+            "mean_ms": 275.06,
+            "bytes": 19315,
+            "errors": 0
+          }
+        },
+        {
+          "loadgen_runs": 10000,
+          "total_runs": 10001,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 2190.61,
+            "p95_ms": 2563.07,
+            "p99_ms": 2563.15,
+            "max_ms": 2563.17,
+            "mean_ms": 2240.35,
+            "bytes": 9468865,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 2392.78,
+            "p95_ms": 2657.4,
+            "p99_ms": 2667.74,
+            "max_ms": 2670.32,
+            "mean_ms": 2425.87,
+            "bytes": 19415,
+            "errors": 0
+          }
+        }
+      ],
+      "elapsed_s": 78.9
+    },
+    "chat": {
+      "model": "fake:scripted",
+      "levels": [
+        {
+          "concurrency": 5,
+          "wall_s": 2.01,
+          "statuses": {
+            "completed": 5
+          },
+          "submit": {
+            "n": 5,
+            "p50_ms": 45.82,
+            "p95_ms": 79.23,
+            "p99_ms": 84.89,
+            "max_ms": 86.31,
+            "mean_ms": 52.71
+          },
+          "end_to_end_completed": {
+            "n": 5,
+            "p50_ms": 1926.29,
+            "p95_ms": 2006.73,
+            "p99_ms": 2012.37,
+            "max_ms": 2013.78,
+            "mean_ms": 1929.63
+          },
+          "throughput_runs_per_s": 2.48,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 15,
+            "peak_active": 2,
+            "samples": 10
+          }
+        },
+        {
+          "concurrency": 10,
+          "wall_s": 4.35,
+          "statuses": {
+            "completed": 10
+          },
+          "submit": {
+            "n": 10,
+            "p50_ms": 299.6,
+            "p95_ms": 368.18,
+            "p99_ms": 377.21,
+            "max_ms": 379.47,
+            "mean_ms": 301.79
+          },
+          "end_to_end_completed": {
+            "n": 10,
+            "p50_ms": 4091.47,
+            "p95_ms": 4349.01,
+            "p99_ms": 4349.23,
+            "max_ms": 4349.29,
+            "mean_ms": 4171.3
+          },
+          "throughput_runs_per_s": 2.3,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 21,
+            "peak_active": 5,
+            "samples": 22
+          }
+        },
+        {
+          "concurrency": 25,
+          "wall_s": 10.2,
+          "statuses": {
+            "completed": 25
+          },
+          "submit": {
+            "n": 25,
+            "p50_ms": 555.06,
+            "p95_ms": 1067.22,
+            "p99_ms": 1295.81,
+            "max_ms": 1357.42,
+            "mean_ms": 632.66
+          },
+          "end_to_end_completed": {
+            "n": 25,
+            "p50_ms": 9591.65,
+            "p95_ms": 9987.49,
+            "p99_ms": 10147.48,
+            "max_ms": 10197.9,
+            "mean_ms": 9006.8
+          },
+          "throughput_runs_per_s": 2.45,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 21,
+            "peak_active": 5,
+            "samples": 51
+          }
+        },
+        {
+          "concurrency": 50,
+          "wall_s": 19.11,
+          "statuses": {
+            "completed": 50
+          },
+          "submit": {
+            "n": 50,
+            "p50_ms": 777.7,
+            "p95_ms": 2120.24,
+            "p99_ms": 2386.06,
+            "max_ms": 2465.34,
+            "mean_ms": 996.8
+          },
+          "end_to_end_completed": {
+            "n": 50,
+            "p50_ms": 17642.41,
+            "p95_ms": 18821.68,
+            "p99_ms": 19016.74,
+            "max_ms": 19096.71,
+            "mean_ms": 16969.04
+          },
+          "throughput_runs_per_s": 2.62,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 21,
+            "peak_active": 3,
+            "samples": 95
+          }
+        }
+      ],
+      "elapsed_s": 43.7
+    },
+    "sse": {
+      "paused_run": {
+        "run_id": "96f7627d-3716-4b6f-b10e-94c5e06ef1f0",
+        "status": "paused_hitl",
+        "error": null
+      },
+      "chat_stream": {
+        "path": "/api/v1/chat/stream/96f7627d-3716-4b6f-b10e-94c5e06ef1f0",
+        "step": 5,
+        "max_attempted": 60,
+        "levels": [
+          {
+            "streams_attempted": 5,
+            "streams_open": 5,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 8.44,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 12,
+              "idle": 7,
+              "idle_in_transaction": 5
+            }
+          },
+          {
+            "streams_attempted": 10,
+            "streams_open": 10,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 8.84,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 17,
+              "idle": 7,
+              "idle_in_transaction": 10
+            }
+          },
+          {
+            "streams_attempted": 15,
+            "streams_open": 15,
+            "probe": {
+              "ok": 0,
+              "failed": 3,
+              "p50_ms": null,
+              "codes": [
+                -1,
+                -1,
+                -1
+              ]
+            },
+            "connections": {
+              "total": 21,
+              "idle": 6,
+              "idle_in_transaction": 15
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 10,
+        "first_failure_at_streams": 15,
+        "recovery_after_close_ms": 42.3
+      },
+      "ambient_stream": {
+        "path": "/api/v1/ambient/stream",
+        "step": 20,
+        "max_attempted": 120,
+        "levels": [
+          {
+            "streams_attempted": 20,
+            "streams_open": 20,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 6.75,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          },
+          {
+            "streams_attempted": 40,
+            "streams_open": 40,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 7.7,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          },
+          {
+            "streams_attempted": 60,
+            "streams_open": 60,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.71,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          },
+          {
+            "streams_attempted": 80,
+            "streams_open": 80,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 9.49,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          },
+          {
+            "streams_attempted": 100,
+            "streams_open": 100,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 10.93,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          },
+          {
+            "streams_attempted": 120,
+            "streams_open": 120,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 9.37,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 11,
+              "idle": 11
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 120,
+        "first_failure_at_streams": null,
+        "recovery_after_close_ms": 46.6
+      },
+      "elapsed_s": 48.8
+    },
+    "recall": {
+      "embedding_key": "fake:scripted@64",
+      "levels": [
+        {
+          "loadgen_memories": 1000,
+          "active_memories": 1003,
+          "fake_vectors": 1002,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 18.08,
+            "p95_ms": 33.53,
+            "p99_ms": 36.97,
+            "max_ms": 37.67,
+            "mean_ms": 19.8,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 44.68,
+            "p95_ms": 56.81,
+            "p99_ms": 60.47,
+            "max_ms": 60.69,
+            "mean_ms": 46.68,
+            "errors": 0
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 182.84,
+            "scans": [
+              "Seq Scan on memories",
+              "Seq Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 10000,
+          "active_memories": 10003,
+          "fake_vectors": 10002,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 42.53,
+            "p95_ms": 76.46,
+            "p99_ms": 79.34,
+            "max_ms": 80.99,
+            "mean_ms": 48.36,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 65.4,
+            "p95_ms": 105.84,
+            "p99_ms": 112.5,
+            "max_ms": 113.3,
+            "mean_ms": 69.32,
+            "errors": 0
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 1652.97,
+            "scans": [
+              "Seq Scan on memories",
+              "Seq Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 100000,
+          "active_memories": 100003,
+          "fake_vectors": 100002,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 123.11,
+            "p95_ms": 511.87,
+            "p99_ms": 516.61,
+            "max_ms": 519.52,
+            "mean_ms": 173.36,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 327.01,
+            "p95_ms": 811.32,
+            "p99_ms": 928.68,
+            "max_ms": 956.72,
+            "mean_ms": 401.39,
+            "errors": 0
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 12919.38,
+            "scans": [
+              "Seq Scan on memories",
+              "Seq Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        }
+      ],
+      "elapsed_s": 21.6
+    },
+    "ambient": {
+      "routine": "loadgen-routine-2c0139",
+      "events_fired": 40,
+      "fire": {
+        "n": 40,
+        "p50_ms": 113.78,
+        "p95_ms": 456.83,
+        "p99_ms": 472.01,
+        "max_ms": 475.41,
+        "mean_ms": 186.94,
+        "codes": {
+          "202": 40
+        }
+      },
+      "drain": {
+        "accepted": 40,
+        "drain_seconds": 62.97,
+        "events_per_second": 0.64,
+        "timed_out": false
+      },
+      "verdicts": {
+        "fired": 40
+      },
+      "runs": {
+        "statuses": {
+          "completed": 40
+        },
+        "all_terminal_after_s": 79.24
+      },
+      "connections": {
+        "peak_connections": 29,
+        "peak_active": 22,
+        "samples": 391
+      },
+      "routine_deleted": true,
+      "elapsed_s": 79.3
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 11,
+      "idle": 11
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 100040",
+    "memories": "DELETE 100000",
+    "run_steps": "DELETE 30134",
+    "runs": "DELETE 10131",
+    "conversations": "DELETE 231"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 12,
+      "idle": 12
+    },
+    "max_connections": 100
+  }
+}
