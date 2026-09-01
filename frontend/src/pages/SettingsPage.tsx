@@ -170,21 +170,107 @@ function CacheStatusPanel() {
   )
 }
 
-function IntSetting({ label, k, hint }: { label: string; k: string; hint?: string }) {
+function IntSetting({
+  label,
+  k,
+  hint,
+  min = 1,
+}: {
+  label: string
+  k: string
+  hint?: string
+  min?: number
+}) {
   const { data: settings } = useSettings()
   const patch = usePatchSettings()
   if (!settings) return null
   return (
     <Field label={label} hint={hint}>
-      <TextInput
-        type="number"
-        defaultValue={Number(settings[k])}
-        className="max-w-28"
-        onBlur={(e) => {
-          const v = Number(e.target.value)
-          if (v >= 1 && v !== Number(settings[k])) patch.mutate({ [k]: v })
-        }}
-      />
+      <div className="space-y-1">
+        <TextInput
+          type="number"
+          defaultValue={Number(settings[k])}
+          className="max-w-28"
+          onBlur={(e) => {
+            const v = Number(e.target.value)
+            // only nonsense is blocked here — spec-range checks stay server-side
+            // so an out-of-range write surfaces its 422 inline (§14e-42)
+            if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
+          }}
+        />
+        <ErrorNote error={patch.error} />
+      </div>
+    </Field>
+  )
+}
+
+// ── M40 section helpers (exported for tests) ─────────────────────
+
+/** Comma list → trimmed entries; server-side validation owns the format. */
+export const csvOut = (text: string): string[] =>
+  text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+/** One mode's channel list edited → the full §18.4 routing map to PATCH
+ * (empty list drops the mode: `{}` means in-app only). */
+export const channelRoutingOut = (
+  routing: Record<string, string[]>,
+  mode: string,
+  text: string,
+): Record<string, string[]> => {
+  const next = { ...routing }
+  const chans = csvOut(text)
+  if (chans.length) next[mode] = chans
+  else delete next[mode]
+  return next
+}
+
+function ListSetting({ label, k, hint }: { label: string; k: string; hint?: string }) {
+  const { data: settings } = useSettings()
+  const patch = usePatchSettings()
+  if (!settings) return null
+  return (
+    <Field label={label} hint={hint}>
+      <div className="space-y-1">
+        <TextInput
+          defaultValue={((settings[k] as string[]) ?? []).join(', ')}
+          onBlur={(e) => patch.mutate({ [k]: csvOut(e.target.value) })}
+        />
+        <ErrorNote error={patch.error} />
+      </div>
+    </Field>
+  )
+}
+
+function ChannelRouting() {
+  const { data: settings } = useSettings()
+  const patch = usePatchSettings()
+  if (!settings) return null
+  const routing = (settings.ambient_channels as Record<string, string[]>) ?? {}
+  return (
+    <Field
+      label="Delivery channels (§18.4)"
+      hint="per-mode routing — in_app always renders; add email / webhook (env-configured). Empty everywhere = in-app only"
+    >
+      <div className="grid grid-cols-3 gap-2">
+        {(['interrupt', 'notify', 'digest'] as const).map((mode) => (
+          <div key={mode}>
+            <div className="mb-1 font-mono text-[9px] uppercase tracking-widest text-slate-600">
+              {mode}
+            </div>
+            <TextInput
+              placeholder="e.g. in_app, email"
+              defaultValue={(routing[mode] ?? []).join(', ')}
+              onBlur={(e) =>
+                patch.mutate({ ambient_channels: channelRoutingOut(routing, mode, e.target.value) })
+              }
+            />
+          </div>
+        ))}
+      </div>
+      <ErrorNote error={patch.error} />
     </Field>
   )
 }
@@ -318,6 +404,17 @@ export function SettingsPage() {
             k="direct_exposure_cap_warning"
             hint="Tools/Skills pages warn above this"
           />
+          <IntSetting
+            label="Overlap-guard threshold (%)"
+            k="overlap_threshold_percent"
+            min={0}
+            hint="saves at or above this overlap raise the confirm dialog — 100 effectively disables it, 0 flags every save (§4, M40)"
+          />
+          <IntSetting
+            label="Agentic recursion limit"
+            k="agentic_recursion_limit"
+            hint="LangGraph recursion budget for the agentic loop (10–500); the model-call limit stays derived from max tool iterations"
+          />
         </div>
       </Section>
 
@@ -427,10 +524,132 @@ export function SettingsPage() {
             k="memory_extraction_enabled"
             hint="post-run fact/preference extraction through the admission gate"
           />
+          {/* M43 §8.7: the extraction role's model, reachable at last — the
+              settings API has validated this key since the memory milestones */}
+          <ModelSelect
+            label="Extraction model"
+            refKey="memory_extraction_model"
+            paramsKey="memory_extraction_model_params"
+            allowInherit
+          />
+          <BoolSetting
+            label="Durable forgetting"
+            k="memory_forget_enabled"
+            hint="§16.1 — deletes become Forget (content-free tombstone, re-admission suppressed, undo via the Forgotten list) with Erase as the explicit no-trace verb. Off = deletes are physical and the system may re-learn a deleted fact"
+          />
+          {/* M48 §3.7.1 corollary: this configuration is legal but degraded,
+              and used to be silently so — say it at the control */}
+          {Boolean(settings.memory_forget_enabled) && !settings.embedding_model && (
+            <p className="-mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              Forgetting is on, but no embedding model is configured — suppression falls back to
+              exact-text matching. A paraphrase of a forgotten fact will be re-learned. Set an
+              embedding model above for semantic suppression.
+            </p>
+          )}
+          <Field
+            label="Forget similarity (0.5–1)"
+            hint="semantic suppression threshold — paraphrases of a forgotten fact at or above this cosine similarity are refused; hash-only matching when no embedding model is set"
+          >
+            <div className="space-y-1">
+              <TextInput
+                defaultValue={String(settings.memory_forget_similarity ?? 0.85)}
+                className="max-w-28"
+                onBlur={(e) => patch.mutate({ memory_forget_similarity: Number(e.target.value) })}
+              />
+              <ErrorNote error={patch.error} />
+            </div>
+          </Field>
+          <Field
+            label="Admission floor (0–0.9)"
+            hint="§16.2 — minimum extraction confidence to admit a machine write; the M47 learner moves this within [0.5, 0.9] when enabled"
+          >
+            <div className="space-y-1">
+              <TextInput
+                defaultValue={String(settings.memory_admission_min_confidence ?? 0.5)}
+                className="max-w-28"
+                onBlur={(e) =>
+                  patch.mutate({ memory_admission_min_confidence: Number(e.target.value) })
+                }
+              />
+              <ErrorNote error={patch.error} />
+            </div>
+          </Field>
+          <Field
+            label="Extraction learning"
+            hint="M47 §17.7: the tombstone-informed tuner — routes chronically forgotten kinds through review and walks the admission floor; propose queues changes for approval, auto applies within clamps"
+          >
+            <Select
+              value={String(settings.memory_extraction_learning ?? 'off')}
+              onChange={(e) => patch.mutate({ memory_extraction_learning: e.target.value })}
+              className="max-w-36"
+            >
+              {['off', 'propose', 'auto'].map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </Select>
+          </Field>
+          {Array.isArray(settings.memory_quarantine_kinds) &&
+            settings.memory_quarantine_kinds.length > 0 && (
+              <Field
+                label="Kinds under review"
+                hint="machine writes of these kinds land in the review queue instead of activating — clear a kind to trust it again"
+              >
+                <div className="flex flex-wrap gap-2">
+                  {(settings.memory_quarantine_kinds as string[]).map((k) => (
+                    <button
+                      key={k}
+                      className="rounded border border-slate-800/70 px-2 py-0.5 text-xs hover:opacity-70"
+                      title="remove this kind from review routing"
+                      onClick={() =>
+                        patch.mutate({
+                          memory_quarantine_kinds: (
+                            settings.memory_quarantine_kinds as string[]
+                          ).filter((x) => x !== k),
+                        })
+                      }
+                    >
+                      {k} ×
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            )}
           <BoolSetting
             label="Reflection (L4)"
             k="memory_reflection_enabled"
             hint="idle-time synthesis of higher-order memories (evidence-cited)"
+          />
+          {/* M48 §3.7.1: the consolidation jobs run on their own schedule,
+              so each answers to its own switch — they differ in consequence */}
+          <BoolSetting
+            label="Decay sweep"
+            k="memory_decay_enabled"
+            hint="expires unpinned memories whose access-weighted importance falls below the floor; pinned rows are immune"
+          />
+          <BoolSetting
+            label="Contradiction sweep"
+            k="memory_contradiction_enabled"
+            hint="quarantines the newer of two active memories that claim the same fact identity"
+          />
+          <BoolSetting
+            label="Community rebuild"
+            k="memory_communities_enabled"
+            hint="§18.6 — groups related memories and summarizes each group with the extraction model; costs one model call per changed community"
+          />
+          <BoolSetting
+            label="Digest compaction"
+            k="memory_compaction_enabled"
+            hint="folds old run digests into per-conversation period digests and HARD-DELETES the originals — the one consolidation job with an irreversible effect"
+          />
+          <IntSetting
+            label="Compact digests after (days)"
+            k="memory_digest_compact_days"
+            hint="run digests older than this fold into a period digest"
+          />
+          <IntSetting
+            label="Community budget (tokens)"
+            k="memory_community_budget_tokens"
+            hint="budget for the injected community-summary block; 0 turns communities off entirely — no injection and no rebuild"
           />
           <BoolSetting
             label="Procedural learning (L3)"
@@ -485,6 +704,209 @@ export function SettingsPage() {
             {busy === 'refresh-all' ? 'Refreshing…' : 'Refresh all tools'}
           </Button>
         </div>
+      </Section>
+
+      <Section title="Ambient (§17)">
+        <BoolSetting
+          label="Ambient mode"
+          k="ambient_enabled"
+          hint="master switch — the Ambient page appears in the nav while on; off is byte-identical"
+        />
+        {Boolean(settings.ambient_enabled) && (
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              <IntSetting
+                label="Tick interval (s)"
+                k="ambient_tick_interval_s"
+                hint="scheduler cadence (min 15) — evaluators, drain heartbeat, and the parked-task poller all ride it"
+              />
+              <IntSetting
+                label="Stall reaper window (s)"
+                k="run_stall_after_s"
+                hint="an ambient run silent longer than this is marked stalled (min 60, §17.4)"
+              />
+              <IntSetting label="Idle minutes" k="ambient_idle_minutes" />
+              <IntSetting label="Max routines" k="ambient_max_routines" />
+              <IntSetting label="Runs per day" k="ambient_runs_per_day" />
+              <IntSetting label="Routine events / hour" k="ambient_routine_events_per_hour" />
+              <IntSetting
+                label="Wakeups / routine / day"
+                k="ambient_wakeups_per_routine_per_day"
+              />
+              <IntSetting label="HITL timeout (h)" k="ambient_hitl_timeout_h" />
+              <IntSetting
+                label="Notification budget / day"
+                k="ambient_notification_budget_per_day"
+              />
+              <IntSetting label="Escalation budget / day" k="ambient_escalation_budget_per_day" />
+              <IntSetting
+                label="Interrupt threshold"
+                k="ambient_interrupt_threshold"
+                hint="urgency at or above this may break quiet hours"
+              />
+              {/* M48 §3.7.1: the only feature that starts a conversation on
+                  its own, so silence is a setting rather than only an outcome */}
+              <BoolSetting
+                label="Anticipation briefings"
+                k="ambient_anticipation_enabled"
+                hint="composes a short briefing of likely next asks when you have been idle. The only feature that contacts you without being asked — off means it never runs, regardless of how useful it has been"
+              />
+              <Field
+                label="Learning mode"
+                hint="§17.7 — auto applies policy tweaks itself, propose queues them for approval"
+              >
+                <Select
+                  value={String(settings.ambient_learning_mode)}
+                  onChange={(e) => patch.mutate({ ambient_learning_mode: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'auto', 'propose'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+              </Field>
+              <BoolSetting
+                label="Precision auto-downgrade"
+                k="ambient_precision_rule_enabled"
+                hint="§17.3 static rule (learning off): your ✕ clicks train the tiering — a chronically dismissed category drops one tier. Off = feedback is still captured, but never re-tiers a category"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <ListSetting
+                label="Digest times"
+                k="ambient_digest_times"
+                hint="comma-separated HH:MM — when tier-2 digests flush"
+              />
+              <ListSetting
+                label="Quiet hours"
+                k="ambient_quiet_hours"
+                hint="HH:MM start, HH:MM end — non-urgent delivery holds in between"
+              />
+            </div>
+            <ChannelRouting />
+            <Field
+              label="Salience (§17.5)"
+              hint="re-judges what an unseen alert actually SAID: lead the next digest, remember the fact, or drop it on the record. Never re-interrupts and never overrides quiet hours"
+            >
+              <div className="flex items-end gap-3">
+                <Select
+                  value={String(settings.ambient_salience_mode)}
+                  onChange={(e) => patch.mutate({ ambient_salience_mode: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'propose', 'auto'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+                <div className="w-40">
+                  <IntSetting
+                    label="Min urgency"
+                    k="ambient_salience_min_urgency"
+                    hint="prefilter floor (1-5) before a model is called; a recurring alert clears it anyway"
+                  />
+                </div>
+              </div>
+              <Field
+                label="Salience learning"
+                hint="FLE: the tuner over your Do it / Leave it decisions — proposes category mutes and floor moves; propose queues them for approval, auto applies within clamps"
+              >
+                <Select
+                  value={String(settings.ambient_salience_learning ?? 'off')}
+                  onChange={(e) => patch.mutate({ ambient_salience_learning: e.target.value })}
+                  className="max-w-36"
+                >
+                  {['off', 'propose', 'auto'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </Select>
+              </Field>
+              {/* M43 §8.7: every role model has a picker in the section that
+                  owns it — this one was validated by the API since M42 with
+                  no UI to reach it */}
+              <div className="mt-3">
+                <ModelSelect
+                  label="Salience judge model"
+                  refKey="ambient_salience_model"
+                  paramsKey="ambient_salience_model_params"
+                  allowInherit
+                />
+              </div>
+            </Field>
+            <Field
+              label="Pursuit (§17.5)"
+              hint="when the external channels above actually fire — away = only when the in-app toast reached nobody; always = whenever routed (pre-M41); off = in-app only. Never overrides quiet hours, tiers, or the budget"
+            >
+              <Select
+                value={String(settings.ambient_pursuit)}
+                onChange={(e) => patch.mutate({ ambient_pursuit: e.target.value })}
+                className="max-w-36"
+              >
+                {['off', 'away', 'always'].map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
+              </Select>
+            </Field>
+          </>
+        )}
+      </Section>
+
+      <Section title="A2A — remote agents (§19)">
+        <BoolSetting
+          label="A2A"
+          k="a2a_enabled"
+          hint="master switch — the Remote Agents page appears in the nav while on; off is byte-identical"
+        />
+        {Boolean(settings.a2a_enabled) && (
+          <div className="grid grid-cols-3 gap-4">
+            <IntSetting label="Card refresh interval (s)" k="a2a_card_refresh_interval_s" />
+            <IntSetting
+              label="Task timeout (s)"
+              k="a2a_task_timeout_s"
+              hint="in-run wait budget before park-or-error (§19.5)"
+            />
+            <IntSetting
+              label="Poll interval (s)"
+              k="a2a_poll_interval_s"
+              hint="parked-task recheck cadence — tick-bounded, effective max(tick, interval)"
+            />
+            <IntSetting
+              label="Max parked"
+              k="a2a_max_parked"
+              min={0}
+              hint="0 disables parking — budget expiry becomes a plain tool error"
+            />
+            <IntSetting
+              label="HTTP timeout (s)"
+              k="a2a_http_timeout_s"
+              hint="shared A2A client — applies on the manager's next client build"
+            />
+            <IntSetting
+              label="Fence cap (chars)"
+              k="a2a_fence_max_chars"
+              hint="max chars of fenced remote output reaching model context (min 500, §19.5)"
+            />
+          </div>
+        )}
+      </Section>
+
+      <Section title="API guardrails">
+        <div className="grid grid-cols-2 gap-4">
+          <IntSetting
+            label="Rate-limit burst"
+            k="rate_limit_burst"
+            hint="§18.8 token-bucket size per user — enforced while auth is on"
+          />
+          <IntSetting
+            label="Rate-limit refill (/s)"
+            k="rate_limit_per_s"
+            hint="tokens restored per second per user"
+          />
+        </div>
+        <BoolSetting
+          label="Evals surface"
+          k="evals_enabled"
+          hint="§15 — dataset upload and graded batch runs on skill and sub-agent pages. Nothing runs on its own; off removes the routes entirely, leaving datasets and past results intact for when it is turned back on"
+        />
       </Section>
 
       <Section title="Observability">

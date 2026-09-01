@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { useInvalidate, useSettings } from '../api/hooks'
 import {
   Button,
   Chip,
+  cx,
   Drawer,
   EmptyState,
   Field,
@@ -60,7 +61,7 @@ interface WatchRow {
   created_at: string | null
 }
 
-interface DeliveryRow {
+export interface DeliveryRow {
   id: string
   run_id: string | null
   category: string
@@ -72,6 +73,16 @@ interface DeliveryRow {
   delivered_at: string | null
   superseded_by: string | null
   feedback: string | null
+  seen_at?: string | null
+  salience?: {
+    verdict: string
+    reason: string
+    confidence: number
+    applied: boolean
+    mode?: string | null
+    decision?: string | null // M43: applied | declined | undone
+    decided_by?: string | null // 'user' or 'system' (auto mode)
+  } | null
   reward: number | null
   created_at: string | null
 }
@@ -808,9 +819,119 @@ function FeedbackButtons({ row, onDone }: { row: DeliveryRow; onDone: () => void
   )
 }
 
-function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
+// M43 §8.9: the card leads with the CONSEQUENCE, never the mechanism —
+// "Worth your attention" is what the verdict means to a person; "escalate"
+// is what it means to the code. The mechanism stays available under
+// "why this?", one click away, never omitted.
+const CONSEQUENCE: Record<string, string> = {
+  escalate: 'Worth your attention',
+  retain: 'Worth remembering',
+  drop: 'Looks like noise',
+}
+const PROPOSAL: Record<string, string> = {
+  escalate: 'Lead the next digest with this.',
+  retain: 'Save what this says to memory.',
+  drop: 'Dismiss it.',
+}
+const APPLIED: Record<string, string> = {
+  escalate: 'Leading the next digest.',
+  retain: 'Saved to memory.',
+  drop: 'Dismissed.',
+}
+
+export function SalienceBlock({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
+  const s = row.salience
+  const [why, setWhy] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (!s) return null
+  const decision = s.decision ?? null
+  const act = async (action: 'apply' | 'decline' | 'undo') => {
+    setBusy(true)
+    try {
+      await api.post(`/deliveries/${row.id}/salience/${action}`)
+      setError(null)
+      onDone()
+    } catch (e) {
+      // a refusal is information, not a failure to hide — an escalation the
+      // digest already carried genuinely cannot be taken back
+      setError(e instanceof ApiError ? e.detail : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <div className="rounded-lg border border-slate-800 bg-void-950/50 px-4 py-3">
+    <div
+      data-testid="salience-verdict"
+      className="mt-2 rounded-md border border-slate-800 bg-void-900/60 px-3 py-2"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-200">{CONSEQUENCE[s.verdict] ?? s.verdict}</span>
+        <span className="text-[11px] text-slate-500">
+          {decision === 'declined'
+            ? 'Left as-is.'
+            : decision === 'undone'
+              ? 'Undone.'
+              : s.applied
+                ? APPLIED[s.verdict]
+                : PROPOSAL[s.verdict]}
+        </span>
+        <span className="ml-auto flex items-center gap-1">
+          {!decision && !s.applied && (
+            <>
+              <Button variant="secondary" disabled={busy} onClick={() => void act('apply')}>
+                Do it
+              </Button>
+              <Button variant="ghost" disabled={busy} onClick={() => void act('decline')}>
+                Leave it
+              </Button>
+            </>
+          )}
+          {s.applied && decision !== 'undone' && (
+            <Button variant="ghost" disabled={busy} onClick={() => void act('undo')}>
+              Undo
+            </Button>
+          )}
+          <Button variant="ghost" onClick={() => setWhy((v) => !v)}>
+            why this?
+          </Button>
+        </span>
+      </div>
+      {error && <div className="mt-1.5 text-[11px] text-rose-300">{error}</div>}
+      {why && (
+        <div
+          data-testid="salience-why"
+          className="mt-2 border-t border-slate-800 pt-2 font-mono text-[10px] text-slate-500"
+        >
+          A model judged this delivery after it went unseen — verdict{' '}
+          <span className="text-accent-300">{s.verdict}</span>, confidence{' '}
+          {s.confidence.toFixed(2)}, mode {s.mode ?? '—'}
+          {decision ? ` · ${decision} by ${s.decided_by ?? 'user'}` : ''}
+          <div className="mt-1 text-slate-400">{s.reason}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void }) {
+  // M42 §18.4: opening an item stamps seen_at — attention becomes a fact.
+  // Only delivered items can be "seen"; pending ones are not yet news.
+  const unseen = Boolean(row.delivered_at) && !row.seen_at
+  const markSeen = async () => {
+    if (!unseen) return
+    await api.post(`/deliveries/${row.id}/seen`).catch(() => {})
+    onDone()
+  }
+  return (
+    <div
+      data-testid={unseen ? 'delivery-unseen' : 'delivery-seen'}
+      onMouseEnter={() => void markSeen()}
+      className={cx(
+        'rounded-lg border px-4 py-3',
+        unseen ? 'border-amber-500/40 bg-amber-500/[0.04]' : 'border-slate-800 bg-void-950/50',
+      )}
+    >
       <div className="flex items-center gap-2">
         <TierBadge tier={row.tier} />
         <Chip>{row.category}</Chip>
@@ -826,6 +947,7 @@ function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void })
       {row.body && (
         <div className="mt-1 whitespace-pre-wrap text-xs text-slate-400">{row.body.slice(0, 600)}</div>
       )}
+      <SalienceBlock row={row} onDone={onDone} />
     </div>
   )
 }
@@ -996,6 +1118,11 @@ function LedgerTab() {
     await api.post(`/ambient/policies/${id}/approve`)
     invalidate('ambient-precision', 'ambient-policies')
   }
+  const reject = async (id: string) => {
+    // M44 §17.7: captured, never applied — the proposal stops sitting pending
+    await api.post(`/ambient/policies/${id}/reject`)
+    invalidate('ambient-precision', 'ambient-policies')
+  }
 
   return (
     <div className="space-y-6">
@@ -1013,6 +1140,9 @@ function LedgerTab() {
                 <Chip>{p.category}</Chip>
                 <span className="flex-1 text-xs text-slate-300">{p.reason}</span>
                 <Button onClick={() => void approve(p.id)}>Approve</Button>
+                <Button variant="ghost" onClick={() => void reject(p.id)}>
+                  Reject
+                </Button>
               </div>
             ))}
           </div>

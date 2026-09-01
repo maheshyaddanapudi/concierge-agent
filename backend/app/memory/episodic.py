@@ -169,10 +169,16 @@ async def compact_digests(now: datetime | None = None) -> int:
     `memory_digest_compact_days` into one `period` digest per conversation
     (merging into the existing period row when one exists), then hard-delete
     the folded rows and their embeddings. Keeps the episodic store
-    O(conversations), not O(runs). Returns the number of digests folded."""
+    O(conversations), not O(runs). Returns the number of digests folded.
+    Gated in-function (M48 §3.7.1) — this is the one consolidation job
+    with an irreversible effect, so no call path may reach the delete
+    while the switch is off."""
+    from app.memory.lifecycle import JOB_COMPACT, JOB_GATES, gate_open
     from app.memory.store import _embed_ref
     from app.registry_cache import get_cache
 
+    if not await gate_open(JOB_GATES[JOB_COMPACT]):
+        return 0
     days = int(await get_cache().setting("memory_digest_compact_days"))
     cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
     folded = 0
@@ -261,7 +267,11 @@ async def recall_digests(
         return []
     from app.memory.rank import or_tsquery
 
-    params: dict[str, Any] = {"q": or_tsquery(query), "n": _LEG_LIMIT, "excl": exclude_conversation_id}
+    params: dict[str, Any] = {
+        "q": or_tsquery(query),
+        "n": _LEG_LIMIT,
+        "excl": exclude_conversation_id,
+    }
     excl = "AND (CAST(:excl AS uuid) IS NULL OR d.conversation_id != CAST(:excl AS uuid))"
 
     async with get_session_factory()() as session:

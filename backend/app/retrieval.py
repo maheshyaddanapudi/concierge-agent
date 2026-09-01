@@ -155,9 +155,7 @@ async def _query_vector(query: str) -> list[float] | None:
     return vec
 
 
-def apply_ambient_allowlist(
-    records: list[dict[str, Any]], *, kind: str
-) -> list[dict[str, Any]]:
+def apply_ambient_allowlist(records: list[dict[str, Any]], *, kind: str) -> list[dict[str, Any]]:
     """Narrowed registry projection for ambient runs (spec §17.4): a routine
     with an allowlist sees only the named entries of each mentioned kind —
     by id, name, or tool_key. Applied BEFORE ranking and regardless of the

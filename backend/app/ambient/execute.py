@@ -36,7 +36,6 @@ DEFAULT_BUDGETS: dict[str, Any] = {
     "wall_clock_s": 900,
     "tokens_without_progress": 30_000,
 }
-STALL_AFTER_S = 300  # H3: 5 min = 5× the 60s tick cadence
 _TERMINAL = {"completed", "failed", "cancelled", "stalled"}
 
 
@@ -385,12 +384,17 @@ async def execute_fired_event(event_id: UUID, poll_s: float = 15.0) -> UUID | No
         return None
 
 
-async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int = STALL_AFTER_S) -> int:
+async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | None = None) -> int:
     """H3 reaper: ambient runs whose heartbeat went silent are marked
     stalled, their task (if any) cancelled, and the owning routine paused
-    with a visible reason (spec §17.4). Returns runs reaped."""
+    with a visible reason (spec §17.4). Returns runs reaped. The window is
+    the live `run_stall_after_s` setting (M40) unless a test passes one."""
     from app.orchestrator.runner import RUNNING_TASKS
 
+    if stall_after_s is None:
+        from app.registry_cache import get_cache
+
+        stall_after_s = max(int(await get_cache().setting("run_stall_after_s")), 60)
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(seconds=stall_after_s)
     async with get_session_factory()() as session:

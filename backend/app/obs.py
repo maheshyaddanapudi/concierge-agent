@@ -62,15 +62,17 @@ MEMORY_INJECTED_TOKENS = Histogram(
 MEMORY_RECALL_SECONDS = Histogram("concierge_memory_recall_seconds", "Memory recall latency")
 # ambient mode (spec §17.6)
 AMBIENT_OPS = Counter("concierge_ambient_ops_total", "Ambient operations", ["kind", "status"])
+# M44: humans saving past the §4 overlap warning — capture-only telemetry
+OVERLAP_OVERRIDES = Counter(
+    "concierge_overlap_overrides_total", "Overlap-guard overrides", ["draft_type"]
+)
 A2A_OPS = Counter("concierge_a2a_ops_total", "A2A operations (spec §19)", ["kind", "status"])
 # §18.1: real token cost of tier-2 significance judgments
 AMBIENT_JUDGE_TOKENS = Counter(
     "concierge_ambient_judge_tokens_total", "Ambient judge token usage", ["direction"]
 )
 # §18.9: 1 while this replica holds the ambient-tick leader lease
-AMBIENT_LEADER = Gauge(
-    "concierge_ambient_leader", "1 when this replica leads the ambient tick"
-)
+AMBIENT_LEADER = Gauge("concierge_ambient_leader", "1 when this replica leads the ambient tick")
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

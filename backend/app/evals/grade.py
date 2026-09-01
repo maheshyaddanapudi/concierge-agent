@@ -38,9 +38,7 @@ async def grade_case(
             "status": "graded",
             "passed": passed,
             "score": 1.0 if passed else 0.0,
-            "reason": (
-                "expected substring present" if passed else "expected substring not found"
-            ),
+            "reason": ("expected substring present" if passed else "expected substring not found"),
         }
     # llm_judge
     try:

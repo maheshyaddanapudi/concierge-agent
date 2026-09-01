@@ -390,3 +390,41 @@ async def test_delivery_api_inbox_and_feedback(seeded_client: Any) -> None:
     assert resp.json()["reward"] is not None
     bad = await seeded_client.post(f"/api/v1/deliveries/{d.id}/feedback", json={"feedback": "meh"})
     assert bad.status_code == 422
+
+
+# ── M43c: the precision rule is a gated feedback consumer (§17.3/§17.7) ──
+#
+# Capture is always-on; consumption is switchable. With the gate off, a
+# dismissal is still recorded (feedback + reward on the row) but the
+# category never re-tiers behind the user's back.
+
+
+async def test_precision_rule_gate_off_captures_without_retier(client: Any) -> None:
+    await _enable(ambient_precision_rule_enabled=False)
+    last = None
+    for i in range(5):
+        d = await add_delivery(category="gated", tier=1, urgency=3, title=f"item {i}")
+        last = await record_feedback(d.id, "dismissed")
+    # capture survived — the raw material for metrics and future learners
+    assert last is not None and last.feedback == "dismissed" and last.reward is not None
+    # …but the consumer never fired: no override, no ledgered policy row
+    assert await current_tier_override("gated") is None
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(AmbientPolicy).where(AmbientPolicy.category == "gated")
+                )
+            ).scalars()
+        )
+    assert rows == []
+    await _enable(ambient_precision_rule_enabled=True)  # restore the default
+
+
+async def test_precision_rule_gate_default_is_byte_identical(client: Any) -> None:
+    """The key defaults to true — the pre-M43c downgrade behavior unchanged."""
+    await _enable()
+    for i in range(5):
+        d = await add_delivery(category="ungated", tier=1, urgency=3, title=f"item {i}")
+        await record_feedback(d.id, "dismissed")
+    assert await current_tier_override("ungated") == 2

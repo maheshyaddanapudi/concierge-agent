@@ -148,7 +148,7 @@ async def check_skill_overlap(
         f"bound tools: {', '.join(tool_keys) or '(none)'}"
     )
     verdict = await _judge("skill", draft, await _skill_candidates(exclude_id))
-    return _to_out(verdict)
+    return _to_out(verdict, await _threshold())
 
 
 async def check_sub_agent_overlap(
@@ -163,13 +163,23 @@ async def check_sub_agent_overlap(
         f"workflow skills: {', '.join(skill_names) or '(none)'}"
     )
     verdict = await _judge("sub agent", draft, await _sub_agent_candidates(exclude_id))
-    return _to_out(verdict)
+    return _to_out(verdict, await _threshold())
 
 
-def _to_out(verdict: OverlapVerdict) -> OverlapCheckOut:
+async def _threshold() -> int:
+    """M40: the gate is the live `overlap_threshold_percent` setting."""
+    from app.registry_cache import get_cache
+
+    try:
+        return max(0, min(int(await get_cache().setting("overlap_threshold_percent")), 100))
+    except Exception:  # noqa: BLE001 — the guard must never block saves
+        return OVERLAP_THRESHOLD_PERCENT
+
+
+def _to_out(verdict: OverlapVerdict, threshold: int = OVERLAP_THRESHOLD_PERCENT) -> OverlapCheckOut:
     return OverlapCheckOut(
-        overlap=verdict.overlap_percent >= OVERLAP_THRESHOLD_PERCENT,
-        threshold=OVERLAP_THRESHOLD_PERCENT,
+        overlap=verdict.overlap_percent >= threshold,
+        threshold=threshold,
         overlap_percent=verdict.overlap_percent,
         match_type=verdict.match_type,
         match_id=verdict.match_id,

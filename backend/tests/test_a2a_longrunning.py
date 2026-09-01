@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from app.a2a.auth import clear_token_cache
 from app.a2a.manager import A2AManager, set_manager
-from app.a2a.poller import poll_parked_tasks
+from app.a2a.poller import poll_parked_tasks, reset_poll_watermark
 from app.db import get_session_factory
 from app.llm import fake as fake_llm
 from app.models import A2ATask, Delivery, Run
@@ -47,6 +47,7 @@ async def a2a_manager() -> AsyncIterator[A2AManager]:
     manager = A2AManager()
     set_manager(manager)
     clear_token_cache()
+    reset_poll_watermark()
     yield manager
     await manager.stop()
     set_manager(None)
@@ -83,7 +84,10 @@ async def setup_agentic_tool(
     client: AsyncClient, stub: StubA2AServer, *, timeout_s: int = 1
 ) -> tuple[str, str]:
     resp = await client.patch(
-        f"{API}/settings", json={"a2a_enabled": True, "a2a_task_timeout_s": timeout_s}
+        f"{API}/settings",
+        # interval 1: these tests drive the poller directly with sub-minute
+        # sleeps — the M40 watermark must not throttle them
+        json={"a2a_enabled": True, "a2a_task_timeout_s": timeout_s, "a2a_poll_interval_s": 1},
     )
     assert resp.status_code == 200, resp.text
     resp = await client.post(f"{API}/remote-agents", json={"card_url": stub.card_url})
@@ -188,7 +192,9 @@ async def test_parked_input_required_delivers_question_then_drawer_reply(
     assert "needs your input" in deliveries[0].title
     assert "Which dataset" in (deliveries[0].body or "")
 
-    # a second poller pass leaves input-required rows to the drawer
+    # a second poller pass leaves input-required rows to the drawer —
+    # watermark reset so this proves drawer semantics, not throttling
+    reset_poll_watermark()
     assert await poll_parked_tasks() == 0
 
     # reply from the task drawer → the stub completes → result delivered
@@ -258,3 +264,34 @@ async def test_poller_inert_while_a2a_dark(
     rows = await task_rows()
     assert rows[0].state == "parked"
     assert not await a2a_deliveries()
+
+
+async def test_poller_honors_a2a_poll_interval(
+    client: AsyncClient, a2a_manager: A2AManager, stub: StubA2AServer
+) -> None:
+    """M40: `a2a_poll_interval_s` is tick-bounded — a pass within the
+    interval no-ops even with a settled task waiting; a live settings
+    change to a shorter interval applies immediately."""
+    _agent_id, tool_name = await setup_agentic_tool(client, stub)
+    await park_slow_task(client, stub, tool_name, "slow:1")
+    await asyncio.sleep(1.2)  # remote finished; row still parked
+
+    # a long interval throttles the SECOND pass even though work waits
+    resp = await client.patch(f"{API}/settings", json={"a2a_poll_interval_s": 3600})
+    assert resp.status_code == 200, resp.text
+    reset_poll_watermark()
+    assert await poll_parked_tasks() == 1  # first pass after reset runs
+
+    tool_call(tool_name, "slow:1.5")
+    fake_llm.push_ai("Second task parked; done for now.")
+    run_id = await send_chat(client, "another long remote job")
+    run = await wait_run(client, run_id, {"completed", "failed"})
+    assert run["status"] == "completed", run["error"]
+    await asyncio.sleep(1.7)
+    assert await poll_parked_tasks() == 0  # throttled — interval not elapsed
+
+    # shortening the interval applies live, no restart
+    resp = await client.patch(f"{API}/settings", json={"a2a_poll_interval_s": 1})
+    assert resp.status_code == 200, resp.text
+    await asyncio.sleep(1.1)
+    assert await poll_parked_tasks() == 1

@@ -95,9 +95,7 @@ async def emit_event(
                 )
             ).scalar_one()
             if recent >= RULE_KILL_SWITCH_PER_HOUR:
-                raise ChainGuardError(
-                    f"kill switch: {recent} events for routine in the last hour"
-                )
+                raise ChainGuardError(f"kill switch: {recent} events for routine in the last hour")
         event = AmbientEvent(
             kind=kind,
             source=source,

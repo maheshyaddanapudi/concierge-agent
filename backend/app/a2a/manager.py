@@ -93,6 +93,19 @@ class A2AManager:
 
     async def start(self) -> None:
         """Refresh every persisted agent (when a2a is on) + refresh loop."""
+        # M40: `a2a_http_timeout_s` is applied on the manager's next client
+        # build (this start) — __init__ keeps the code default for tests
+        # that never start the manager
+        try:
+            from app.registry_cache import get_cache
+
+            timeout_s = max(float(await get_cache().setting("a2a_http_timeout_s")), 1.0)
+        except Exception:  # noqa: BLE001 — settings hiccup keeps the default client
+            timeout_s = CARD_FETCH_TIMEOUT_S
+        if timeout_s != CARD_FETCH_TIMEOUT_S:
+            old = self._http
+            self._http = httpx.AsyncClient(timeout=timeout_s)
+            await old.aclose()
         if await self._enabled():
             async with get_session_factory()() as db:
                 agent_ids = list(

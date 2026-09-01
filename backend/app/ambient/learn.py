@@ -124,6 +124,34 @@ async def approve_proposal(policy_id: UUID) -> AmbientPolicy | None:
     )
 
 
+async def reject_proposal(policy_id: UUID) -> AmbientPolicy | None:
+    """M44 §17.7: explicitly reject a queued proposal — capture-only. The
+    row is re-marked source='learner_rejected' (still inert everywhere the
+    ledger computes effective policy) instead of sitting pending forever;
+    a rejected proposal is itself feedback about the learner."""
+    from datetime import UTC, datetime
+
+    async with get_session_factory()() as session:
+        row = await session.get(AmbientPolicy, policy_id)
+        if row is None or row.source != "learner_proposal":
+            return None
+        row.source = "learner_rejected"
+        row.reason = f"rejected {datetime.now(UTC).isoformat()}: {row.reason}"[:2000]
+        await session.commit()
+        await session.refresh(row)
+    from app import obs
+
+    obs.AMBIENT_OPS.labels(kind="deliver", status="policy_rejected").inc()
+    logger.info(
+        "ambient_proposal_rejected",
+        tier="ambient",
+        kind="deliver",
+        policy_id=str(policy_id),
+        category=row.category,
+    )
+    return row
+
+
 def _mean_reward(rows: list[Delivery]) -> float | None:
     rewards = [d.reward for d in rows if d.reward is not None]
     if not rewards:
@@ -183,9 +211,7 @@ async def _learn_retiers(mode: str) -> int:
                     row[0]
                     for row in (
                         await session.execute(
-                            select(Delivery.user_id)
-                            .where(Delivery.feedback.isnot(None))
-                            .distinct()
+                            select(Delivery.user_id).where(Delivery.feedback.isnot(None)).distinct()
                         )
                     ).all()
                 },
@@ -365,7 +391,22 @@ async def _apply_special(category: str, reason: str) -> None:
     """Apply an approved non-tier proposal (settings / intent thresholds)."""
     from app.settings_store import update_settings
 
-    if category == "setting:ambient_digest_times" and "proposed=" in reason:
+    if category == "setting:ambient_salience_min_urgency" and "proposed=" in reason:
+        value = int(reason.rsplit("proposed=", 1)[1].split()[0])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"ambient_salience_min_urgency": value})
+    elif category == "setting:memory_admission_min_confidence" and "proposed=" in reason:
+        floor = float(reason.rsplit("proposed=", 1)[1].split()[0])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"memory_admission_min_confidence": floor})
+    elif category == "setting:memory_quarantine_kinds" and "proposed=+" in reason:
+        kind = reason.rsplit("proposed=+", 1)[1].split()[0]
+        from app.registry_cache import get_cache
+
+        routed = set(await get_cache().setting("memory_quarantine_kinds") or [])
+        async with get_session_factory()() as session:
+            await update_settings(session, {"memory_quarantine_kinds": sorted(routed | {kind})})
+    elif category == "setting:ambient_digest_times" and "proposed=" in reason:
         proposed = reason.rsplit("proposed=", 1)[1].split(",")
         async with get_session_factory()() as session:
             await update_settings(session, {"ambient_digest_times": proposed})

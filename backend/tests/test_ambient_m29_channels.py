@@ -199,7 +199,12 @@ async def test_no_routing_is_byte_identical(client: Any) -> None:
     out = await flush_deliveries(datetime.now(UTC).replace(hour=12))
     assert out["interrupt"] == 1
     fresh = await _fresh(row.id)
-    assert fresh.delivered_at is not None and fresh.external is None
+    # M42 (spec §18.4): `external` now ALSO carries the in_app truth marker
+    # when the broadcast reached nobody — which is this test's situation, as
+    # no subscriber exists here. The invariant this test actually guards is
+    # unchanged and asserted directly: no EXTERNAL channel was contacted.
+    assert fresh.delivered_at is not None
+    assert set(fresh.external or {}) <= {"in_app"}
 
 
 async def test_digest_batch_reaches_channel_as_one_call(client: Any) -> None:

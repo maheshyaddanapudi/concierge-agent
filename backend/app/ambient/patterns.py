@@ -193,9 +193,7 @@ async def expire_pattern_deadlines(now: datetime | None = None) -> int:
             continue
         async with get_session_factory()() as session:
             intent = await session.get(StandingIntent, UUID(inst.rule_key.removeprefix("intent:")))
-            a_event = (
-                await session.get(AmbientEvent, inst.a_event_id) if inst.a_event_id else None
-            )
+            a_event = await session.get(AmbientEvent, inst.a_event_id) if inst.a_event_id else None
         if intent is None:
             continue
         spec = (intent.compiled or {}).get("pattern") or {}

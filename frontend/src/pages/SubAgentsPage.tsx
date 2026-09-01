@@ -275,6 +275,11 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
           check={overlap}
           entity="sub agent"
           onConfirm={async () => {
+            // M44: saving past the warning is a captured, content-free event
+            void api.post('/skills/overlap-ack', {
+              draft_type: 'sub_agent',
+              overlap_percent: overlap.overlap_percent,
+            }).catch(() => {})
             setOverlap(null)
             await doSave()
           }}

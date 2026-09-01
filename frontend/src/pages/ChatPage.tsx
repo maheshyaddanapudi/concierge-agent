@@ -619,6 +619,53 @@ function LiveRun({
   )
 }
 
+// ── per-conversation pin (spec §7.5, M40) ────────────────────────
+// The composer's target — and its history-summary checkbox — is state of
+// the conversation it was set in, never global: switching chats must never
+// carry a pin across. The map is keyed by conversation id; '' keys the
+// not-yet-created conversation, and the send that creates one carries its
+// pin over (a ?target= deep link therefore pins only the chat it opens).
+
+export type ConvPin = { targetId: string | null; includeSummary: boolean }
+export const NO_PIN: ConvPin = { targetId: null, includeSummary: false }
+type PinMap = Record<string, ConvPin>
+
+export const pinFor = (pins: PinMap, convId: string | null): ConvPin =>
+  pins[convId ?? ''] ?? NO_PIN
+
+export const withPin = (pins: PinMap, convId: string | null, patch: Partial<ConvPin>): PinMap => {
+  const key = convId ?? ''
+  return { ...pins, [key]: { ...(pins[key] ?? NO_PIN), ...patch } }
+}
+
+/** First send created the conversation — its draft pin travels with it. */
+export const adoptDraftPin = (pins: PinMap, newConvId: string): PinMap => {
+  const { '': draft, ...rest } = pins
+  return draft ? { ...rest, [newConvId]: draft } : rest
+}
+
+/** "+ New conversation" always starts at Orchestrator (auto). */
+export const clearDraftPin = (pins: PinMap): PinMap => {
+  if (!('' in pins)) return pins
+  const rest = { ...pins }
+  delete rest['']
+  return rest
+}
+
+/** §7.5 request body: the pin rides only for its own conversation. */
+export const chatBody = (
+  text: string,
+  convId: string | null,
+  pin: ConvPin,
+  hasHistory: boolean,
+): Record<string, unknown> => {
+  const body: Record<string, unknown> = { message: text }
+  if (convId) body.conversation_id = convId
+  if (pin.targetId) body.target_sub_agent_id = pin.targetId
+  if (pin.targetId && pin.includeSummary && hasHistory) body.include_history_summary = true
+  return body
+}
+
 // ── page ─────────────────────────────────────────────────────────
 
 export function ChatPage() {
@@ -638,12 +685,13 @@ export function ChatPage() {
   const invalidate = useInvalidate()
   const bottomRef = useRef<HTMLDivElement>(null)
   // direct invocation pin (spec §7.5): messages run against this sub agent,
-  // planner bypassed; null = orchestrator (auto)
-  const [targetId, setTargetId] = useState<string | null>(null)
-  // §7.5 opt-in history summary — only meaningful while pinned AND the
-  // conversation already has a completed run (the orchestrator always gets
-  // history; a first message has none to summarize)
-  const [includeSummary, setIncludeSummary] = useState(false)
+  // planner bypassed; null = orchestrator (auto). Per-conversation (M40) —
+  // includeSummary is only meaningful while pinned AND the conversation
+  // already has a completed run (the orchestrator always gets history)
+  const [pins, setPins] = useState<Record<string, ConvPin>>({})
+  const { targetId, includeSummary } = pinFor(pins, conversationId)
+  const setPin = (patch: Partial<ConvPin>) =>
+    setPins((p) => withPin(p, conversationId, patch))
   const { data: subAgents = [] } = useSubAgents()
   const exposedAgents = subAgents.filter(
     (a) => a.status === 'active' && a.direct_exposure && !a.deleted_at,
@@ -652,8 +700,10 @@ export function ChatPage() {
     subAgents.find((a) => a.id === id)?.name ?? 'sub agent'
 
   useEffect(() => {
+    // a ?target= deep link (§7.5 surface 3) pins ONLY the conversation it
+    // opens — the page mounts on the new-chat draft, so pin that
     const target = searchParams.get('target')
-    if (target) setTargetId(target)
+    if (target) setPins((p) => withPin(p, null, { targetId: target }))
   }, [searchParams])
 
   // re-attach to an in-flight or HITL-paused run when reopening its
@@ -691,11 +741,9 @@ export function ChatPage() {
       if (conversationId) setQueuedDraft({ convId: conversationId, text })
       return
     }
-    const body: Record<string, unknown> = { message: text }
-    if (conversationId) body.conversation_id = conversationId
-    if (targetId) body.target_sub_agent_id = targetId
-    if (targetId && includeSummary && hasHistory) body.include_history_summary = true
+    const body = chatBody(text, conversationId, { targetId, includeSummary }, hasHistory)
     const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
+    if (!conversationId) setPins((p) => adoptDraftPin(p, result.conversation_id))
     setConversationId(result.conversation_id)
     setLiveRunId(result.run_id)
     setLiveStatus('running')
@@ -748,6 +796,7 @@ export function ChatPage() {
             onClick={() => {
               setConversationId(null)
               setLiveRunId(null)
+              setPins(clearDraftPin) // a new chat always starts at auto
             }}
           >
             + New conversation
@@ -862,7 +911,7 @@ export function ChatPage() {
             </span>
             <Select
               value={targetId ?? ''}
-              onChange={(e) => setTargetId(e.target.value || null)}
+              onChange={(e) => setPin({ targetId: e.target.value || null })}
               className="max-w-64 !py-1 !text-xs"
               title="pin messages to a sub agent — direct invocation, planner bypassed"
             >
@@ -886,7 +935,7 @@ export function ChatPage() {
                 <input
                   type="checkbox"
                   checked={includeSummary}
-                  onChange={(e) => setIncludeSummary(e.target.checked)}
+                  onChange={(e) => setPin({ includeSummary: e.target.checked })}
                   className="size-3 accent-[var(--color-accent-400,#2dd4bf)]"
                 />
                 include chat summary

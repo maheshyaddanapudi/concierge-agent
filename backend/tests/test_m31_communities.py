@@ -71,9 +71,7 @@ async def test_two_disjoint_clusters_become_two_communities(client: Any) -> None
         ["apollo", "booster", "launchpad"],
         ["apollo booster fueling starts at dawn", "the launchpad crew preps apollo"],
     )
-    zeus, _ = await _cluster(
-        ["zeus", "gateway"], ["zeus routes through the new gateway"]
-    )
+    zeus, _ = await _cluster(["zeus", "gateway"], ["zeus routes through the new gateway"])
     fake_llm.push_ai("Apollo launch operations: booster and pad readiness.")
     fake_llm.push_ai("Zeus networking: gateway routing.")
     built = await rebuild_communities()
@@ -123,7 +121,9 @@ async def test_singletons_and_empty_graph_are_noops(client: Any) -> None:
     await _memory_on()
     assert await rebuild_communities() == 0  # empty graph ⇒ no-op
     lone = await _entity("hermit")
-    m = await remember(text="the hermit stands alone", kind="fact", scope="global", source="user_stated")
+    m = await remember(
+        text="the hermit stands alone", kind="fact", scope="global", source="user_stated"
+    )
     await _link(m.id, lone.id)
     assert await rebuild_communities() == 0  # singleton entities form no community
     assert await _rows() == []
