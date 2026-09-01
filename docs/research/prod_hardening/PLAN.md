@@ -13,7 +13,7 @@ run as an enterprise system — the Conductor model.
 | Stage | State | Evidence |
 |---|---|---|
 | M49 | ✅ done | `docs/acceptance/prod/M49/` — baseline (before any fix), prompt-harness proof, ruff triage |
-| M50 | ☐ | |
+| M50 | ✅ done | `docs/acceptance/prod/M50/` — 60 streams with a healthy probe (baseline failed at 15), `/runs` flat 1k→10k at a 47 KB page (baseline 2.2 s / 9.5 MB), quarantine transcript, timezone proof, screenshots |
 | M51 | ☐ | |
 | M52 | ☐ | |
 | M53 | ☐ | |

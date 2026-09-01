@@ -9,11 +9,12 @@ payload is stored verbatim as UNTRUSTED event input — it can start a run
 import hashlib
 import secrets
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
+from croniter import croniter
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 
 from app.api.deps import SessionDep
@@ -24,13 +25,100 @@ from app.models.ambient import ROUTINE_AUTONOMY
 router = APIRouter(prefix="/routines", tags=["routines"])
 
 
+# ── typed triggers (M50, code-H4) ────────────────────────────────────
+# Before M50 `triggers` was an untyped JSON list: a malformed `once.at`
+# raised inside the schedule evaluator and no routine after it was
+# evaluated. The shapes the evaluators understand are the shapes the API
+# accepts — nothing else reaches the table.
+
+FILTER_OPS = ("equals", "contains", "starts_with", "one_of", "regex")
+
+
+class TriggerFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1, max_length=255)
+    op: Literal["equals", "contains", "starts_with", "one_of", "regex"] = "equals"
+    value: str | int | float | bool | None = None
+    values: list[str | int | float | bool] | None = None
+
+    @field_validator("value")
+    @classmethod
+    def _regex_compiles(cls, v: Any, info: Any) -> Any:
+        if info.data.get("op") == "regex" and isinstance(v, str):
+            import re as _re
+
+            try:
+                _re.compile(v)
+            except _re.error as exc:
+                raise ValueError(f"regex filter does not compile: {exc}") from exc
+        return v
+
+
+class IntervalTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["interval"]
+    seconds: int = Field(ge=60, le=31_536_000)
+
+
+class CronTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["cron"]
+    cron: str = Field(min_length=1, max_length=255)
+
+    @field_validator("cron")
+    @classmethod
+    def _valid_cron(cls, v: str) -> str:
+        if not croniter.is_valid(v):
+            raise ValueError(f"not a valid cron expression: {v!r}")
+        return v
+
+
+class OnceTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["once"]
+    at: datetime
+
+
+class OnceFiredTrigger(BaseModel):
+    """The system-set terminal state of a `once` trigger (round-trips
+    through the UI unchanged)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["once_fired"]
+    at: datetime
+
+
+class WebhookTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["webhook"]
+    filters: list[TriggerFilter] = Field(default_factory=list)
+
+
+Trigger = Annotated[
+    IntervalTrigger | CronTrigger | OnceTrigger | OnceFiredTrigger | WebhookTrigger,
+    Field(discriminator="type"),
+]
+
+
+def _dump_triggers(triggers: list[Any] | None) -> list[dict[str, Any]] | None:
+    if triggers is None:
+        return None
+    return [t.model_dump(mode="json") for t in triggers]
+
+
 class RoutineBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=255)
     prompt: str = Field(min_length=1)
     description: str | None = None
-    triggers: list[dict[str, Any]] | None = None
+    triggers: list[Trigger] | None = None
     allowlist: dict[str, Any] | None = None
     model_ref: str | None = None
     include_memories: bool = False
@@ -44,7 +132,7 @@ class RoutinePatch(BaseModel):
     status: str | None = None
     prompt: str | None = None
     description: str | None = None
-    triggers: list[dict[str, Any]] | None = None
+    triggers: list[Trigger] | None = None
     allowlist: dict[str, Any] | None = None
     model_ref: str | None = None
     include_memories: bool | None = None
@@ -126,7 +214,7 @@ async def create_routine(body: RoutineBody, session: SessionDep) -> dict[str, An
         name=body.name,
         prompt=body.prompt,
         description=body.description,
-        triggers=body.triggers,
+        triggers=_dump_triggers(body.triggers),
         allowlist=body.allowlist,
         model_ref=body.model_ref,
         include_memories=body.include_memories,
@@ -155,7 +243,7 @@ async def patch_routine(
     row = await session.get(Routine, routine_id)
     if row is None or not owns_row(row):
         raise HTTPException(404, "routine not found")
-    changes = body.model_dump(exclude_none=True)
+    changes = body.model_dump(exclude_none=True, mode="json")  # M50: typed triggers → JSON
     if row.source == "static":
         # §4 discipline: static definitions immutable — status toggles only
         illegal = set(changes) - {"status"}

@@ -4,9 +4,10 @@ history purge."""
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import delete, select, text
+from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import SessionDep
 from app.auth import owns_row, scope_to_user
@@ -87,12 +88,24 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_runs(session: SessionDep, routine_id: UUID | None = None) -> list[dict[str, Any]]:
-    query = scope_to_user(select(Run).order_by(Run.started_at.desc()), Run)
+async def list_runs(
+    session: SessionDep,
+    response: Response,
+    routine_id: UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    """Newest first, paged (M50): `limit`/`offset`, total in X-Total-Count.
+    The list never carries steps — GET /runs/{id} does. Before M50 this
+    returned every run with every step (9.5 MB at 10k runs, M49 baseline)."""
+    query = scope_to_user(select(Run), Run)
     if routine_id is not None:
         # §18.5: the routine drawer's run history — trigger provenance match
         query = query.where(Run.trigger["routine_id"].astext == str(routine_id))
-    runs = list((await session.execute(query)).scalars())
+    total = (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    page = query.order_by(Run.started_at.desc()).limit(limit).offset(offset)
+    runs = list((await session.execute(page)).scalars())
+    response.headers["X-Total-Count"] = str(total)
     return [_run_out(r) for r in runs]
 
 
@@ -109,7 +122,9 @@ async def purge_runs(session: SessionDep) -> None:
 
 @router.get("/{run_id}")
 async def get_run(run_id: UUID, session: SessionDep) -> dict[str, Any]:
-    run = await session.get(Run, run_id)
+    run = (
+        await session.execute(select(Run).options(selectinload(Run.steps)).where(Run.id == run_id))
+    ).scalar_one_or_none()  # M50: the one place the step tree is loaded
     if run is None or not owns_row(run):
         raise HTTPException(status_code=404, detail="run not found")
     return _run_out(run, with_steps=True)

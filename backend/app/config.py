@@ -39,6 +39,12 @@ class AppConfig(BaseSettings):
     # §18.8 auth & tenancy — dark by default: off ⇒ byte-identical
     auth_enabled: bool = False
     frontend_origin: str | None = None  # CORS pin when auth is on
+    # M50 (PLAN M50, arch-C1): the connection budget is explicit. Per replica
+    # the pooled ceiling is pool_size + max_overflow; the checkpointer pool,
+    # the LISTEN connection and the leader lease sit outside it.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

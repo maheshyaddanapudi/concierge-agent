@@ -92,6 +92,9 @@ DEFAULTS: dict[str, Any] = {
     "ambient_digest_times": ["09:00", "17:00"],
     "ambient_notification_budget_per_day": 3,
     "ambient_quiet_hours": ["22:00", "07:00"],
+    # M50 (arch-M4): quiet hours and digest times are wall-clock in THIS
+    # zone; UTC keeps pre-M50 behavior byte-identical
+    "ambient_timezone": "UTC",
     "ambient_interrupt_threshold": 4,
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
@@ -374,6 +377,18 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
                                 f"ambient_channels[{mode!r}]: unknown channel(s) "
                                 f"{sorted(unknown)} — registered: {sorted(known)}"
                             )
+        elif key == "ambient_timezone":
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            if not isinstance(value, str) or not value:
+                errors.append(
+                    "ambient_timezone must be an IANA zone name string (e.g. Europe/Lisbon)"
+                )
+            else:
+                try:
+                    ZoneInfo(value)
+                except (ZoneInfoNotFoundError, ValueError):
+                    errors.append(f"ambient_timezone: unknown IANA zone {value!r}")
         elif key in {"ambient_digest_times", "ambient_quiet_hours"}:
             import re as _re
 

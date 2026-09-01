@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -24,11 +24,22 @@ class Conversation(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    runs: Mapped[list["Run"]] = relationship(back_populates="conversation", lazy="selectin")
+    # M50 (code-H1): children load only where asked (selectinload at the
+    # call site); an implicit load raises instead of fanning out
+    runs: Mapped[list["Run"]] = relationship(
+        back_populates="conversation", lazy="raise", passive_deletes=True
+    )
 
 
 class Run(Base):
     __tablename__ = "runs"
+    # M50 (arch-C2): list by time, filter by status, join by conversation —
+    # the hot paths had no index in 23 migrations
+    __table_args__ = (
+        Index("runs_conversation_idx", "conversation_id"),
+        Index("runs_status_idx", "status"),
+        Index("runs_started_at_idx", "started_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
@@ -72,12 +83,16 @@ class Run(Base):
 
     conversation: Mapped[Conversation] = relationship(back_populates="runs")
     steps: Mapped[list["RunStep"]] = relationship(
-        back_populates="run", lazy="selectin", order_by="RunStep.started_at"
+        back_populates="run",
+        lazy="raise",
+        order_by="RunStep.started_at",
+        passive_deletes=True,
     )
 
 
 class RunStep(Base):
     __tablename__ = "run_steps"
+    __table_args__ = (Index("run_steps_run_idx", "run_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))

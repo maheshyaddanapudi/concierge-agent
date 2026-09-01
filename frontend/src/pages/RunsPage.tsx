@@ -229,8 +229,13 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
   )
 }
 
+const PAGE = 100
+
 export function RunsPage() {
-  const { data: runs = [], isLoading } = useRuns()
+  // M50: the list is paged (newest first) and polls with backoff — the
+  // M49 baseline measured the unpaged list at 9.5 MB for 10k runs
+  const [limit, setLimit] = useState(PAGE)
+  const { data: runs = [], isLoading } = useRuns(limit)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   return (
     <div className="p-6">
@@ -277,6 +282,16 @@ export function RunsPage() {
           },
         ]}
       />
+      {runs.length >= limit && (
+        <div className="mt-3 flex items-center gap-3 text-xs text-slate-500">
+          <span>
+            Showing the newest {runs.length} runs.
+          </span>
+          <Button onClick={() => setLimit(Math.min(limit + PAGE, 500))} disabled={limit >= 500}>
+            Show more
+          </Button>
+        </div>
+      )}
       <Drawer
         open={selectedId !== null}
         onClose={() => setSelectedId(null)}

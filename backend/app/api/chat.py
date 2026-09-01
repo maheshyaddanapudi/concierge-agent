@@ -5,12 +5,14 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import SessionDep
 from app.auth import owns_row, scope_to_user
+from app.db import get_session_factory
 from app.models import Conversation, Run
 from app.orchestrator.context import EVENT_BUS
 from app.orchestrator.runner import create_run, resume_run, start_run_task
@@ -67,25 +69,46 @@ def _run_out(run: Run) -> dict[str, Any]:
 
 
 @router.get("/conversations")
-async def list_conversations(session: SessionDep) -> list[dict[str, Any]]:
-    conversations = list(
-        (
-            await session.execute(
-                scope_to_user(
-                    select(Conversation).order_by(Conversation.updated_at.desc()), Conversation
-                )
-            )
-        ).scalars()
+async def list_conversations(
+    session: SessionDep,
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    """Newest first, paged (M50): `limit`/`offset`, total in X-Total-Count.
+    run_count is an aggregate — before M50 it loaded every run of every
+    conversation (the 10× growth in the M49 baseline)."""
+    scoped = scope_to_user(select(Conversation), Conversation)
+    total = (
+        await session.execute(select(func.count()).select_from(scoped.subquery()))
+    ).scalar_one()
+    counts = (
+        select(Run.conversation_id, func.count(Run.id).label("n"))
+        .group_by(Run.conversation_id)
+        .subquery()
     )
+    rows = (
+        await session.execute(
+            scope_to_user(
+                select(Conversation, func.coalesce(counts.c.n, 0))
+                .outerjoin(counts, counts.c.conversation_id == Conversation.id)
+                .order_by(Conversation.updated_at.desc())
+                .limit(limit)
+                .offset(offset),
+                Conversation,
+            )
+        )
+    ).all()
+    response.headers["X-Total-Count"] = str(total)
     return [
         {
             "id": str(c.id),
             "title": c.title,
             "created_at": c.created_at.isoformat(),
             "updated_at": c.updated_at.isoformat(),
-            "run_count": len(c.runs),
+            "run_count": int(n),
         }
-        for c in conversations
+        for c, n in rows
     ]
 
 
@@ -101,7 +124,13 @@ async def create_conversation(body: ConversationCreate, session: SessionDep) -> 
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[str, Any]:
-    conversation = await session.get(Conversation, conversation_id)
+    conversation = (
+        await session.execute(
+            select(Conversation)
+            .options(selectinload(Conversation.runs))  # M50: explicit child load
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
     if conversation is None or not owns_row(conversation):
         raise HTTPException(status_code=404, detail="conversation not found")
     runs = sorted(conversation.runs, key=lambda r: r.started_at)
@@ -188,11 +217,15 @@ class _StreamDone(Exception):
 
 
 @router.get("/chat/stream/{run_id}")
-async def chat_stream(run_id: UUID, session: SessionDep) -> EventSourceResponse:
-    """SSE event stream (spec §7.1 contract): replay + live."""
-    run = await session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
+async def chat_stream(run_id: UUID) -> EventSourceResponse:
+    """SSE event stream (spec §7.1 contract): replay + live. M50 (arch-C1):
+    the existence check uses a short-lived session released BEFORE the
+    stream opens — an open tab holds no pooled connection. The baseline
+    measured the old request-scoped session failing the pool at 15 tabs."""
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
 
     async def gen() -> Any:
         history, queue = EVENT_BUS.subscribe(run_id)

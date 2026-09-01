@@ -73,6 +73,11 @@ AMBIENT_JUDGE_TOKENS = Counter(
 )
 # §18.9: 1 while this replica holds the ambient-tick leader lease
 AMBIENT_LEADER = Gauge("concierge_ambient_leader", "1 when this replica leads the ambient tick")
+AMBIENT_EVALUATOR_ERRORS = Counter(
+    "concierge_ambient_evaluator_errors_total",
+    "Ambient tick evaluators that raised or timed out (M50 isolation)",
+    ["evaluator", "kind"],
+)
 STEP_DURATION = Histogram(
     "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
 )

@@ -98,9 +98,17 @@ def _schedule_due(
     return False
 
 
+QUARANTINE_AFTER = 3  # M50: consecutive trigger-evaluation failures ⇒ status='error'
+
+
 async def evaluate_schedules(now: datetime | None = None) -> int:
     """Emit one schedule event per due routine trigger. Missed ticks fire
-    once on recovery, never replayed N times (watermark = last_fired_at)."""
+    once on recovery, never replayed N times (watermark = last_fired_at).
+    M50 (code-H4): routines are evaluated in isolation — a malformed
+    trigger counts a failure against ITS routine (quarantined to
+    status='error' after QUARANTINE_AFTER) and never stops the routines
+    after it. Before M50 one bad `once.at` raised out of this function
+    and the rest of the list was never looked at."""
     now = now or datetime.now(UTC)
     fired = 0
     async with get_session_factory()() as session:
@@ -108,35 +116,70 @@ async def evaluate_schedules(now: datetime | None = None) -> int:
             (await session.execute(select(Routine).where(Routine.status == "active"))).scalars()
         )
     for routine in routines:
-        for i, trig in enumerate(routine.triggers or []):
-            if trig.get("type") not in {"interval", "once", "cron"}:
-                continue
-            if not _schedule_due(trig, routine.last_fired_at, routine.stagger_offset_s, now):
-                continue
-            slot = now.strftime("%Y%m%d%H%M")
-            try:
-                event = await emit_event(
-                    kind="routine_schedule",
-                    source="schedule",
-                    payload={"trigger_index": i, "trigger": trig},
-                    dedupe_key=f"sched:{routine.id}:{i}:{slot}",
-                    routine_id=routine.id,
-                )
-            except ChainGuardError as exc:
-                logger.warning("ambient_schedule_capped", routine=str(routine.id), error=str(exc))
-                continue
-            if event is None:
-                continue
-            fired += 1
-            async with get_session_factory()() as session:
-                row = await session.get(Routine, routine.id)
-                if row is not None:
-                    row.last_fired_at = now
-                    if trig.get("type") == "once":
-                        trigs = list(row.triggers or [])
-                        trigs[i] = {**trig, "type": "once_fired"}
-                        row.triggers = trigs
-                    await session.commit()
+        try:
+            fired += await _evaluate_routine_schedules(routine, now)
+        except Exception as exc:  # noqa: BLE001 — one broken routine never wedges the tick
+            await _record_trigger_failure(routine.id, exc)
+    return fired
+
+
+async def _record_trigger_failure(routine_id: Any, exc: BaseException) -> None:
+    reason = f"trigger evaluation failed: {type(exc).__name__}: {exc}"[:500]
+    async with get_session_factory()() as session:
+        row = await session.get(Routine, routine_id)
+        if row is None:
+            return
+        row.consecutive_failures = int(row.consecutive_failures or 0) + 1
+        if row.consecutive_failures >= QUARANTINE_AFTER:
+            row.status = "error"
+            row.status_reason = reason
+        failures = row.consecutive_failures
+        await session.commit()
+    from app import obs
+
+    obs.AMBIENT_EVALUATOR_ERRORS.labels(evaluator="schedule_routine", kind="error").inc()
+    logger.warning(
+        "ambient_trigger_failed",
+        tier="ambient",
+        kind="schedule",
+        routine=str(routine_id),
+        failures=failures,
+        quarantined=failures >= QUARANTINE_AFTER,
+        error=reason[:200],
+    )
+
+
+async def _evaluate_routine_schedules(routine: Routine, now: datetime) -> int:
+    fired = 0
+    for i, trig in enumerate(routine.triggers or []):
+        if trig.get("type") not in {"interval", "once", "cron"}:
+            continue
+        if not _schedule_due(trig, routine.last_fired_at, routine.stagger_offset_s, now):
+            continue
+        slot = now.strftime("%Y%m%d%H%M")
+        try:
+            event = await emit_event(
+                kind="routine_schedule",
+                source="schedule",
+                payload={"trigger_index": i, "trigger": trig},
+                dedupe_key=f"sched:{routine.id}:{i}:{slot}",
+                routine_id=routine.id,
+            )
+        except ChainGuardError as exc:
+            logger.warning("ambient_schedule_capped", routine=str(routine.id), error=str(exc))
+            continue
+        if event is None:
+            continue
+        fired += 1
+        async with get_session_factory()() as session:
+            row = await session.get(Routine, routine.id)
+            if row is not None:
+                row.last_fired_at = now
+                if trig.get("type") == "once":
+                    trigs = list(row.triggers or [])
+                    trigs[i] = {**trig, "type": "once_fired"}
+                    row.triggers = trigs
+                await session.commit()
     return fired
 
 

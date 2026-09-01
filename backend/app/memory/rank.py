@@ -87,6 +87,32 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 
+def visibility_sql(
+    *,
+    scopes: list[str] | None = None,
+    kinds: list[str] | None = None,
+    conversation_id: UUID | None = None,
+    project_key: str | None = None,
+    as_of: datetime | None = None,
+    auth_user_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """THE memory visibility predicate (M50, code-H5): status/time, scope,
+    conversation, project (§18.2) and tenancy (§18.8) decided in one place
+    and used by every retrieval path — recall's two legs and the pinned
+    profile. A rule added here reaches all of them; there is no second
+    copy to forget. Returns the WHERE fragment (aliased `m`) + its params."""
+    where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)
+    params: dict[str, Any] = {
+        "scopes": scopes,
+        "kinds": kinds,
+        "conversation_id": conversation_id,
+        "project_key": project_key,
+        "as_of": as_of,
+        "auth_user_id": auth_user_id,
+    }
+    return where, params
+
+
 async def recall(
     query: str,
     *,
@@ -107,17 +133,15 @@ async def recall(
     if not query:
         return []
 
-    params: dict[str, Any] = {
-        "q": or_tsquery(query),
-        "n": _CANDIDATES_PER_LEG,
-        "scopes": scopes,
-        "kinds": kinds,
-        "conversation_id": conversation_id,
-        "project_key": project_key,
-        "as_of": as_of,
-        "auth_user_id": str(_auth_uid()) if _auth_uid() else None,
-    }
-    where = _temporal_predicate(as_of) + _filters_sql(scopes, kinds)
+    where, vparams = visibility_sql(
+        scopes=scopes,
+        kinds=kinds,
+        conversation_id=conversation_id,
+        project_key=project_key,
+        as_of=as_of,
+        auth_user_id=str(_auth_uid()) if _auth_uid() else None,
+    )
+    params: dict[str, Any] = {"q": or_tsquery(query), "n": _CANDIDATES_PER_LEG, **vparams}
 
     lexical_sql = sql_text(
         f"""
@@ -265,18 +289,30 @@ async def recall(
     return hits
 
 
-async def pinned_memories(conversation_id: UUID | None = None) -> list[Memory]:
-    """The always-injected profile rows (spec §16.3), newest first."""
-    from sqlalchemy import select
-
+async def pinned_memories(
+    conversation_id: UUID | None = None, project_key: str | None = None
+) -> list[Memory]:
+    """The always-injected profile rows (spec §16.3), newest first — under
+    the SAME visibility predicate as recall (M50): scope, conversation,
+    project and tenancy are decided once, in visibility_sql. Before M50
+    pinned selection was a global query with a Python filter on scope —
+    it leaked project rows across projects and never checked the owner."""
+    where, params = visibility_sql(
+        conversation_id=conversation_id,
+        project_key=project_key,
+        auth_user_id=str(_auth_uid()) if _auth_uid() else None,
+    )
+    pinned_sql = sql_text(
+        f"SELECT m.id FROM memories m WHERE m.pinned AND {where} "  # noqa: S608 — fragments are code constants; values are bound params
+        "ORDER BY m.recorded_at DESC"
+    )
     async with get_session_factory()() as session:
-        stmt = (
-            select(Memory)
-            .where(Memory.pinned.is_(True), Memory.status == "active")
-            .order_by(Memory.recorded_at.desc())
-        )
-        rows = list((await session.execute(stmt)).scalars())
-    return [m for m in rows if m.scope != "conversation" or m.conversation_id == conversation_id]
+        ids = [r[0] for r in (await session.execute(pinned_sql, params)).all()]
+        if not ids:
+            return []
+        rows = list((await session.execute(select(Memory).where(Memory.id.in_(ids)))).scalars())
+    order = {mid: i for i, mid in enumerate(ids)}
+    return sorted(rows, key=lambda m: order[m.id])
 
 
 def or_tsquery(query: str) -> str:

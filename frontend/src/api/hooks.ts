@@ -53,11 +53,19 @@ export function useSubAgents(params = '') {
   })
 }
 
-export function useRuns() {
+const LIVE_STATUSES = new Set(['running', 'paused_hitl'])
+
+/** M50: polling backs off — 3 s while something is live, 15 s when the
+ * page is quiet. Background tabs never poll (TanStack default). */
+function runsBackoff(runs: Run[] | undefined): number {
+  return runs?.some((r) => LIVE_STATUSES.has(r.status)) ? 3000 : 15000
+}
+
+export function useRuns(limit = 100) {
   return useQuery({
-    queryKey: ['runs'],
-    queryFn: () => api.get<Run[]>('/runs'),
-    refetchInterval: 3000,
+    queryKey: ['runs', 'page', limit],
+    queryFn: () => api.get<Run[]>(`/runs?limit=${limit}`),
+    refetchInterval: (query) => runsBackoff(query.state.data),
   })
 }
 
@@ -66,7 +74,9 @@ export function useRun(runId: string | null) {
     queryKey: ['runs', runId],
     queryFn: () => api.get<Run>(`/runs/${runId}`),
     enabled: runId !== null,
-    refetchInterval: 2000,
+    // a terminal run never changes again — stop polling it
+    refetchInterval: (query) =>
+      query.state.data && !LIVE_STATUSES.has(query.state.data.status) ? false : 2000,
   })
 }
 

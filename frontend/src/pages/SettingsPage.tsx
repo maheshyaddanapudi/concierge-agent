@@ -782,6 +782,16 @@ export function SettingsPage() {
                 k="ambient_quiet_hours"
                 hint="HH:MM start, HH:MM end — non-urgent delivery holds in between"
               />
+              <Field
+                label="Timezone"
+                hint="IANA zone (e.g. Europe/Lisbon) that quiet hours and digest times are wall-clock in — UTC until you set it"
+              >
+                <TextInput
+                  key={String(settings.ambient_timezone)}
+                  defaultValue={String(settings.ambient_timezone)}
+                  onBlur={(e) => patch.mutate({ ambient_timezone: e.target.value.trim() || 'UTC' })}
+                />
+              </Field>
             </div>
             <ChannelRouting />
             <Field

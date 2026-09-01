@@ -73,7 +73,7 @@ async def build_memory_block(
                 conv = await session.get(Conversation, conversation_id)
                 project_key = conv.project_key if conv is not None else None
 
-        pinned = await pinned_memories(conversation_id)
+        pinned = await pinned_memories(conversation_id, project_key=project_key)
         pinned_lines = _clip(
             [f"- [{m.kind} {str(m.id)[:8]}] {m.text}" for m in pinned], pinned_budget
         )

@@ -9,6 +9,10 @@ Honesty first: this is a POC. The scale-out path below is **designed in but not 
 - Postgres is the only required stateful infrastructure: registries, runs/steps, settings, and LangGraph checkpoints all live there.
 - Registry cache default is `bypass` (direct DB reads, ADR `../adr/0004-registry-cache-bypass-default.md`); `memory` is the single-node performance step.
 
+### Connection budget (M50)
+
+The pooled ceiling per backend replica is explicit: `DB_POOL_SIZE` (5) + `DB_MAX_OVERFLOW` (10) SQLAlchemy connections, with `DB_POOL_TIMEOUT` (30 s) the wait before a request fails. Outside that pool each replica also holds the LangGraph checkpointer pool (up to 10, psycopg), one LISTEN connection for cache invalidation, one for the ambient drain's wake channel, and the ambient leader lease session — budget **12** for those. Size Postgres `max_connections` from `replicas × (pool + overflow + 12)` plus headroom for migrations, `psql`, and the load harness. Two things that used to eat the pool no longer do: `/chat/stream` releases its session before streaming (the M49 baseline measured the pool exhausted at 15 open tabs), and `/ambient/stream` never had one. An ambient burst still opens sessions per fired event — bounded admission lands in M51.
+
 ## Multi-replica: what is ready, what is not
 
 ### Cross-replica cache invalidation (ready, dormant)

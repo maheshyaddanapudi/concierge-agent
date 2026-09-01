@@ -10,6 +10,7 @@ no-op while `ambient_enabled` is false (byte-identity when dark).
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import structlog
@@ -34,6 +35,30 @@ _processor: Processor | None = None
 Executor = Callable[..., Coroutine[Any, Any, object]]
 _executor: Executor | None = None
 _EXEC_TASKS: set[asyncio.Task[object]] = set()
+
+
+EVALUATOR_TIMEOUT_S = 60.0  # M50: no single evaluator may hold the tick longer
+
+
+async def run_evaluator(
+    name: str, fn: Callable[[], Awaitable[Any]], timeout_s: float = EVALUATOR_TIMEOUT_S
+) -> Any | None:
+    """Run one tick evaluator in isolation (M50, code-H4): an exception or a
+    timeout is counted, logged and swallowed so the evaluators after it
+    still run this tick. Before M50 the first raise skipped the rest of
+    the tick — the baseline under contention showed the tick itself
+    failing on pool exhaustion and every later stage silently missed."""
+    from app import obs
+
+    try:
+        return await asyncio.wait_for(fn(), timeout=timeout_s)
+    except TimeoutError:
+        obs.AMBIENT_EVALUATOR_ERRORS.labels(evaluator=name, kind="timeout").inc()
+        logger.warning("ambient_evaluator_timeout", tier="ambient", kind=name, timeout_s=timeout_s)
+    except Exception as exc:  # noqa: BLE001 — isolation is the point: count, log, continue
+        obs.AMBIENT_EVALUATOR_ERRORS.labels(evaluator=name, kind="error").inc()
+        logger.warning("ambient_evaluator_failed", tier="ambient", kind=name, error=str(exc)[:300])
+    return None
 
 
 def register_processor(fn: Processor | None) -> None:
@@ -176,46 +201,50 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> 
                     )
                     from app.ambient.wakeups import fire_due_wakeups
 
-                    await evaluate_schedules()
-                    await poll_due_intents()
-                    await evaluate_state_conditions()
-                    await expire_pattern_deadlines()
-                    await fire_due_wakeups()
-                    await sweep_hitl_aging()
-                    await reap_stalled_runs()
-                    await drain_once()
+                    # M50: every stage isolated and bounded — one failure or
+                    # hang counts against ITS evaluator, never the tick
+                    await run_evaluator("evaluate_schedules", evaluate_schedules)
+                    await run_evaluator("poll_due_intents", poll_due_intents)
+                    await run_evaluator("evaluate_state_conditions", evaluate_state_conditions)
+                    await run_evaluator("expire_pattern_deadlines", expire_pattern_deadlines)
+                    await run_evaluator("fire_due_wakeups", fire_due_wakeups)
+                    await run_evaluator("sweep_hitl_aging", sweep_hitl_aging)
+                    await run_evaluator("reap_stalled_runs", reap_stalled_runs)
+                    await run_evaluator("drain_once", drain_once)
                     idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
                     from app.ambient.deliver import flush_deliveries
                     from app.ambient.presence import evaluate_presence, is_platform_idle
 
-                    await evaluate_presence(idle_minutes)
-                    await flush_deliveries()
+                    await run_evaluator(
+                        "evaluate_presence", partial(evaluate_presence, idle_minutes)
+                    )
+                    await run_evaluator("flush_deliveries", flush_deliveries)
                     # M42 §17.5: re-judge what nobody saw. Runs AFTER the
                     # flush so this tick's misses are already visible, and
                     # is a no-op while ambient_salience_mode is off
                     from app.ambient.salience import run_salience_pass
                     from app.ambient.salience_learn import run_salience_tuner
 
-                    await run_salience_pass()
-                    await run_salience_tuner()  # FLE-3: no-op unless gated on
+                    await run_evaluator("run_salience_pass", run_salience_pass)
+                    await run_evaluator("run_salience_tuner", run_salience_tuner)
                     if await is_platform_idle(idle_minutes):
                         from app.ambient.anticipate import run_anticipation
 
-                        await run_anticipation()
+                        await run_evaluator("run_anticipation", run_anticipation)
                     # §17.7 learner — consolidation-class, throttled internally,
                     # a no-op unless ambient_learning_mode is auto|propose
                     from app.ambient.learn import run_learner
 
-                    await run_learner()
+                    await run_evaluator("run_learner", run_learner)
                     # §19.6 parked A2A tasks — leader-only recheck; a no-op
                     # while a2a_enabled is off
                     from app.a2a.poller import poll_parked_tasks
 
-                    await poll_parked_tasks()
+                    await run_evaluator("poll_parked_tasks", poll_parked_tasks)
                 else:
                     # non-leaders LISTEN + drain only (spec §18.9): the
                     # SKIP-LOCKED drain and the executor are replica-safe
-                    await drain_once()
+                    await run_evaluator("drain_once", drain_once)
             elif lease.held:
                 # ambient went dark — surrender leadership immediately
                 from app import obs

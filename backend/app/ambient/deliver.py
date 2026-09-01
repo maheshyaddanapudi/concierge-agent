@@ -13,6 +13,7 @@ append-only policy ledger (§17.6) — the same ledger the M25 learner writes.
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from sqlalchemy import func, select
@@ -30,18 +31,29 @@ REPETITION_DECAY = 0.8
 USEFULNESS_BONUS = 0.5
 
 
-def in_quiet_hours(now: datetime, ranges: list[str]) -> bool:
-    """Quiet hours are absolute (spec §17.5). `ranges` is [start, end] in
-    HH:MM; a wrap-around range (22:00→07:00) spans midnight."""
+def _zone(tz: str | None) -> ZoneInfo:
+    """The configured wall-clock zone; anything unresolvable is UTC."""
+    try:
+        return ZoneInfo(tz or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def in_quiet_hours(now: datetime, ranges: list[str], tz: str = "UTC") -> bool:
+    """Quiet hours are wall-clock ranges in the configured zone (spec §17.5;
+    M50 `ambient_timezone` — before it, "never at night" meant UTC night).
+    `ranges` is [start, end] in HH:MM; a wrap-around range (22:00→07:00)
+    spans midnight."""
     if len(ranges) != 2:
         return False
+    local = now.astimezone(_zone(tz))
     start_h, start_m = (int(x) for x in ranges[0].split(":"))
     end_h, end_m = (int(x) for x in ranges[1].split(":"))
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    start = local.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = local.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if start <= end:
-        return start <= now < end
-    return now >= start or now < end
+        return start <= local < end
+    return local >= start or local < end
 
 
 async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
@@ -54,6 +66,7 @@ async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
     out: dict[str, Any] = {
         "ambient_quiet_hours": list(await cache.setting("ambient_quiet_hours") or []),
         "ambient_digest_times": list(await cache.setting("ambient_digest_times") or []),
+        "ambient_timezone": str(await cache.setting("ambient_timezone") or "UTC"),
         "ambient_notification_budget_per_day": int(
             await cache.setting("ambient_notification_budget_per_day")
         ),
@@ -71,6 +84,8 @@ async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
     for key in ("ambient_quiet_hours", "ambient_digest_times"):
         if isinstance(prefs.get(key), list):
             out[key] = list(prefs[key])
+    if isinstance(prefs.get("ambient_timezone"), str) and prefs["ambient_timezone"]:
+        out["ambient_timezone"] = str(prefs["ambient_timezone"])
     return out
 
 
@@ -232,18 +247,21 @@ async def _digest_due(
     digest_times: list[str],
     owner: "UUID | None" = None,
     scoped: bool = False,
+    tz: str = "UTC",
 ) -> bool:
-    """Due when we crossed a configured digest time (today) that no digest
+    """Due when we crossed a configured digest time (today, in the configured
+    zone — M50) that no digest
     flush has covered yet — a missed time catches up exactly once. §18.8:
     per-owner when auth is on (each user has their own last flush)."""
+    local = now.astimezone(_zone(tz))
     occurrences = []
     for hhmm in digest_times:
         try:
             hh, mm = (int(x) for x in hhmm.split(":"))
         except ValueError:
             continue
-        at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if at <= now:
+        at = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if at <= local:
             occurrences.append(at)
     if not occurrences:
         return False
@@ -344,7 +362,9 @@ async def _flush_bucket(
 ) -> None:
     """One owner's delivery pass with THEIR effective settings (§18.8)."""
     eff = await effective_ambient_settings(owner if scoped else None)
-    quiet = in_quiet_hours(now, list(eff["ambient_quiet_hours"]))
+    quiet = in_quiet_hours(
+        now, list(eff["ambient_quiet_hours"]), str(eff.get("ambient_timezone") or "UTC")
+    )
     budget = int(eff["ambient_notification_budget_per_day"])
 
     interrupt_rows: list[Delivery] = []
@@ -379,7 +399,14 @@ async def _flush_bucket(
     # out — the user-returned flush stays live because the user is present
     if not quiet:
         async with get_session_factory()() as session:
-            due = await _digest_due(session, now, list(eff["ambient_digest_times"]), owner, scoped)
+            due = await _digest_due(
+                session,
+                now,
+                list(eff["ambient_digest_times"]),
+                owner,
+                scoped,
+                tz=str(eff.get("ambient_timezone") or "UTC"),
+            )
         if due:
             out["digest"] += await _digest_flush(now, owner, scoped)
 

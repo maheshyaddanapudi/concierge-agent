@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import RegistryRecord
@@ -11,6 +11,8 @@ from app.models.base import RegistryRecord
 
 class Tool(RegistryRecord):
     __tablename__ = "tools"
+    # M50 (arch-C2): the server → tools join had no index
+    __table_args__ = (Index("tools_mcp_server_idx", "mcp_server_id"),)
 
     kind: Mapped[str] = mapped_column(String(16))  # 'mcp' | 'native' | 'a2a'
     mcp_server_id: Mapped[uuid.UUID | None] = mapped_column(
