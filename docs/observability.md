@@ -32,7 +32,7 @@ Where it is attached:
 
 - **Logs**: `step_start` / `step_finish` events in `recorder.py` spread the full label set into the structlog event.
 - **Spans**: every step opens an OTel span named `{step_type}:{entity_name|node_id|tier}` with each label as a `concierge.*` attribute, plus `concierge.status` and `concierge.duration_ms` at close. Span nesting mirrors `run_steps.parent_step_id`.
-- **Metrics**: the low-cardinality subset (`tier`, `kind`, `source`, plus `mode`, `status`, `direction`) labels the Prometheus series below — `run_id`-class labels are deliberately kept out of metrics.
+- **Metrics**: the low-cardinality subset (`tier`, `kind`, `source`, `model`, `effort`, plus `mode`, `status`, `direction`) labels the Prometheus series below — `run_id`-class labels are deliberately kept out of metrics. M53 added `model` and `effort` to the step series so a per-model slice needs no log query.
 
 ## Structured logging
 
@@ -57,14 +57,41 @@ Served by the backend at `GET /metrics` (`main.py`) and also proxied by the fron
 | Metric | Type | Labels |
 |---|---|---|
 | `concierge_runs_total` | counter | `mode`, `status` |
-| `concierge_steps_total` | counter | `tier`, `kind`, `source`, `status` |
+| `concierge_steps_total` | counter | `tier`, `kind`, `source`, `model`, `effort`, `status` |
 | `concierge_tool_calls_total` | counter | `kind`, `source`, `status` |
 | `concierge_errors_total` | counter | `tier`, `kind`, `source` |
 | `concierge_run_duration_seconds` | histogram | `mode`, `status` |
-| `concierge_step_duration_seconds` | histogram | `tier`, `kind`, `source` |
-| `concierge_step_tokens` | histogram | `tier`, `kind`, `source`, `direction` |
+| `concierge_step_duration_seconds` | histogram | `tier`, `kind`, `source`, `model`, `effort` |
+| `concierge_step_tokens` | histogram | `tier`, `kind`, `source`, `model`, `effort`, `direction` |
+| `concierge_memory_ops_total` / `concierge_ambient_ops_total` / `concierge_a2a_ops_total` | counter | `kind`, `status` |
+| `concierge_ambient_leader` | gauge | — (1 on the replica leading the ambient tick) |
+| `concierge_llm_errors_total` | counter | `kind` (runs that failed on a provider class, M51) |
+| `concierge_cache_degraded_total` / `concierge_delivery_sends_total` / `concierge_egress_refused_total` / `concierge_regex_guard_total` / `concierge_ambient_evaluator_errors_total` | counter | see M51/M52 |
 
-Grafana can slice native vs custom vs mcp directly off the `kind`/`source` labels.
+Grafana can slice native vs custom vs mcp directly off the `kind`/`source` labels, and per model off `model`.
+
+### The incident signals (M53, arch-M7)
+
+Every finding the production reviews rated high used to be invisible on a dashboard; these series make each one a number. Prometheus + Grafana provisioning that renders them lives under [`observability/`](./observability/README.md) (operator tooling, not one of the three shipped services); the runbooks in [`operations/runbooks/`](./operations/runbooks/README.md) name which series reveals which failure.
+
+| Metric | Type | Labels | What it tells you |
+|---|---|---|---|
+| `concierge_llm_calls_total` | counter | `provider`, `model`, `status` | every provider call through the port, by outcome: `ok` or the M51 class (`rate_limited`, `timeout`, `unknown_model`, `provider_error`). One LangChain callback attached to every model `get_model()` returns — no provider SDK involved. A call the SDK retried internally counts once, with the outcome the run saw |
+| `concierge_llm_latency_seconds` | histogram | `provider`, `model`, `status` | per-call latency; p95 climbing to `LLM_TIMEOUT_S` is a hanging provider |
+| `concierge_db_pool_connections` | gauge | `state` = `checked_out`, `idle`, `overflow`, `capacity` | the SQLAlchemy pool, read at scrape time |
+| `concierge_db_pool_saturation` | gauge | — | `checked_out / capacity`; 1.0 means the next checkout waits `DB_POOL_TIMEOUT` |
+| `concierge_runs_in_flight` | gauge | `state` = `running`, `queued` | admission's view of this replica — **the autoscaling signal** (queued > 0 for long means add a replica or raise `run_max_concurrent`) |
+| `concierge_run_slots` | gauge | — | `run_max_concurrent` as applied |
+| `concierge_backlog_depth` | gauge | `queue` = `ambient_events`, `deliveries` | pending events (no verdict) and undelivered deliveries, sampled by the leader each tick |
+| `concierge_loop_errors_total` | counter | `loop` = `ambient`, `memory`, `retention`, `mcp_health` | a background loop whose tick raised — before M53 these were log-only |
+| `concierge_mcp_servers` | gauge | `state` = `connected`, `reconnecting`, `circuit_open` | the MCP fleet from this replica's point of view |
+| `concierge_mcp_reconnects_total` | counter | `outcome` = `ok`, `failed`, `circuit_open` | automatic reconnect attempts |
+| `concierge_listener_connected` | gauge | `channel` | 1 while a LISTEN connection is up (`registry_cache_inv`, `ambient_events`); the sessions carry `application_name = concierge-listen:<channel>` in `pg_stat_activity` |
+| `concierge_listener_reconnects_total` | counter | `channel` | re-established LISTEN connections (each one reloads what it may have missed) |
+| `concierge_sse_subscribers` | gauge | `stream` = `chat`, `ambient` | open streams |
+| `concierge_retention_deleted_total` | counter | `table` | rows the retention job removed |
+| `concierge_spend_usd_today` | gauge | — | priced spend across every run kind, UTC day — refreshed whenever spend is computed and once per periodic tick, so a fresh process reports the day's spend within a minute whether or not the ceiling gate is on |
+| `concierge_spend_ceiling_refusals_total` | counter | `kind` | runs refused at the ceiling, by trigger kind |
 
 ## Token usage tracking
 

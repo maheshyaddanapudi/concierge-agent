@@ -1,0 +1,33 @@
+# Operator tooling (M53) — NOT one of the three shipped services (spec §2).
+# Runs Prometheus + Grafana on the stack's network, provisioned from this
+# directory:
+#   docker compose -f docs/observability/docker-compose.observability.yml up -d
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.retention.time=2d']
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '127.0.0.1:9090:9090'
+    networks: [concierge]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on: [prometheus]
+    networks: [concierge]
+
+networks:
+  concierge:
+    external: true
+    name: ${CONCIERGE_NETWORK:-concierge-agent_default}

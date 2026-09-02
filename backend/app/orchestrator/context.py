@@ -24,7 +24,7 @@ class RunEventBus:
 
     def _entry(self, run_id: UUID) -> dict[str, Any]:
         return self._runs.setdefault(
-            run_id, {"history": [], "queues": set(), "done": False, "done_at": None}
+            run_id, {"history": [], "queues": set(), "done": False, "done_at": None, "seq": 0}
         )
 
     @staticmethod
@@ -52,6 +52,10 @@ class RunEventBus:
     def emit(self, run_id: UUID, event: dict[str, Any], now: float | None = None) -> None:
         now = self._now() if now is None else now
         entry = self._entry(run_id)
+        # M53: a monotonic per-run sequence is the SSE `id:` — a reconnecting
+        # client resumes from it, and never folds the same event twice
+        entry["seq"] += 1
+        event["seq"] = entry["seq"]
         entry["history"].append(event)
         if event.get("type") == "done" or (
             event.get("type") == "run_status"
@@ -68,14 +72,29 @@ class RunEventBus:
         entry = self._runs.get(run_id)
         return bool(entry and entry["done"])
 
-    def subscribe(self, run_id: UUID) -> tuple[list[dict[str, Any]], asyncio.Queue[Any]]:
+    def last_seq(self, run_id: UUID) -> int:
+        entry = self._runs.get(run_id)
+        return int(entry["seq"]) if entry else 0
+
+    def subscribe(
+        self, run_id: UUID, after: int = 0
+    ) -> tuple[list[dict[str, Any]], asyncio.Queue[Any]]:
+        """History after sequence `after` (0 = everything) plus a live queue."""
+        from app import obs
+
         entry = self._entry(run_id)
         queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1000)
         entry["queues"].add(queue)
-        return list(entry["history"]), queue
+        obs.SSE_SUBSCRIBERS.labels(stream="chat").inc()
+        return [e for e in entry["history"] if int(e.get("seq", 0)) > after], queue
 
     def unsubscribe(self, run_id: UUID, queue: asyncio.Queue[Any]) -> None:
-        self._entry(run_id)["queues"].discard(queue)
+        from app import obs
+
+        queues = self._entry(run_id)["queues"]
+        if queue in queues:
+            queues.discard(queue)
+            obs.SSE_SUBSCRIBERS.labels(stream="chat").dec()
 
     def forget(self, run_id: UUID) -> None:
         self._runs.pop(run_id, None)

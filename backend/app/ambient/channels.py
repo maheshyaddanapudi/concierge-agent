@@ -15,7 +15,7 @@ delivery behavior stays byte-identical to M23–M25.
 """
 
 import asyncio
-import json
+import itertools
 import smtplib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -165,12 +165,17 @@ def stream_subscriber_count() -> int:
     return len(_subscribers)
 
 
+_EVENT_SEQ = itertools.count(1)
+
+
 def _publish(mode: str, rows: list[Delivery]) -> None:
     if not _subscribers:
         return
     now = datetime.now(UTC).isoformat()
     for row in rows:
         event = {
+            # M53: a per-process sequence is the stream's `id:` line
+            "seq": next(_EVENT_SEQ),
             "id": str(row.id),
             "mode": mode,
             "tier": row.tier,
@@ -184,10 +189,6 @@ def _publish(mode: str, rows: list[Delivery]) -> None:
                 queue.put_nowait(event)
             except asyncio.QueueFull:  # a stalled consumer never blocks the tick
                 continue
-
-
-def sse_line(event: dict[str, Any]) -> str:
-    return f"data: {json.dumps(event)}\n\n"
 
 
 # ── the dispatch hook (called by every flush path) ───────────────────

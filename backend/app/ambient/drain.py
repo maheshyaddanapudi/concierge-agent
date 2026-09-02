@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy import bindparam
 from sqlalchemy import text as sql_text
 
+from app import obs
 from app.ambient.store import NOTIFY_CHANNEL
 from app.db import get_session_factory
 from app.models import AmbientEvent
@@ -182,132 +183,176 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> 
     elects a leader per tick (spec §18.9): only the leader runs the
     evaluators; every replica LISTENs and drains (SKIP-LOCKED-safe)."""
     from app.ambient.coordinate import LeaderLease
+    from app.listen import SupervisedListener
     from app.registry_cache import get_cache
 
     wake = asyncio.Event()
-    listener_task: asyncio.Task[None] | None = None
+    # M53: the wake channel is supervised — reconnects with backoff, and a
+    # reconnect sets the wake flag so a fire that arrived during the gap is
+    # drained on the next tick rather than at the next scheduled one
+    listener: SupervisedListener | None = None
     lease = LeaderLease()
 
-    async def _listen() -> None:
-        # dedicated (unpooled) connection: LISTEN breaks under pooling
-        import asyncpg  # type: ignore[import-untyped]
-
-        from app.config import get_config
-
-        dsn = get_config().database_url.replace("postgresql+asyncpg://", "postgresql://")
-        conn = await asyncpg.connect(dsn)
-        try:
-            await conn.add_listener(NOTIFY_CHANNEL, lambda *_: wake.set())
-            await stop.wait()
-        finally:
-            await conn.close()
-
-    while not stop.is_set():
-        try:
-            enabled = bool(await get_cache().setting("ambient_enabled"))
-            if enabled:
-                if listener_task is None or listener_task.done():
-                    listener_task = asyncio.create_task(_listen())
-                if _processor is None:
-                    register_processor(default_processor)
-                if _executor is None:
-                    from app.ambient.execute import execute_fired_event
-
-                    register_executor(execute_fired_event)
-                from app import obs
-
-                # §18.9 leader election: the session advisory lock is the
-                # lease — renew-or-acquire once per tick, failover ≤ one tick
-                leader = await lease.ensure()
-                obs.AMBIENT_LEADER.set(1.0 if leader else 0.0)
-                if leader:
-                    # trigger evaluators (spec §17.2) then the drain
-                    from app.ambient.decide import sweep_hitl_aging
-                    from app.ambient.execute import reap_stalled_runs
-                    from app.ambient.patterns import expire_pattern_deadlines
-                    from app.ambient.triggers import (
-                        evaluate_schedules,
-                        evaluate_state_conditions,
-                        poll_due_intents,
-                    )
-                    from app.ambient.wakeups import fire_due_wakeups
-
-                    # M50: every stage isolated and bounded — one failure or
-                    # hang counts against ITS evaluator, never the tick
-                    await run_evaluator("evaluate_schedules", evaluate_schedules)
-                    await run_evaluator("poll_due_intents", poll_due_intents)
-                    await run_evaluator("evaluate_state_conditions", evaluate_state_conditions)
-                    await run_evaluator("expire_pattern_deadlines", expire_pattern_deadlines)
-                    await run_evaluator("fire_due_wakeups", fire_due_wakeups)
-                    await run_evaluator("sweep_hitl_aging", sweep_hitl_aging)
-                    await run_evaluator("reap_stalled_runs", reap_stalled_runs)
-                    await run_evaluator("drain_once", drain_once)
-                    idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
-                    from app.ambient.deliver import flush_deliveries
-                    from app.ambient.presence import evaluate_presence, is_platform_idle
-
-                    await run_evaluator(
-                        "evaluate_presence", partial(evaluate_presence, idle_minutes)
-                    )
-                    await run_evaluator("flush_deliveries", flush_deliveries)
-                    # M51: failed external sends retry with backoff here,
-                    # bounded per tick, until they succeed or dead-letter
-                    from app.ambient.channels import retry_external_sends
-
-                    await run_evaluator("retry_external_sends", retry_external_sends)
-                    # M42 §17.5: re-judge what nobody saw. Runs AFTER the
-                    # flush so this tick's misses are already visible, and
-                    # is a no-op while ambient_salience_mode is off
-                    from app.ambient.salience import run_salience_pass
-                    from app.ambient.salience_learn import run_salience_tuner
-
-                    await run_evaluator("run_salience_pass", run_salience_pass)
-                    await run_evaluator("run_salience_tuner", run_salience_tuner)
-                    if await is_platform_idle(idle_minutes):
-                        from app.ambient.anticipate import run_anticipation
-
-                        await run_evaluator("run_anticipation", run_anticipation)
-                    # §17.7 learner — consolidation-class, throttled internally,
-                    # a no-op unless ambient_learning_mode is auto|propose
-                    from app.ambient.learn import run_learner
-
-                    await run_evaluator("run_learner", run_learner)
-                    # §19.6 parked A2A tasks — leader-only recheck; a no-op
-                    # while a2a_enabled is off
-                    from app.a2a.poller import poll_parked_tasks
-
-                    await run_evaluator("poll_parked_tasks", poll_parked_tasks)
-                else:
-                    # non-leaders LISTEN + drain only (spec §18.9): the
-                    # SKIP-LOCKED drain and the executor are replica-safe
-                    await run_evaluator("drain_once", drain_once)
-            elif lease.held:
-                # ambient went dark — surrender leadership immediately
-                from app import obs
-
-                await lease.release()
-                obs.AMBIENT_LEADER.set(0.0)
-        except Exception as exc:  # noqa: BLE001 — the loop must survive anything
-            logger.warning("ambient_tick_failed", error=str(exc))
-        wake.clear()
-        # M40: the tick cadence is a live setting (an explicit tick_s arg —
-        # tests — still wins); floor 15s matches the §3.7 validation bound
-        if tick_s is not None:
-            effective_tick = tick_s
-        else:
-            try:
-                effective_tick = float(
-                    max(int(await get_cache().setting("ambient_tick_interval_s")), 15)
+    try:
+        while not stop.is_set():
+            await _tick(stop, wake, lease, get_cache)
+            if listener is None and bool(await _setting_or(get_cache, "ambient_enabled", False)):
+                listener = SupervisedListener(
+                    NOTIFY_CHANNEL,
+                    lambda _payload: wake.set(),
+                    on_reconnect=wake.set,
                 )
-            except Exception:  # noqa: BLE001 — a settings hiccup must not stop the loop
-                effective_tick = 60.0
-        waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(wake.wait())}
-        _, pending = await asyncio.wait(
-            waiters, timeout=effective_tick, return_when=asyncio.FIRST_COMPLETED
+                await listener.start()
+            wake.clear()
+            # M40: the tick cadence is a live setting (an explicit tick_s arg —
+            # tests — still wins); floor 15s matches the §3.7 validation bound
+            if tick_s is not None:
+                effective_tick = tick_s
+            else:
+                try:
+                    effective_tick = float(
+                        max(int(await get_cache().setting("ambient_tick_interval_s")), 15)
+                    )
+                except Exception:  # noqa: BLE001 — a settings hiccup must not stop the loop
+                    effective_tick = 60.0
+            waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(wake.wait())}
+            _, pending = await asyncio.wait(
+                waiters, timeout=effective_tick, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+    finally:
+        # M53: runs on stop AND on cancellation — a clean stop releases the
+        # lease NOW (the lifespan awaits this task), a crash lapses it with
+        # the session; either way the next replica leads within one tick
+        await lease.release()
+        obs.AMBIENT_LEADER.set(0.0)
+        if listener is not None:
+            await listener.stop()
+
+
+async def _setting_or(get_cache: Any, key: str, default: Any) -> Any:
+    try:
+        return await get_cache().setting(key)
+    except Exception:  # noqa: BLE001 — a settings hiccup must not stop the loop
+        return default
+
+
+async def record_backlog_depth() -> dict[str, int]:
+    """M53 (arch-M7): the two queues an operator must see growing — pending
+    ambient events and undelivered deliveries — sampled each leader tick
+    into `concierge_backlog_depth{queue}`."""
+    from sqlalchemy import func, select
+
+    from app.models import AmbientEvent, Delivery
+
+    async with get_session_factory()() as session:
+        events = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(AmbientEvent)
+                    .where(AmbientEvent.verdict.is_(None))
+                )
+            ).scalar_one()
         )
-        for task in pending:
-            task.cancel()
-    # a clean stop releases the lease NOW; a crash lapses it with the session
-    await lease.release()
-    if listener_task is not None:
-        listener_task.cancel()
+        deliveries = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Delivery)
+                    .where(Delivery.delivered_at.is_(None), Delivery.superseded_by.is_(None))
+                )
+            ).scalar_one()
+        )
+    obs.BACKLOG.labels(queue="ambient_events").set(events)
+    obs.BACKLOG.labels(queue="deliveries").set(deliveries)
+    return {"ambient_events": events, "deliveries": deliveries}
+
+
+async def _tick(stop: asyncio.Event, wake: asyncio.Event, lease: Any, get_cache: Any) -> None:
+    """One pass of the loop body: leader election, evaluators, drain."""
+    try:
+        enabled = bool(await get_cache().setting("ambient_enabled"))
+        if enabled:
+            if _processor is None:
+                register_processor(default_processor)
+            if _executor is None:
+                from app.ambient.execute import execute_fired_event
+
+                register_executor(execute_fired_event)
+            from app import obs
+
+            # §18.9 leader election: the session advisory lock is the
+            # lease — renew-or-acquire once per tick, failover ≤ one tick
+            leader = await lease.ensure()
+            obs.AMBIENT_LEADER.set(1.0 if leader else 0.0)
+            if leader:
+                # trigger evaluators (spec §17.2) then the drain
+                from app.ambient.decide import sweep_hitl_aging
+                from app.ambient.execute import reap_stalled_runs
+                from app.ambient.patterns import expire_pattern_deadlines
+                from app.ambient.triggers import (
+                    evaluate_schedules,
+                    evaluate_state_conditions,
+                    poll_due_intents,
+                )
+                from app.ambient.wakeups import fire_due_wakeups
+
+                # M50: every stage isolated and bounded — one failure or
+                # hang counts against ITS evaluator, never the tick
+                await run_evaluator("evaluate_schedules", evaluate_schedules)
+                await run_evaluator("poll_due_intents", poll_due_intents)
+                await run_evaluator("evaluate_state_conditions", evaluate_state_conditions)
+                await run_evaluator("expire_pattern_deadlines", expire_pattern_deadlines)
+                await run_evaluator("fire_due_wakeups", fire_due_wakeups)
+                await run_evaluator("sweep_hitl_aging", sweep_hitl_aging)
+                await run_evaluator("reap_stalled_runs", reap_stalled_runs)
+                await run_evaluator("drain_once", drain_once)
+                await run_evaluator("record_backlog_depth", record_backlog_depth)
+                idle_minutes = int(await get_cache().setting("ambient_idle_minutes"))
+                from app.ambient.deliver import flush_deliveries
+                from app.ambient.presence import evaluate_presence, is_platform_idle
+
+                await run_evaluator("evaluate_presence", partial(evaluate_presence, idle_minutes))
+                await run_evaluator("flush_deliveries", flush_deliveries)
+                # M51: failed external sends retry with backoff here,
+                # bounded per tick, until they succeed or dead-letter
+                from app.ambient.channels import retry_external_sends
+
+                await run_evaluator("retry_external_sends", retry_external_sends)
+                # M42 §17.5: re-judge what nobody saw. Runs AFTER the
+                # flush so this tick's misses are already visible, and
+                # is a no-op while ambient_salience_mode is off
+                from app.ambient.salience import run_salience_pass
+                from app.ambient.salience_learn import run_salience_tuner
+
+                await run_evaluator("run_salience_pass", run_salience_pass)
+                await run_evaluator("run_salience_tuner", run_salience_tuner)
+                if await is_platform_idle(idle_minutes):
+                    from app.ambient.anticipate import run_anticipation
+
+                    await run_evaluator("run_anticipation", run_anticipation)
+                # §17.7 learner — consolidation-class, throttled internally,
+                # a no-op unless ambient_learning_mode is auto|propose
+                from app.ambient.learn import run_learner
+
+                await run_evaluator("run_learner", run_learner)
+                # §19.6 parked A2A tasks — leader-only recheck; a no-op
+                # while a2a_enabled is off
+                from app.a2a.poller import poll_parked_tasks
+
+                await run_evaluator("poll_parked_tasks", poll_parked_tasks)
+            else:
+                # non-leaders LISTEN + drain only (spec §18.9): the
+                # SKIP-LOCKED drain and the executor are replica-safe
+                await run_evaluator("drain_once", drain_once)
+        elif lease.held:
+            # ambient went dark — surrender leadership immediately
+            await lease.release()
+            obs.AMBIENT_LEADER.set(0.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the loop must survive anything
+        obs.LOOP_ERRORS.labels(loop="ambient").inc()
+        logger.warning("ambient_tick_failed", error=str(exc))

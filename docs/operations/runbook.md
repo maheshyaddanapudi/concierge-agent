@@ -24,7 +24,10 @@ Notes from the scripts themselves:
 | Check | Command | Healthy looks like |
 |---|---|---|
 | Backend liveness | `curl -s http://localhost:8000/health` | `{"status":"ok"}` |
-| Backend readiness (M51) | `curl -s -i http://localhost:8000/ready` | `200` with `{"status":"ready","accepting":true,"running":n,"queued":n,"max_concurrent":8}`; `503` while the process is draining for shutdown — point the load balancer's readiness probe here, liveness at `/health` |
+| Backend readiness (M51/M53) | `curl -s -i http://localhost:8000/ready` | `200` with `{"status":"ready","db":"ok","accepting":true,"running":n,"queued":n,"max_concurrent":8,"draining_since":null}`; `503 draining` after `SIGUSR1` or during shutdown, `503 degraded` when the database does not answer in 2 s — point the load balancer's readiness probe here, liveness at `/health` |
+| Incident signals (M53) | `curl -s http://localhost:8000/metrics \| grep -E 'concierge_(db_pool|runs_in_flight|backlog|loop_errors|llm_calls|mcp_servers|listener)'` | pool saturation under 1.0, `queued` 0, backlog draining, loop errors flat, `status="ok"` dominating LLM calls, listeners at 1 — see the per-failure pages in [`runbooks/`](./runbooks/README.md) |
+| Spend (M53) | `curl -s http://localhost:8000/api/v1/spend` | `{"day":…,"usd_today":…,"by_kind":{…},"ceiling":{"enabled":…,"reached":false}}` |
+| Retention (M53) | `curl -s http://localhost:8000/api/v1/retention` | per table: `enabled`, `days`, `eligible` |
 | DB container | `docker compose ps db` | `healthy` (compose healthcheck: `pg_isready -U concierge`, 3 s interval, 20 retries) |
 | All containers | `docker compose ps` | `db` healthy, `backend` and `frontend` `Up` |
 | Backend logs | `docker compose logs -f backend` | JSON structlog lines; `registry_cache_started`, `mcp_connected` per seeded server at startup |
@@ -32,7 +35,7 @@ Notes from the scripts themselves:
 | Cache | `curl -s http://localhost:8000/api/v1/cache/status` | `{"mode": "...", "registries": {tools|skills|sub_agents|settings: {records, generation, loaded_at, cached}}}` |
 | MCP servers | `GET /api/v1/mcp-servers` | `status: "active"`, recent `last_connected_at`, `last_error: null` |
 
-The `backend` compose service has no container-level healthcheck; `/health` is the probe. `frontend` is nginx serving the built SPA and proxying `/api/` and `/metrics` to `backend:8000` (see `frontend/nginx.conf`).
+Since M53 the `backend` compose service carries a container healthcheck on `/health` (liveness), `restart: unless-stopped`, resource limits and a 40 s stop grace; `frontend` (nginx serving the built SPA and proxying `/api/` and `/metrics` to `backend:8000`, see `frontend/nginx.conf`) waits for a healthy backend. Rolling a new build: `./deploy.sh` (readiness-first — `SIGUSR1`, wait for `/ready` 503, recreate, wait for `/ready` 200; `scaling.md` has the sequence). Backup and restore: `./backup.sh` / `./restore.sh` (`backup-restore.md`). Failure classes with the metric that reveals each and the action that resolves it: [`runbooks/`](./runbooks/README.md).
 
 ## Common operational tasks
 
@@ -80,7 +83,7 @@ This is an operator override, never a correctness requirement — every write pa
 
 ### Handle a dead MCP server
 
-Containment (by construction, `backend/app/factory/worker.py` `_make_mcp_proxy`): MCP tools are lazy proxies that resolve the live session at call time. A dead server surfaces as a **tool error inside the run** (error-edge semantics in workers; the process and other runs are unaffected). The health loop (`mcp_health_interval_s`, default 30 s) pings each connection; a failed ping tears the connection down and flips the server row to `status=error` with `last_error="health ping failed"`.
+Containment (by construction, `backend/app/factory/worker.py` `_make_mcp_proxy`): MCP tools are lazy proxies that resolve the live session at call time. A dead server surfaces as a **tool error inside the run** (error-edge semantics in workers; the process and other runs are unaffected). The health loop (`mcp_health_interval_s`, default 30 s) pings each connection; a failed ping tears the connection down and flips the server row to `status=error` with `last_error="health ping failed"`. Since M53 the manager then **reconnects on its own** with backoff (5 s doubling to 5 min, `mcp_auto_reconnect_enabled`) and gives up after `mcp_reconnect_max_attempts` consecutive failures with `last_error` reading `circuit open after N failed reconnect attempts … — reconnect manually`; `concierge_mcp_servers{state}` shows `connected` / `reconnecting` / `circuit_open`. Re-ingest keeps your intent: a tool you set inactive or deleted stays that way when the server comes back (a deleted tool has a **Restore** action on the Tools page); only a tool the server dropped is deactivated, and only that tool is reactivated when it returns.
 
 Recovery:
 

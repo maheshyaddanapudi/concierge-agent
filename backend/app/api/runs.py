@@ -59,7 +59,9 @@ def _step_out(step: RunStep) -> dict[str, Any]:
     }
 
 
-def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
+def _run_out(
+    run: Run, with_steps: bool = False, cost: dict[str, Any] | None = None
+) -> dict[str, Any]:
     data: dict[str, Any] = {
         "id": str(run.id),
         "conversation_id": str(run.conversation_id),
@@ -81,10 +83,21 @@ def _run_out(run: Run, with_steps: bool = False) -> dict[str, Any]:
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "total_input_tokens": run.total_input_tokens,
         "total_output_tokens": run.total_output_tokens,
+        # M53 cost model: priced from the usage above; null when a model in
+        # play has no price (reported, never guessed)
+        "cost_usd": cost["cost_usd"] if cost else None,
+        "cost_priced": bool(cost["cost_priced"]) if cost else False,
     }
     if with_steps:
         data["steps"] = [_step_out(s) for s in run.steps]
     return data
+
+
+async def _costs(session: AsyncSession, runs: list[Run]) -> dict[UUID, dict[str, Any]]:
+    from app.cost import attach_costs
+    from app.settings_store import get_settings
+
+    return await attach_costs(session, runs, await get_settings(session))
 
 
 @router.get("")
@@ -106,7 +119,8 @@ async def list_runs(
     page = query.order_by(Run.started_at.desc()).limit(limit).offset(offset)
     runs = list((await session.execute(page)).scalars())
     response.headers["X-Total-Count"] = str(total)
-    return [_run_out(r) for r in runs]
+    costs = await _costs(session, runs)
+    return [_run_out(r, cost=costs.get(r.id)) for r in runs]
 
 
 @router.delete("", status_code=204)
@@ -127,7 +141,8 @@ async def get_run(run_id: UUID, session: SessionDep) -> dict[str, Any]:
     ).scalar_one_or_none()  # M50: the one place the step tree is loaded
     if run is None or not owns_row(run):
         raise HTTPException(status_code=404, detail="run not found")
-    return _run_out(run, with_steps=True)
+    costs = await _costs(session, [run])
+    return _run_out(run, with_steps=True, cost=costs.get(run.id))
 
 
 @router.post("/{run_id}/cancel")

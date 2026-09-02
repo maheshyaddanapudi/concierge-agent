@@ -294,43 +294,54 @@ async def patch_watch(intent_id: UUID, body: WatchPatch, session: SessionDep) ->
     return _watch_out(row)
 
 
+async def ambient_event_stream() -> Any:
+    """The global delivery stream's events (M53 wire format): every delivery
+    is a `delivery` event with a monotonic `id:`, a `ping` event rides every
+    keepalive (≤ 15 s — inside the tightest balancer default), and the
+    stream ends by itself when ambient goes dark."""
+    import asyncio
+    import json
+
+    from app import obs
+    from app.ambient import channels
+    from app.registry_cache import get_cache
+
+    sub_id, queue = channels.subscribe_stream()
+    obs.SSE_SUBSCRIBERS.labels(stream="ambient").inc()
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=channels.STREAM_KEEPALIVE_S)
+            except TimeoutError:
+                # keepalive doubles as the dark check: the stream exists
+                # only while ambient is on
+                if not bool(await get_cache().setting("ambient_enabled")):
+                    return
+                yield {"event": "ping", "data": "{}"}
+                continue
+            yield {"id": str(event.get("seq", "")), "event": "delivery", "data": json.dumps(event)}
+    finally:
+        channels.unsubscribe_stream(sub_id)
+        obs.SSE_SUBSCRIBERS.labels(stream="ambient").dec()
+
+
 @ledger_router.get("/stream")
 async def ambient_stream() -> Any:
     """Global delivery-event SSE (spec §18.4): exists only while ambient is
     on — 409 when dark, mirroring the fire endpoint. The UI subscribes only
     when the settings snapshot says ambient is on; dark ⇒ no stream, no
-    subscription, no toast."""
-    import asyncio
+    subscription, no toast. M53: served by sse-starlette so the stream is
+    closed the moment the process starts shutting down (a client reconnects
+    to the next process), with ids and a bounded heartbeat."""
+    from sse_starlette.sse import EventSourceResponse
 
-    from fastapi.responses import StreamingResponse
-
-    from app.ambient import channels
     from app.registry_cache import get_cache
 
     if not bool(await get_cache().setting("ambient_enabled")):
         raise HTTPException(409, "ambient mode is disabled (ambient_enabled=false)")
-
-    async def gen() -> Any:
-        sub_id, queue = channels.subscribe_stream()
-        try:
-            yield ": connected\n\n"
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=channels.STREAM_KEEPALIVE_S)
-                except TimeoutError:
-                    # keepalive doubles as the dark check: the stream exists
-                    # only while ambient is on
-                    if not bool(await get_cache().setting("ambient_enabled")):
-                        return
-                    yield ": keepalive\n\n"
-                    continue
-                yield channels.sse_line(event)
-        finally:
-            channels.unsubscribe_stream(sub_id)
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
+    return EventSourceResponse(
+        ambient_event_stream(),
+        ping=60,  # sse-starlette's comment ping is only a backstop; `ping` events carry the beat
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 

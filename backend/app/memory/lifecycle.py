@@ -394,12 +394,36 @@ async def run_due_jobs() -> dict[str, int]:
 
 
 async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
-    """Lifespan-owned loop (spec §16.2): ticks are cheap when memory is off."""
+    """Lifespan-owned loop (spec §16.2): ticks are cheap when memory is off.
+    M53: the same loop ticks retention (its own gates, its own lock) and
+    refreshes provider price feeds hourly; every failure is counted in
+    `concierge_loop_errors_total{loop}` — a wedged loop is a visible one."""
+    from app import obs
+    from app.cost import refresh_spend_gauge
+    from app.llm.pricing import refresh_provider_prices
+    from app.retention import maybe_run_retention
+
+    prices_refreshed_at: float | None = None
     while not stop.is_set():
         try:
             await run_due_jobs()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
+            obs.LOOP_ERRORS.labels(loop="memory").inc()
             logger.warning("memory_periodic_tick_failed", error=str(exc))
+        try:
+            await maybe_run_retention()
+        except Exception as exc:  # noqa: BLE001 — retention must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="retention").inc()
+            logger.warning("retention_tick_failed", error=str(exc))
+        now = asyncio.get_event_loop().time()
+        if prices_refreshed_at is None or now - prices_refreshed_at >= 3600:
+            prices_refreshed_at = now
+            await refresh_provider_prices()  # never raises
+        try:
+            await refresh_spend_gauge()
+        except Exception as exc:  # noqa: BLE001 — a gauge refresh must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="spend").inc()
+            logger.warning("spend_gauge_refresh_failed", error=str(exc))
         try:
             await asyncio.wait_for(stop.wait(), timeout=tick_s)
         except TimeoutError:

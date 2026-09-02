@@ -12,15 +12,21 @@ provider budget. Admission is now explicit and truthful:
   Retry-After instead of an invisible wait; ambient fires queue regardless,
   because a fire is work the system already accepted.
 
-`set_accepting(False)` is the readiness gate: a draining process refuses
-new work (503) while in-flight runs finish or are cancelled (M51 shutdown).
-The counters are process-local, like RUNNING_TASKS — M54 moves the run
-registry to Postgres; this is the per-replica half it will keep.
+`begin_drain()` is the readiness gate (M53): a draining process refuses new
+work (503), reports 503 on `/ready`, and politely closes the streams it can
+no longer serve while in-flight runs finish or are cancelled (M51 shutdown).
+It is reachable from a signal (SIGUSR1) so a pre-stop hook can flip
+readiness while the listener is still open — the balancer sees the 503
+BEFORE SIGTERM closes the port. The counters are process-local, like
+RUNNING_TASKS, and exported as `concierge_runs_in_flight{state}` — the
+autoscaling signal; M54 moves the run registry to Postgres.
 """
 
 from __future__ import annotations
 
 import asyncio
+import signal
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -30,36 +36,72 @@ from uuid import UUID
 class AtCapacity(RuntimeError):
     """The queue is full (or the process is draining) — shed the request."""
 
-    def __init__(self, detail: str, retry_after_s: int = 5) -> None:
+    def __init__(self, detail: str, retry_after_s: int = 5, status_code: int = 503) -> None:
         super().__init__(detail)
         self.detail = detail
         self.retry_after_s = retry_after_s
+        self.status_code = status_code
 
 
 _running: set[UUID] = set()
 _queued: set[UUID] = set()
 _accepting = True
+_draining_since: float | None = None
 _semaphore: asyncio.Semaphore | None = None
 _semaphore_size = 0
 
 
+def _publish() -> None:
+    from app import obs
+
+    obs.RUNS_IN_FLIGHT.labels(state="running").set(len(_running))
+    obs.RUNS_IN_FLIGHT.labels(state="queued").set(len(_queued))
+    obs.RUN_SLOTS.set(_semaphore_size)
+
+
 def reset() -> None:
     """Testing hook: forget counters and the cached semaphore."""
-    global _semaphore, _semaphore_size, _accepting
+    global _semaphore, _semaphore_size, _accepting, _draining_since
     _running.clear()
     _queued.clear()
     _semaphore = None
     _semaphore_size = 0
     _accepting = True
+    _draining_since = None
+    _publish()
 
 
 def set_accepting(value: bool) -> None:
-    global _accepting
+    global _accepting, _draining_since
     _accepting = value
+    if value:
+        _draining_since = None
+    elif _draining_since is None:
+        _draining_since = time.time()
+
+
+def begin_drain() -> None:
+    """Readiness first: stop taking work, keep serving what is in flight."""
+    set_accepting(False)
 
 
 def accepting() -> bool:
     return _accepting
+
+
+def draining_since() -> float | None:
+    return _draining_since
+
+
+def install_drain_signal(sig: int = signal.SIGUSR1) -> bool:
+    """Bind `begin_drain` to a signal on the running loop (the pre-stop
+    hook: `kill -USR1 <pid>`). False where signals cannot be bound (not the
+    main thread, or a platform without them)."""
+    try:
+        asyncio.get_running_loop().add_signal_handler(sig, begin_drain)
+    except (NotImplementedError, RuntimeError, ValueError, AttributeError):
+        return False
+    return True
 
 
 def snapshot() -> dict[str, Any]:
@@ -68,6 +110,7 @@ def snapshot() -> dict[str, Any]:
         "running": len(_running),
         "queued": len(_queued),
         "max_concurrent": _semaphore_size,
+        "draining_since": _draining_since,
     }
 
 
@@ -85,6 +128,7 @@ def _get_semaphore(max_concurrent: int) -> asyncio.Semaphore:
     if _semaphore is None or (_semaphore_size != max_concurrent and not _running):
         _semaphore = asyncio.Semaphore(max_concurrent)
         _semaphore_size = max_concurrent
+        _publish()
     return _semaphore
 
 
@@ -111,15 +155,19 @@ async def slot(run_id: UUID, settings: dict[str, Any]) -> AsyncIterator[None]:
     max_concurrent, _ = _limits_from(settings)
     sem = _get_semaphore(max_concurrent)
     _queued.add(run_id)
+    _publish()
     try:
         await sem.acquire()
     except BaseException:
         _queued.discard(run_id)
+        _publish()
         raise
     _queued.discard(run_id)
     _running.add(run_id)
+    _publish()
     try:
         yield
     finally:
         _running.discard(run_id)
+        _publish()
         sem.release()

@@ -173,19 +173,21 @@ class RunRecorder:
                 )
                 await session.commit()
         logger.info("step_finish", **labels)
-        tier = str(labels.get("tier") or "orchestrator")
-        kind = str(labels.get("kind") or "-")
-        source = str(labels.get("source") or "-")
-        obs.STEPS_TOTAL.labels(tier=tier, kind=kind, source=source, status=status).inc()
-        obs.STEP_DURATION.labels(tier=tier, kind=kind, source=source).observe(duration_ms / 1000)
+        # M53: the §10 label set's low-cardinality members on every series
+        dims = {
+            "tier": str(labels.get("tier") or "orchestrator"),
+            "kind": str(labels.get("kind") or "-"),
+            "source": str(labels.get("source") or "-"),
+            "model": str(labels.get("model") or "-"),
+            "effort": str(labels.get("effort") or "-"),
+        }
+        tier, kind, source = dims["tier"], dims["kind"], dims["source"]
+        obs.STEPS_TOTAL.labels(**dims, status=status).inc()
+        obs.STEP_DURATION.labels(**dims).observe(duration_ms / 1000)
         if input_tokens:
-            obs.STEP_TOKENS.labels(tier=tier, kind=kind, source=source, direction="input").observe(
-                input_tokens
-            )
+            obs.STEP_TOKENS.labels(**dims, direction="input").observe(input_tokens)
         if output_tokens:
-            obs.STEP_TOKENS.labels(tier=tier, kind=kind, source=source, direction="output").observe(
-                output_tokens
-            )
+            obs.STEP_TOKENS.labels(**dims, direction="output").observe(output_tokens)
         if status == "failed":
             obs.ERRORS_TOTAL.labels(tier=tier, kind=kind, source=source).inc()
             self.emit("error", {"step_id": str(step_id), "message": error or "step failed"})

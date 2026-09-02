@@ -1,7 +1,7 @@
 /** Settings — the command center (spec §8.7): models + params, orchestrator
  * mode, limits, MCP controls, observability, HITL queue, data ops. Every
  * control maps to app_settings or an endpoint; nothing needs a restart. */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { api } from '../api/client'
 import {
   useCacheStatus,
@@ -10,8 +10,11 @@ import {
   usePatchSettings,
   useProviders,
   useRefreshCache,
+  useRetention,
+  useRunRetention,
   useServers,
   useSettings,
+  useSpend,
 } from '../api/hooks'
 import type { ModelParams } from '../api/types'
 import { THEMES, applyTheme, currentTheme, type Theme } from '../theme'
@@ -22,6 +25,7 @@ import {
   PageHeader,
   Select,
   StatusPill,
+  TextArea,
   TextInput,
   Toggle,
   cx,
@@ -29,9 +33,18 @@ import {
 } from '../components/ui'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  // M53 accessibility: each section is a named landmark region
+  const headingId = useId()
   return (
-    <section className="rounded-lg border border-slate-800 bg-slate-900/30 p-4">
-      <h2 className="mb-3 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+    <section
+      role="region"
+      aria-labelledby={headingId}
+      className="rounded-lg border border-slate-800 bg-slate-900/30 p-4"
+    >
+      <h2
+        id={headingId}
+        className="mb-3 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+      >
         {title}
       </h2>
       <div className="space-y-3">{children}</div>
@@ -185,22 +198,192 @@ function IntSetting({
   const patch = usePatchSettings()
   if (!settings) return null
   return (
-    <Field label={label} hint={hint}>
-      <div className="space-y-1">
+    <Field label={label} hint={hint} after={<ErrorNote error={patch.error} />}>
+      <TextInput
+        type="number"
+        defaultValue={Number(settings[k])}
+        className="max-w-28"
+        onBlur={(e) => {
+          const v = Number(e.target.value)
+          // only nonsense is blocked here — spec-range checks stay server-side
+          // so an out-of-range write surfaces its 422 inline (§14e-42)
+          if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
+        }}
+      />
+    </Field>
+  )
+}
+
+// ── M53 sections: retention, cost ────────────────────────────────
+
+// the keys are spelled out (not templated) so the §3.7.1 coverage test can
+// see every one of them on this page
+const RETENTION_ROWS = [
+  {
+    table: 'ambient_events',
+    gate: 'retention_ambient_events_enabled',
+    days: 'retention_ambient_events_days',
+    hint: 'processed events (any verdict) older than the window; pending events survive',
+  },
+  {
+    table: 'deliveries',
+    gate: 'retention_deliveries_enabled',
+    days: 'retention_deliveries_days',
+    hint: 'delivered or superseded outbox rows older than the window; undelivered rows survive',
+  },
+  {
+    table: 'ambient_policies',
+    gate: 'retention_ambient_policies_enabled',
+    days: 'retention_ambient_policies_days',
+    hint: 'superseded policy rows; the newest row per category is the live policy and is never touched',
+  },
+  {
+    table: 'pattern_instances',
+    gate: 'retention_pattern_instances_enabled',
+    days: 'retention_pattern_instances_days',
+    hint: 'matched or expired composite-pattern instances; armed timers survive',
+  },
+  {
+    table: 'a2a_tasks',
+    gate: 'retention_a2a_tasks_enabled',
+    days: 'retention_a2a_tasks_days',
+    hint: 'remote-agent tasks in a terminal state; open and parked tasks survive',
+  },
+  {
+    table: 'auth_sessions',
+    gate: 'retention_auth_sessions_enabled',
+    days: 'retention_auth_sessions_days',
+    hint: 'sessions past their expiry by the window — on by default, mirrors the login-time sweep',
+  },
+] as const
+
+function RetentionSection() {
+  const { data } = useRetention()
+  const run = useRunRetention()
+  const rows = data?.tables ?? []
+  return (
+    <Section title="Retention">
+      <p className="text-xs text-slate-500">
+        The six tables nothing else ever trims. Each purge answers to its own switch, enforced
+        inside the job — off means nothing is deleted, whoever calls it. Deleting is irreversible,
+        so every gate but the expired-session sweep is born off. The job runs hourly on one replica.
+      </p>
+      <div className="space-y-2">
+        {RETENTION_ROWS.map(({ table, gate, days, hint }) => {
+          const row = rows.find((r) => r.table === table)
+          return (
+            <div
+              key={table}
+              className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-4 rounded-md border border-slate-800/70 px-3 py-2"
+            >
+              <BoolSetting label={table} k={gate} hint={hint} />
+              <IntSetting label={`${table} window (days)`} k={days} />
+              <div
+                className="pt-5 font-mono text-[11px] text-slate-500"
+                data-testid={`eligible-${table}`}
+              >
+                {row ? `${row.eligible} rows eligible now` : '—'}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="flex items-center gap-3">
+        <Button disabled={run.isPending} onClick={() => run.mutate()}>
+          {run.isPending ? 'Running…' : 'Run retention now'}
+        </Button>
+        {run.data && (
+          <span className="font-mono text-[11px] text-slate-500">
+            {run.data.skipped
+              ? run.data.skipped
+              : Object.entries(run.data.deleted)
+                  .map(([t, n]) => `${t}: ${n}`)
+                  .join(' · ')}
+          </span>
+        )}
+      </div>
+      <ErrorNote error={run.error} />
+    </Section>
+  )
+}
+
+function CostSection() {
+  const { data: settings } = useSettings()
+  const { data: spend } = useSpend()
+  const patch = usePatchSettings()
+  const [priceError, setPriceError] = useState<string | null>(null)
+  if (!settings) return null
+  return (
+    <Section title="Cost">
+      <Field
+        label="Spend today (UTC)"
+        hint="priced from the usage every run already records: each step at its model, the remainder at the presentation model; a model without a price is reported as unpriced, never guessed"
+      >
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+          <span className="font-mono text-sm text-slate-100">
+            {spend ? '$' + spend.usd_today.toFixed(4) : '—'}
+          </span>
+          {spend && (
+            <span className="text-slate-500">
+              across {spend.runs_today} run{spend.runs_today === 1 ? '' : 's'}
+              {spend.unpriced_tokens > 0 ? ` · ${spend.unpriced_tokens} tokens unpriced` : ''}
+            </span>
+          )}
+          {spend &&
+            Object.entries(spend.by_kind).map(([kind, usd]) => (
+              <span
+                key={kind}
+                className="rounded-full bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400 ring-1 ring-slate-700"
+              >
+                {kind} ${usd.toFixed(4)}
+              </span>
+            ))}
+          {spend?.ceiling.reached && (
+            <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] text-rose-300 ring-1 ring-rose-500/30">
+              ceiling reached — new runs refused until UTC midnight
+            </span>
+          )}
+        </div>
+      </Field>
+      <BoolSetting
+        label="Spend ceiling"
+        k="spend_ceiling_enabled"
+        hint="one number for the whole deployment — interactive, ambient and eval runs alike; past it a message is refused with 429, an ambient fire is held on the ledger, an eval batch stops. Off is the pre-M53 admission, unchanged."
+      />
+      <Field label="Ceiling (USD per day)" after={<ErrorNote error={patch.error} />}>
         <TextInput
           type="number"
-          defaultValue={Number(settings[k])}
-          className="max-w-28"
+          step="0.01"
+          min={0.01}
+          className="max-w-32"
+          defaultValue={Number(settings.spend_ceiling_usd_per_day ?? 10)}
           onBlur={(e) => {
             const v = Number(e.target.value)
-            // only nonsense is blocked here — spec-range checks stay server-side
-            // so an out-of-range write surfaces its 422 inline (§14e-42)
-            if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
+            if (v > 0 && v !== Number(settings.spend_ceiling_usd_per_day))
+              patch.mutate({ spend_ceiling_usd_per_day: v })
           }}
         />
-        <ErrorNote error={patch.error} />
-      </div>
-    </Field>
+      </Field>
+      <Field
+        label="Price overrides (JSON)"
+        hint='{"provider:model": {"input_per_m": 3, "output_per_m": 15}} — USD per million tokens; an override wins over the provider-reported and built-in figures'
+        after={priceError ? <ErrorNote error={priceError} /> : null}
+      >
+        <TextArea
+          rows={4}
+          defaultValue={JSON.stringify(settings.model_prices ?? {}, null, 2)}
+          onBlur={(e) => {
+            try {
+              const parsed = JSON.parse(e.target.value || '{}') as Record<string, unknown>
+              setPriceError(null)
+              patch.mutate({ model_prices: parsed })
+            } catch (err) {
+              setPriceError(`not valid JSON: ${String(err)}`)
+            }
+          }}
+        />
+      </Field>
+    </Section>
   )
 }
 
@@ -262,6 +445,7 @@ function ChannelRouting() {
             </div>
             <TextInput
               placeholder="e.g. in_app, email"
+              aria-label={`${mode} channels`}
               defaultValue={(routing[mode] ?? []).join(', ')}
               onBlur={(e) =>
                 patch.mutate({ ambient_channels: channelRoutingOut(routing, mode, e.target.value) })
@@ -321,7 +505,11 @@ export function SettingsPage() {
       <ErrorNote error={patch.error ?? error} />
 
       <Section title="Models">
-        <ModelSelect label="Default model" refKey="default_model" paramsKey="default_model_params" />
+        <ModelSelect
+          label="Default model"
+          refKey="default_model"
+          paramsKey="default_model_params"
+        />
         <ModelSelect
           label="Planner model"
           refKey="planner_model"
@@ -549,30 +737,26 @@ export function SettingsPage() {
           <Field
             label="Forget similarity (0.5–1)"
             hint="semantic suppression threshold — paraphrases of a forgotten fact at or above this cosine similarity are refused; hash-only matching when no embedding model is set"
+            after={<ErrorNote error={patch.error} />}
           >
-            <div className="space-y-1">
-              <TextInput
-                defaultValue={String(settings.memory_forget_similarity ?? 0.85)}
-                className="max-w-28"
-                onBlur={(e) => patch.mutate({ memory_forget_similarity: Number(e.target.value) })}
-              />
-              <ErrorNote error={patch.error} />
-            </div>
+            <TextInput
+              defaultValue={String(settings.memory_forget_similarity ?? 0.85)}
+              className="max-w-28"
+              onBlur={(e) => patch.mutate({ memory_forget_similarity: Number(e.target.value) })}
+            />
           </Field>
           <Field
             label="Admission floor (0–0.9)"
             hint="§16.2 — minimum extraction confidence to admit a machine write; the M47 learner moves this within [0.5, 0.9] when enabled"
+            after={<ErrorNote error={patch.error} />}
           >
-            <div className="space-y-1">
-              <TextInput
-                defaultValue={String(settings.memory_admission_min_confidence ?? 0.5)}
-                className="max-w-28"
-                onBlur={(e) =>
-                  patch.mutate({ memory_admission_min_confidence: Number(e.target.value) })
-                }
-              />
-              <ErrorNote error={patch.error} />
-            </div>
+            <TextInput
+              defaultValue={String(settings.memory_admission_min_confidence ?? 0.5)}
+              className="max-w-28"
+              onBlur={(e) =>
+                patch.mutate({ memory_admission_min_confidence: Number(e.target.value) })
+              }
+            />
           </Field>
           <Field
             label="Extraction learning"
@@ -680,6 +864,18 @@ export function SettingsPage() {
       </Section>
 
       <Section title="MCP">
+        <div className="grid grid-cols-3 gap-4">
+          <BoolSetting
+            label="Auto-reconnect"
+            k="mcp_auto_reconnect_enabled"
+            hint="a server that fails to connect or fails a health ping is retried with backoff (5 s doubling to 5 min); off leaves it in error until you reconnect it"
+          />
+          <IntSetting
+            label="Reconnect attempts (max)"
+            k="mcp_reconnect_max_attempts"
+            hint="consecutive failures before the circuit opens — the row says so, and Reconnect resets it"
+          />
+        </div>
         <div className="flex items-end gap-4">
           <IntSetting label="Health-check interval (s)" k="mcp_health_interval_s" />
           <Button
@@ -729,10 +925,7 @@ export function SettingsPage() {
               <IntSetting label="Max routines" k="ambient_max_routines" />
               <IntSetting label="Runs per day" k="ambient_runs_per_day" />
               <IntSetting label="Routine events / hour" k="ambient_routine_events_per_hour" />
-              <IntSetting
-                label="Wakeups / routine / day"
-                k="ambient_wakeups_per_routine_per_day"
-              />
+              <IntSetting label="Wakeups / routine / day" k="ambient_wakeups_per_routine_per_day" />
               <IntSetting label="HITL timeout (h)" k="ambient_hitl_timeout_h" />
               <IntSetting
                 label="Notification budget / day"
@@ -935,6 +1128,8 @@ export function SettingsPage() {
         />
       </Section>
 
+      <CostSection />
+
       <Section title="Observability">
         <div className="grid grid-cols-2 gap-4">
           <Field label="Log level">
@@ -953,7 +1148,10 @@ export function SettingsPage() {
             k="langsmith_enabled"
             hint="per-run tracer from these settings; LANGSMITH_API_KEY stays env-only"
           />
-          <Field label="LangSmith endpoint" hint="empty = SaaS; point at a local instance to self-host">
+          <Field
+            label="LangSmith endpoint"
+            hint="empty = SaaS; point at a local instance to self-host"
+          >
             <TextInput
               defaultValue={String(settings.langsmith_endpoint)}
               onBlur={(e) => patch.mutate({ langsmith_endpoint: e.target.value })}
@@ -1065,6 +1263,8 @@ export function SettingsPage() {
           </Button>
         </div>
       </Section>
+
+      <RetentionSection />
     </div>
   )
 }

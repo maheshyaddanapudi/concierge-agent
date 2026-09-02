@@ -49,8 +49,12 @@ def configure_logging(level: str = "INFO") -> None:
 # ── metrics (spec §10): counters + histograms labeled tier/kind/source ─
 
 RUNS_TOTAL = Counter("concierge_runs_total", "Runs started", ["mode", "status"])
+# M53: the §10 label set on metrics too — the low-cardinality members
+# (tier, kind, source, model, effort, status); run/step ids stay out
 STEPS_TOTAL = Counter(
-    "concierge_steps_total", "Run steps recorded", ["tier", "kind", "source", "status"]
+    "concierge_steps_total",
+    "Run steps recorded",
+    ["tier", "kind", "source", "model", "effort", "status"],
 )
 TOOL_CALLS_TOTAL = Counter(
     "concierge_tool_calls_total", "Tool calls executed", ["kind", "source", "status"]
@@ -107,11 +111,112 @@ AMBIENT_EVALUATOR_ERRORS = Counter(
     ["evaluator", "kind"],
 )
 STEP_DURATION = Histogram(
-    "concierge_step_duration_seconds", "Step duration", ["tier", "kind", "source"]
+    "concierge_step_duration_seconds",
+    "Step duration",
+    ["tier", "kind", "source", "model", "effort"],
 )
 STEP_TOKENS = Histogram(
-    "concierge_step_tokens", "Tokens per step", ["tier", "kind", "source", "direction"]
+    "concierge_step_tokens",
+    "Tokens per step",
+    ["tier", "kind", "source", "model", "effort", "direction"],
 )
+
+# ── M53: the signals that diagnose an incident (arch-M7) ─────────
+LLM_CALLS = Counter(
+    "concierge_llm_calls_total",
+    "Provider calls through the port by outcome: ok or the M51 error class",
+    ["provider", "model", "status"],
+)
+LLM_LATENCY = Histogram(
+    "concierge_llm_latency_seconds",
+    "Provider call latency through the port",
+    ["provider", "model", "status"],
+    buckets=(0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300),
+)
+DB_POOL = Gauge(
+    "concierge_db_pool_connections",
+    "SQLAlchemy pool: checked_out, idle, overflow, capacity (pool_size + max_overflow)",
+    ["state"],
+)
+DB_POOL_SATURATION = Gauge(
+    "concierge_db_pool_saturation", "checked_out / capacity — 1.0 means the next checkout waits"
+)
+RUNS_IN_FLIGHT = Gauge(
+    "concierge_runs_in_flight",
+    "Runs executing or waiting for a slot on this replica (the autoscaling signal)",
+    ["state"],
+)
+RUN_SLOTS = Gauge("concierge_run_slots", "run_max_concurrent as this replica applies it")
+BACKLOG = Gauge(
+    "concierge_backlog_depth",
+    "Pending ambient events (no verdict) and undelivered deliveries, sampled each leader tick",
+    ["queue"],
+)
+LOOP_ERRORS = Counter(
+    "concierge_loop_errors_total",
+    "Background loop ticks that raised (ambient, memory, retention, mcp_health)",
+    ["loop"],
+)
+MCP_SERVERS = Gauge(
+    "concierge_mcp_servers",
+    "MCP servers by connection state: connected, reconnecting, circuit_open",
+    ["state"],
+)
+MCP_RECONNECTS = Counter(
+    "concierge_mcp_reconnects_total",
+    "Automatic MCP reconnect attempts by outcome: ok, failed, circuit_open",
+    ["outcome"],
+)
+LISTENER_CONNECTED = Gauge(
+    "concierge_listener_connected", "1 while the LISTEN connection for a channel is up", ["channel"]
+)
+LISTENER_RECONNECTS = Counter(
+    "concierge_listener_reconnects_total", "LISTEN connections re-established", ["channel"]
+)
+SSE_SUBSCRIBERS = Gauge("concierge_sse_subscribers", "Open SSE streams by kind", ["stream"])
+RETENTION_DELETED = Counter(
+    "concierge_retention_deleted_total", "Rows removed by the retention job", ["table"]
+)
+SPEND_TODAY = Gauge("concierge_spend_usd_today", "Priced spend across every run kind, UTC day")
+SPEND_REFUSED = Counter(
+    "concierge_spend_ceiling_refusals_total", "Runs refused at the spend ceiling", ["kind"]
+)
+
+
+def bind_pool_gauges(engine: Any) -> None:
+    """Export the SQLAlchemy pool's live counters (M53). Called once when the
+    engine is built; reads happen at scrape time, so they cost nothing
+    between scrapes."""
+    pool = getattr(engine, "pool", None)
+    cfg = get_config()
+    capacity = max(int(cfg.db_pool_size) + int(cfg.db_max_overflow), 1)
+    DB_POOL.labels(state="capacity").set(capacity)
+    if pool is None or not hasattr(pool, "checkedout"):
+        return
+
+    def checked_out() -> float:
+        try:
+            return float(pool.checkedout())
+        except Exception:  # noqa: BLE001 — a pool without stats reports zero, never breaks a scrape
+            return 0.0
+
+    def idle() -> float:
+        try:
+            return float(pool.checkedin())
+        except Exception:  # noqa: BLE001 — see checked_out
+            return 0.0
+
+    def overflow() -> float:
+        try:
+            return float(max(pool.overflow(), 0))
+        except Exception:  # noqa: BLE001 — see checked_out
+            return 0.0
+
+    DB_POOL.labels(state="checked_out").set_function(checked_out)
+    DB_POOL.labels(state="idle").set_function(idle)
+    DB_POOL.labels(state="overflow").set_function(overflow)
+    DB_POOL_SATURATION.set_function(lambda: checked_out() / capacity)
+
 
 # ── OpenTelemetry ────────────────────────────────────────────────
 #

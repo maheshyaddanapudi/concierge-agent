@@ -26,6 +26,11 @@ class Tool(RegistryRecord):
     tool_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     direct_exposure: Mapped[bool] = mapped_column(Boolean, default=False)
     input_schema: Mapped[dict[str, Any] | None] = mapped_column(default=None)
+    # M53: what the SERVER last said about an MCP tool — 'present' | 'missing'
+    # — so a re-ingest reactivates only what the server's absence deactivated,
+    # never a tool an operator disabled or deleted; None for native/a2a rows
+    # and for rows ingested before M53 (treated as operator intent)
+    ingest_state: Mapped[str | None] = mapped_column(String(8), default=None)
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
     embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)

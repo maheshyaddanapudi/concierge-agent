@@ -8,9 +8,11 @@ import type {
   McpServer,
   ProviderInfo,
   RemoteAgent,
+  RetentionRow,
   Run,
   Settings,
   Skill,
+  SpendReport,
   SubAgent,
   Tool,
 } from './types'
@@ -145,6 +147,33 @@ export function useRefreshCache() {
   })
 }
 
+/** M53: today's priced spend across every run kind + the ceiling state. */
+export function useSpend() {
+  return useQuery({
+    queryKey: ['spend'],
+    queryFn: () => api.get<SpendReport>('/spend'),
+    refetchInterval: 15000,
+  })
+}
+
+/** M53: per-table retention gate, window and what a purge would delete now. */
+export function useRetention() {
+  return useQuery({
+    queryKey: ['retention'],
+    queryFn: () => api.get<{ tables: RetentionRow[] }>('/retention'),
+    refetchInterval: 30000,
+  })
+}
+
+export function useRunRetention() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ deleted: Record<string, number>; skipped?: string }>('/retention/run'),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['retention'] }),
+  })
+}
+
 export function usePatchSettings() {
   const qc = useQueryClient()
   return useMutation({
@@ -153,6 +182,9 @@ export function usePatchSettings() {
       qc.setQueryData(['settings'], data)
       // registry_cache_mode lives in settings — reflect flips immediately
       void qc.invalidateQueries({ queryKey: ['cache-status'] })
+      // M53: retention windows and the spend ceiling are settings too
+      void qc.invalidateQueries({ queryKey: ['retention'] })
+      void qc.invalidateQueries({ queryKey: ['spend'] })
     },
   })
 }

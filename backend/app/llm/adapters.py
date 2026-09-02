@@ -244,9 +244,44 @@ class OpenRouterProvider(ModelProviderBase):
     Chat-only — no embeddings API (consumers degrade per §7.4)."""
 
     provider_id = "openrouter"
+    # M53 cost model: OpenRouter publishes a price per routed model; the
+    # periodic loop refreshes this table hourly (and once at startup)
+    _prices: dict[str, tuple[float, float]] = {}
 
     def is_configured(self) -> bool:
         return bool(get_config().openrouter_api_key)
+
+    def price_for(self, model: str) -> tuple[float, float] | None:
+        """(input, output) USD per 1M tokens as OpenRouter last reported."""
+        return self._prices.get(model)
+
+    async def refresh_prices(self) -> int:
+        """Pull `/models` and keep each model's prompt/completion price
+        (USD per token on the wire → per 1M here). The provider's own host,
+        under the port limits; failures leave the last table in place."""
+        if not self.is_configured():
+            return 0
+        import httpx
+
+        limits = port_limits()
+        async with httpx.AsyncClient(timeout=min(float(limits["timeout"]), 30.0)) as client:
+            resp = await client.get(f"{_OPENROUTER_BASE_URL}/models")
+            resp.raise_for_status()
+            payload = resp.json()
+        table: dict[str, tuple[float, float]] = {}
+        for row in payload.get("data", []) if isinstance(payload, dict) else []:
+            pricing = row.get("pricing") if isinstance(row, dict) else None
+            if not isinstance(pricing, dict) or not row.get("id"):
+                continue
+            try:
+                per_in = float(pricing.get("prompt") or 0.0) * 1_000_000
+                per_out = float(pricing.get("completion") or 0.0) * 1_000_000
+            except (TypeError, ValueError):
+                continue
+            table[str(row["id"])] = (per_in, per_out)
+        if table:
+            self._prices = table
+        return len(table)
 
     def list_models(self) -> list[ModelInfo]:
         # curated tool-capable subset (any 'openrouter:vendor/model' ref

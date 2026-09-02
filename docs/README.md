@@ -37,7 +37,9 @@ Complete documentation for the Concierge Agent POC. `spec.md` at the repo root r
 | [operations/configuration.md](./operations/configuration.md) | Every environment variable and every runtime Settings key, with defaults, effects, and consumers |
 | [operations/scaling.md](./operations/scaling.md) | The scale-out path: multi-replica realities (SSE stickiness, LISTEN/NOTIFY), memory→redis promotion, JSONB→pgvector swap |
 | [operations/troubleshooting.md](./operations/troubleshooting.md) | Symptom-indexed fixes: provider errors, MCP issues, cache staleness, SSE drops, 409 semantics, and more |
-| [operations/data-lifecycle.md](./operations/data-lifecycle.md) | Volumes, stop-vs-decom, seeds, run-data growth and purge, checkpoints, backup guidance |
+| [operations/data-lifecycle.md](./operations/data-lifecycle.md) | Volumes, stop-vs-decom, seeds, run-data growth and purge, retention for the six unbounded tables (M53), checkpoints, backup guidance |
+| [operations/backup-restore.md](./operations/backup-restore.md) | The backup/restore drill (M53): `backup.sh` / `restore.sh`, what a dump does not contain, the measured RTO |
+| [operations/runbooks/](./operations/runbooks/README.md) | One page per failure class (M53): pool exhaustion, wedged tick, leader loss, provider outage, delivery backlog — the metric that reveals it, the action that resolves it |
 
 ## Development
 
@@ -54,7 +56,8 @@ Complete documentation for the Concierge Agent POC. `spec.md` at the repo root r
 | Document | Contents |
 |---|---|
 | [security.md](./security.md) | Honest POC security posture: non-goals, secrets handling, trust boundaries, prompt-injection exposure, hardening checklist |
-| [observability.md](./observability.md) | Traces, the shared label set, structured logging, Prometheus metrics, OTel and LangSmith switches, token usage |
+| [observability.md](./observability.md) | Traces, the shared label set, structured logging, Prometheus metrics incl. the M53 incident signals, OTel and LangSmith switches, token usage |
+| [observability/](./observability/README.md) | Prometheus + Grafana provisioning and the two dashboards (saturation, LLM) — operator tooling, not a shipped service |
 | [user-guide.md](./user-guide.md) | Operator walkthrough of all seven UI pages, task by task |
 | [glossary.md](./glossary.md) | The decoder ring: 45 project terms, each grep-verified against the codebase |
 

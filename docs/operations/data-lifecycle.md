@@ -44,6 +44,23 @@ Purging (the real, existing surfaces — nothing else):
 
 Conversations are not deleted by the purge (the rows in `conversations` remain; there is no conversation-delete endpoint). SSE event history is memory-only and additionally disappears on backend restart regardless of purging.
 
+## Retention for the six unbounded tables (M53)
+
+Six tables had no retention, no TTL and no purge surface at all (architecture review M6): `ambient_events` and `deliveries` — the highest-frequency ambient ledgers, scanned every tick — plus `ambient_policies`, `pattern_instances`, `a2a_tasks` and `auth_sessions`. Each now has one purge (`backend/app/retention.py`) with its own window and **its own gate, enforced inside the purge** (the §3.7.1 discipline): with the gate off the purge returns 0 whoever calls it — the hourly job, `POST /retention/run`, a test.
+
+| Table | Eligible when | Never touched | Gate default | Window default |
+|---|---|---|---|---|
+| `ambient_events` | a verdict is recorded (`fired`, `held`, …) and `received_at` is older than the window | pending events (no verdict) | off | 30 d |
+| `deliveries` | delivered or superseded, `created_at` older than the window | undelivered rows | off | 90 d |
+| `ambient_policies` | older than the window AND not the newest row of its category/owner | the live policy per category | off | 365 d |
+| `pattern_instances` | matched or expired, older than the window | armed timers | off | 7 d |
+| `a2a_tasks` | terminal state, `updated_at` older than the window | open and parked tasks | off | 90 d |
+| `auth_sessions` | `expires_at` older than the window | unexpired sessions | **on** | 7 d |
+
+Five gates are born off because deleting is irreversible; the expired-session sweep is on because the login path already did it opportunistically. The job runs hourly from the periodic loop on one replica (advisory lock `427018`), deletes in batches of 5000, and counts what it removed in `concierge_retention_deleted_total{table}`. Settings → Retention shows each gate, each window, and **how many rows a purge would delete right now** (counted whether the gate is on or off), with a run-now button; `GET /retention` and `POST /retention/run` are the same surface over the API.
+
+`runs` / `run_steps` keep their explicit purge above; `memory_embeddings` rows under a superseded model key are retained by design (spec §16.1).
+
 ## Checkpoints (LangGraph)
 
 - **Where**: Postgres, in the tables created by `AsyncPostgresSaver.setup()` (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`) inside the same `pgdata` volume — configured in `backend/app/db.py` over a psycopg pool derived from `DATABASE_URL`.
@@ -54,6 +71,8 @@ Conversations are not deleted by the purge (the rows in `conversations` remain; 
 - **Cleanup**: checkpoint rows ride the run lifecycle. `DELETE /api/v1/runs/{id}` removes the run's checkpoint rows (thread `run_id` plus worker threads `run_id:*`), and the full purge empties all three saver tables (`app/api/runs.py::_purge_checkpoints`). A cancelled-but-undeleted run keeps its checkpoint for inspection until the run itself is deleted.
 
 ## Backup
+
+The drill — scripted, exercised, timed — is in [`backup-restore.md`](./backup-restore.md) (`./backup.sh`, `./restore.sh <dump>`, the measured RTO). The manual commands underneath:
 
 The database is the whole application state — back it up with `pg_dump` against the volume-backed DB:
 

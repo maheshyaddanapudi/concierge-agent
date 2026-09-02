@@ -58,6 +58,8 @@ export interface Tool extends RegistryRecord {
   tool_key: string
   direct_exposure: boolean
   input_schema: Record<string, unknown> | null
+  // M53: what the MCP server last said — 'present' | 'missing'; null for native/a2a
+  ingest_state?: string | null
 }
 
 export interface ModelParams {
@@ -137,14 +139,39 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[] } | null
+  answer_ui: {
+    a2ui?: unknown[]
+    charts?: unknown[]
+    presentation?: string
+    coverage?: number
+    blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[]
+  } | null
   charts?: unknown[] | null
   error: string | null
   started_at: string | null
   finished_at: string | null
   total_input_tokens: number
   total_output_tokens: number
+  // M53 cost model: null when a model in play has no price
+  cost_usd?: number | null
+  cost_priced?: boolean
   steps?: RunStep[]
+}
+
+export interface SpendReport {
+  day: string
+  usd_today: number
+  runs_today: number
+  unpriced_tokens: number
+  by_kind: Record<string, number>
+  ceiling: { enabled: boolean; usd_per_day: number; remaining: number | null; reached: boolean }
+}
+
+export interface RetentionRow {
+  table: string
+  enabled: boolean
+  days: number
+  eligible: number
 }
 
 export interface Conversation {
@@ -159,7 +186,13 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[] } | null
+  answer_ui?: {
+    a2ui?: unknown[]
+    charts?: unknown[]
+    presentation?: string
+    coverage?: number
+    blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[]
+  } | null
   charts?: unknown[] | null
 }
 

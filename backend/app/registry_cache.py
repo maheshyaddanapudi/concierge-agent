@@ -181,7 +181,7 @@ class RegistryCache:
         self._redis: Any = None
         # cross-replica sync (spec §7.3): origin id filters own notifications
         self._origin = uuid4().hex
-        self._listener_conn: Any = None
+        self._listener: Any = None  # M53: a SupervisedListener, reconnects on its own
         self._listener_tasks: set[Any] = set()
 
     # ── lifecycle ────────────────────────────────────────────────
@@ -268,41 +268,55 @@ class RegistryCache:
         except Exception as exc:  # noqa: BLE001 — NOTIFY is advisory; replicas reload on their next dirty read
             logger.warning("cache_notify_failed", registry=registry, error=str(exc))
 
-    async def start_listener(self) -> None:
-        """LISTEN for peer invalidations on a dedicated connection. Safe to
-        call when already listening; failure logs and leaves single-node
-        behavior untouched."""
-        if self._listener_conn is not None:
+    async def start_listener(self, base_backoff_s: float = 1.0) -> None:
+        """LISTEN for peer invalidations on a dedicated, SUPERVISED connection
+        (M53): lost connections reconnect with backoff, and a reconnect
+        marks every registry dirty — a notification that arrived during the
+        gap is never missed, it is replaced by one reload. Safe to call when
+        already listening; a failing database leaves single-node behavior
+        untouched (the writing process already marked itself dirty)."""
+        if self._listener is not None:
             return
-        try:
-            import asyncpg  # type: ignore[import-untyped]
+        from app.listen import SupervisedListener
 
-            from app.config import get_config
+        def _on_notify(payload: str) -> None:
+            origin, _, registry = payload.partition(":")
+            if origin == self._origin or registry not in REGISTRIES:
+                return
+            self._spawn(self._mark_dirty(registry))
 
-            dsn = get_config().database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-            conn = await asyncpg.connect(dsn)
+        def _on_reconnect() -> None:
+            logger.info("cache_listener_reconnected", origin=self._origin)
+            self._spawn(self._mark_all_dirty())
 
-            def _on_notify(_conn: Any, _pid: int, _channel: str, payload: str) -> None:
-                origin, _, registry = payload.partition(":")
-                if origin == self._origin or registry not in REGISTRIES:
-                    return
-                task = asyncio.create_task(self._mark_dirty(registry))
-                self._listener_tasks.add(task)
-                task.add_done_callback(self._listener_tasks.discard)
-
-            await conn.add_listener(_NOTIFY_CHANNEL, _on_notify)
-            self._listener_conn = conn
+        self._listener = SupervisedListener(
+            _NOTIFY_CHANNEL, _on_notify, on_reconnect=_on_reconnect, base_backoff_s=base_backoff_s
+        )
+        if await self._listener.start():
             logger.info("cache_listener_started", channel=_NOTIFY_CHANNEL, origin=self._origin)
-        except Exception as exc:  # noqa: BLE001 — the listener is optional; the cache falls back to dirty reloads
-            logger.warning("cache_listener_unavailable", error=str(exc))
+        else:
+            logger.warning("cache_listener_unavailable", channel=_NOTIFY_CHANNEL)
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._listener_tasks.add(task)
+        task.add_done_callback(self._listener_tasks.discard)
+
+    async def _mark_all_dirty(self) -> None:
+        for registry in REGISTRIES:
+            await self._mark_dirty(registry)
+
+    @property
+    def listener_connected(self) -> bool:
+        return bool(self._listener is not None and self._listener.connected)
+
+    def listener_pid(self) -> int | None:
+        return self._listener.server_pid() if self._listener is not None else None
 
     async def stop_listener(self) -> None:
-        if self._listener_conn is not None:
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                await self._listener_conn.close()
-            self._listener_conn = None
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            await listener.stop()
 
     async def refresh(self, registry: Registry) -> dict[str, Any]:
         """Operator-forced eager reload (§8.7 buttons). In bypass, just counts."""

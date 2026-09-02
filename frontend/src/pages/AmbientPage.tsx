@@ -138,7 +138,11 @@ export function FilterRowsEditor({
             onChange={(e) => update(i, { field: e.target.value })}
             className="flex-1"
           />
-          <Select value={row.op} onChange={(e) => update(i, { op: e.target.value })} className="w-32">
+          <Select
+            value={row.op}
+            onChange={(e) => update(i, { op: e.target.value })}
+            className="w-32"
+          >
             {FILTER_OPS.map((op) => (
               <option key={op} value={op}>
                 {op}
@@ -156,7 +160,10 @@ export function FilterRowsEditor({
           </Button>
         </div>
       ))}
-      <Button variant="ghost" onClick={() => onChange([...rows, { field: '', op: 'equals', value: '' }])}>
+      <Button
+        variant="ghost"
+        onClick={() => onChange([...rows, { field: '', op: 'equals', value: '' }])}
+      >
         + filter
       </Button>
     </div>
@@ -165,7 +172,15 @@ export function FilterRowsEditor({
 
 export function filterOut(row: FilterDraft): Record<string, unknown> {
   if (row.op === 'one_of') {
-    return { field: row.field, op: row.op, value: '', values: row.value.split(',').map((v) => v.trim()).filter(Boolean) }
+    return {
+      field: row.field,
+      op: row.op,
+      value: '',
+      values: row.value
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean),
+    }
   }
   return { field: row.field, op: row.op, value: row.value }
 }
@@ -178,7 +193,13 @@ interface TriggerDraft {
   filters: FilterDraft[]
 }
 
-const EMPTY_TRIGGER: TriggerDraft = { type: 'interval', seconds: '3600', cron: '0 9 * * *', at: '', filters: [] }
+const EMPTY_TRIGGER: TriggerDraft = {
+  type: 'interval',
+  seconds: '3600',
+  cron: '0 9 * * *',
+  at: '',
+  filters: [],
+}
 
 export function triggerOut(t: TriggerDraft): Record<string, unknown> {
   if (t.type === 'interval') return { type: 'interval', seconds: Number(t.seconds) || 3600 }
@@ -201,7 +222,11 @@ export function TriggerBuilder({
       {rows.map((t, i) => (
         <div key={i} className="rounded-lg border border-slate-800 bg-void-950/40 p-2.5">
           <div className="flex items-center gap-1.5">
-            <Select value={t.type} onChange={(e) => update(i, { type: e.target.value as TriggerDraft['type'] })} className="w-32">
+            <Select
+              value={t.type}
+              onChange={(e) => update(i, { type: e.target.value as TriggerDraft['type'] })}
+              className="w-32"
+            >
               {(['interval', 'cron', 'once', 'webhook'] as const).map((k) => (
                 <option key={k} value={k}>
                   {k}
@@ -220,7 +245,11 @@ export function TriggerBuilder({
             )}
             {t.type === 'cron' && (
               <>
-                <TextInput value={t.cron} onChange={(e) => update(i, { cron: e.target.value })} className="w-40" />
+                <TextInput
+                  value={t.cron}
+                  onChange={(e) => update(i, { cron: e.target.value })}
+                  className="w-40"
+                />
                 <span className="text-xs text-slate-500">UTC cron expression</span>
               </>
             )}
@@ -262,7 +291,8 @@ export function TriggerBuilder({
 
 export function Sparkline({ series }: { series: number[] }) {
   // §18.5: the judged window as accept(1)/dismiss(0) ticks, chronological
-  if (!series.length) return <span className="font-mono text-[10px] text-slate-600">no judged items</span>
+  if (!series.length)
+    return <span className="font-mono text-[10px] text-slate-600">no judged items</span>
   const w = 4
   return (
     <svg
@@ -376,7 +406,21 @@ function RoutinesTab() {
                 onClick={() => setSelected(r)}
                 className="cursor-pointer border-t border-slate-800/60 hover:bg-slate-900/60"
               >
-                <td className="px-3 py-2 font-medium text-slate-200">{r.name}</td>
+                <td className="px-3 py-2 font-medium text-slate-200">
+                  {/* M53 accessibility: the row opens on click; the name is
+                      a real button so the keyboard reaches the drawer too */}
+                  <button
+                    type="button"
+                    className="text-left hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
+                    aria-label={`open routine ${r.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelected(r)
+                    }}
+                  >
+                    {r.name}
+                  </button>
+                </td>
                 <td className="px-3 py-2">
                   <StatusPill status={r.status} title={r.status_reason ?? undefined} />
                 </td>
@@ -442,7 +486,14 @@ function RoutinesTab() {
         </div>
       </Drawer>
 
-      <Drawer open={!!selected} onClose={() => { setSelected(null); setToken(null) }} title={selected?.name ?? ''}>
+      <Drawer
+        open={!!selected}
+        onClose={() => {
+          setSelected(null)
+          setToken(null)
+        }}
+        title={selected?.name ?? ''}
+      >
         {selected && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -562,7 +613,8 @@ function RoutineRunHistory({ routineId }: { routineId: string }) {
           >
             <StatusPill status={r.status} />
             <span className="flex-1 truncate text-xs text-slate-300">
-              {r.chat_message.replace(/^#[^\n]*\n?/, '').slice(0, 90) || r.chat_message.slice(0, 90)}
+              {r.chat_message.replace(/^#[^\n]*\n?/, '').slice(0, 90) ||
+                r.chat_message.slice(0, 90)}
             </span>
             <span className="font-mono text-[10px] text-slate-500">
               {r.total_input_tokens}→{r.total_output_tokens}
@@ -604,8 +656,17 @@ function WatchesTab() {
         {(data?.items ?? []).map((w) => (
           <div
             key={w.id}
+            role="button"
+            tabIndex={0}
+            aria-label={`open watch: ${w.text ?? w.condition_type}`}
             onClick={() => setSelected(w)}
-            className="cursor-pointer rounded-lg border border-slate-800 bg-void-950/50 px-4 py-3 hover:bg-slate-900/60"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                setSelected(w)
+              }
+            }}
+            className="cursor-pointer rounded-lg border border-slate-800 bg-void-950/50 px-4 py-3 hover:bg-slate-900/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
           >
             <div className="flex items-center gap-2">
               <StatusPill status={w.status} />
@@ -639,7 +700,10 @@ function WatchesTab() {
             )}
             <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-slate-400">
               <div>watermark: {selected.watermark ?? '—'}</div>
-              <div>base {selected.cadence.base_interval_s}s → now {selected.cadence.current_interval_s}s</div>
+              <div>
+                base {selected.cadence.base_interval_s}s → now {selected.cadence.current_interval_s}
+                s
+              </div>
               <div>last check: {timeAgo(selected.cadence.last_checked_at)}</div>
               <div>expires: {selected.expires_at ? timeAgo(selected.expires_at) : 'never'}</div>
             </div>
@@ -730,12 +794,18 @@ function WatchAuthoring({ onDone }: { onDone: () => void }) {
     })
 
   return (
-    <div className="mb-4 rounded-lg border border-slate-800 bg-void-950/40 p-3" data-testid="watch-authoring">
+    <div
+      className="mb-4 rounded-lg border border-slate-800 bg-void-950/40 p-3"
+      data-testid="watch-authoring"
+    >
       <div className="mb-2 flex items-center gap-1.5">
         <span className="mr-1 font-mono text-[10px] uppercase tracking-widest text-slate-500">
           new watch
         </span>
-        <Button variant={mode === 'describe' ? 'primary' : 'ghost'} onClick={() => setMode('describe')}>
+        <Button
+          variant={mode === 'describe' ? 'primary' : 'ghost'}
+          onClick={() => setMode('describe')}
+        >
           describe it
         </Button>
         <Button variant={mode === 'typed' ? 'primary' : 'ghost'} onClick={() => setMode('typed')}>
@@ -775,7 +845,10 @@ function WatchAuthoring({ onDone }: { onDone: () => void }) {
       )}
       {error && <div className="mt-2 text-xs text-rose-300">{error}</div>}
       {proposal && (
-        <div className="mt-3 rounded-lg border border-accent-400/40 bg-accent-500/5 p-3" data-testid="watch-proposal">
+        <div
+          className="mt-3 rounded-lg border border-accent-400/40 bg-accent-500/5 p-3"
+          data-testid="watch-proposal"
+        >
           <div className="font-mono text-[10px] uppercase tracking-widest text-accent-300">
             proposed — confirm the interpretation
           </div>
@@ -811,10 +884,31 @@ function FeedbackButtons({ row, onDone }: { row: DeliveryRow; onDone: () => void
     )
   }
   return (
-    <span className="flex gap-1">
-      <Button variant="ghost" onClick={() => void give('accepted')}>✓</Button>
-      <Button variant="ghost" onClick={() => void give('dismissed')}>✕</Button>
-      <Button variant="ghost" onClick={() => void give('ignored')}>·</Button>
+    <span className="flex gap-1" role="group" aria-label="delivery feedback">
+      <Button
+        variant="ghost"
+        aria-label="mark accepted"
+        title="accepted"
+        onClick={() => void give('accepted')}
+      >
+        ✓
+      </Button>
+      <Button
+        variant="ghost"
+        aria-label="mark dismissed"
+        title="dismissed"
+        onClick={() => void give('dismissed')}
+      >
+        ✕
+      </Button>
+      <Button
+        variant="ghost"
+        aria-label="mark ignored"
+        title="ignored"
+        onClick={() => void give('ignored')}
+      >
+        ·
+      </Button>
     </span>
   )
 }
@@ -904,8 +998,8 @@ export function SalienceBlock({ row, onDone }: { row: DeliveryRow; onDone: () =>
           className="mt-2 border-t border-slate-800 pt-2 font-mono text-[10px] text-slate-500"
         >
           A model judged this delivery after it went unseen — verdict{' '}
-          <span className="text-accent-300">{s.verdict}</span>, confidence{' '}
-          {s.confidence.toFixed(2)}, mode {s.mode ?? '—'}
+          <span className="text-accent-300">{s.verdict}</span>, confidence {s.confidence.toFixed(2)}
+          , mode {s.mode ?? '—'}
           {decision ? ` · ${decision} by ${s.decided_by ?? 'user'}` : ''}
           <div className="mt-1 text-slate-400">{s.reason}</div>
         </div>
@@ -945,7 +1039,9 @@ function DeliveryCard({ row, onDone }: { row: DeliveryRow; onDone: () => void })
       </div>
       <div className="mt-1 text-sm text-slate-200">{row.title}</div>
       {row.body && (
-        <div className="mt-1 whitespace-pre-wrap text-xs text-slate-400">{row.body.slice(0, 600)}</div>
+        <div className="mt-1 whitespace-pre-wrap text-xs text-slate-400">
+          {row.body.slice(0, 600)}
+        </div>
       )}
       <SalienceBlock row={row} onDone={onDone} />
     </div>
@@ -980,7 +1076,9 @@ function InboxTab() {
             <DeliveryCard key={d.id} row={d} onDone={refresh} />
           ))}
         </div>
-        {(preview?.items ?? []).length === 0 && <EmptyState>nothing queued for the digest</EmptyState>}
+        {(preview?.items ?? []).length === 0 && (
+          <EmptyState>nothing queued for the digest</EmptyState>
+        )}
       </div>
       <div>
         <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-slate-500">
@@ -1022,7 +1120,8 @@ function ChainView({ correlationId }: { correlationId: string }) {
   // §18.5: the whole causal chain, cause → effect, indented by depth
   const { data } = useQuery({
     queryKey: ['ambient-chain', correlationId],
-    queryFn: () => api.get<{ items: LedgerRow[] }>(`/ambient/ledger?correlation_id=${correlationId}`),
+    queryFn: () =>
+      api.get<{ items: LedgerRow[] }>(`/ambient/ledger?correlation_id=${correlationId}`),
   })
   return (
     <div className="space-y-1 bg-void-950/70 px-4 py-3" data-testid="chain-view">
@@ -1065,12 +1164,28 @@ function LedgerRowView({
         className="cursor-pointer border-t border-slate-800/60 hover:bg-slate-900/50"
         title="click to expand the correlation chain"
       >
-        <td className="px-3 py-2 font-mono text-xs text-slate-300">{row.kind}</td>
+        <td className="px-3 py-2 font-mono text-xs text-slate-300">
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'collapse' : 'expand'} ${row.kind} event`}
+            className="text-left hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggle()
+            }}
+          >
+            {row.kind}
+          </button>
+        </td>
         <td className="px-3 py-2 text-slate-400">{row.source}</td>
         <td className="px-3 py-2">
           <StatusPill status={row.verdict ?? 'pending'} />
         </td>
-        <td className="max-w-md truncate px-3 py-2 text-xs text-slate-400" title={row.verdict_reason ?? ''}>
+        <td
+          className="max-w-md truncate px-3 py-2 text-xs text-slate-400"
+          title={row.verdict_reason ?? ''}
+        >
           {row.verdict_reason ?? '—'}
         </td>
         <td className="px-3 py-2 font-mono text-xs text-slate-500">
@@ -1242,7 +1357,11 @@ export function AmbientPage() {
         </div>
       ) : (
         <>
-          <div className="mb-4 flex items-center gap-2">
+          <div
+            className="mb-4 flex items-center gap-2"
+            role="tablist"
+            aria-label="ambient sections"
+          >
             {(
               [
                 ['inbox', 'Inbox'],
@@ -1253,6 +1372,8 @@ export function AmbientPage() {
             ).map(([key, label]) => (
               <Button
                 key={key}
+                role="tab"
+                aria-selected={tab === key}
                 variant={tab === key ? 'primary' : 'ghost'}
                 onClick={() => setTab(key)}
               >

@@ -67,6 +67,9 @@ def get_engine() -> AsyncEngine:
             max_overflow=cfg.db_max_overflow,
             pool_timeout=cfg.db_pool_timeout,
         )
+        from app.obs import bind_pool_gauges
+
+        bind_pool_gauges(_engine)  # M53: pool saturation on /metrics
     return _engine
 
 

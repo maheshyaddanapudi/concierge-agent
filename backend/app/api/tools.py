@@ -91,3 +91,19 @@ async def delete_tool(tool_id: UUID, session: SessionDep) -> None:
     tool.deleted_at = datetime.now(UTC)
     await session.commit()
     await get_cache().invalidate("tools")
+
+
+@router.post("/{tool_id}/restore", response_model=ToolOut)
+async def restore_tool(tool_id: UUID, session: SessionDep) -> Tool:
+    """Undo a soft delete (M53): since re-ingest no longer resurrects a
+    deleted MCP tool, restoring one is an explicit operator act."""
+    tool = await session.get(Tool, tool_id)  # a deleted row is exactly the one to fetch
+    if tool is None:
+        raise HTTPException(status_code=404, detail="tool not found")
+    if tool.deleted_at is None:
+        return tool
+    tool.deleted_at = None
+    await session.commit()
+    await session.refresh(tool)
+    await get_cache().invalidate("tools")
+    return tool

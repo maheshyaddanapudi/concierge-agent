@@ -16,6 +16,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy import and_, func, or_, select
 
+from app.cost import SpendCeilingReached
 from app.db import get_session_factory
 from app.models import (
     AmbientEvent,
@@ -75,6 +76,13 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
     payload_json = json.dumps(event.payload or {}, default=str)[:_PAYLOAD_MAX_CHARS]
     routine: Routine | None = None
     intent: StandingIntent | None = None
+
+    # M53: the shared spend ceiling is checked BEFORE the conversation row is
+    # written (create_run enforces it again — one choke point for every kind)
+    from app.cost import enforce_spend_ceiling
+    from app.orchestrator.graph_mode import load_settings_snapshot
+
+    await enforce_spend_ceiling(await load_settings_snapshot(), "ambient")
 
     if event.routine_id is not None and decision.get("fired_for") == "routine":
         async with get_session_factory()() as session:
@@ -145,7 +153,11 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
     # §18.8: a routine fires runs AS ITS OWNER; intent fires as the watch owner
     owner_id = (routine.user_id if routine else None) or (intent.user_id if intent else None)
     run = await create_run(
-        conversation_id, prompt, include_memories=include_memories, user_id=owner_id
+        conversation_id,
+        prompt,
+        include_memories=include_memories,
+        user_id=owner_id,
+        trigger_kind="ambient",
     )
     async with get_session_factory()() as session:
         row = await session.get(Run, run.id)
@@ -377,7 +389,19 @@ async def execute_fired_event(event_id: UUID, poll_s: float = 15.0) -> UUID | No
             event = await session.get(AmbientEvent, event_id)
         if event is None or event.verdict != "fired":
             return None
-        run = await prepare_run(event)
+        try:
+            run = await prepare_run(event)
+        except SpendCeilingReached as exc:
+            # M53: a fire past the ceiling is HELD on the ledger with the
+            # reason — visible, never spent, never a crash
+            async with get_session_factory()() as session:
+                row = await session.get(AmbientEvent, event_id)
+                if row is not None:
+                    row.verdict = "held"
+                    row.verdict_reason = f"spend ceiling: {exc.detail}"
+                    await session.commit()
+            logger.warning("ambient_fire_held_spend_ceiling", event_id=str(event_id))
+            return None
         if run is None:
             return None
         budgets = dict(DEFAULT_BUDGETS)

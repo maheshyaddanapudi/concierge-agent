@@ -52,6 +52,10 @@ vi.mock('../api/hooks', () => ({
   useRefreshCache: () => ({ mutate: vi.fn(), isPending: false }),
   usePatchSettings: () => ({ mutate: vi.fn(), error: patchError }),
   useInvalidate: () => vi.fn(),
+  // M53 sections
+  useSpend: () => ({ data: undefined }),
+  useRetention: () => ({ data: undefined }),
+  useRunRetention: () => ({ mutate: vi.fn(), isPending: false, data: undefined, error: null }),
 }))
 
 import { SettingsPage, channelRoutingOut, csvOut } from '../pages/SettingsPage'
@@ -116,7 +120,9 @@ describe('SettingsPage M40 sections (spec §8.7)', () => {
     expect(screen.getByText('Pursuit (§17.5)')).toBeInTheDocument()
     // M42: salience sits with the delivery controls it re-judges
     expect(screen.getByText('Salience (§17.5)')).toBeInTheDocument()
-    expect(screen.getByText(/lead the next digest, remember the fact, or drop it/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/lead the next digest, remember the fact, or drop it/),
+    ).toBeInTheDocument()
     expect(screen.getByText('Min urgency')).toBeInTheDocument()
     expect(screen.getByText(/only when the in-app toast reached nobody/)).toBeInTheDocument()
     expect(screen.getByText('Poll interval (s)')).toBeInTheDocument()

@@ -74,4 +74,11 @@ RUN for dir in $(find /root/.cache/uv -type d -path '*readabilipy/javascript'); 
     done
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# M53 deploy lifecycle: uvicorn closes the listener at SIGTERM, waits for open
+# connections up to --timeout-graceful-shutdown (open SSE streams are ended at
+# once by sse-starlette; this bounds any straggler), THEN runs the lifespan
+# drain (SHUTDOWN_GRACE_S, default 25 s). 5 + 25 < the compose
+# stop_grace_period of 40 s, so the drain always gets its window before the
+# kill. Send SIGUSR1 first (deploy.sh does) to flip readiness while the port
+# is still open.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

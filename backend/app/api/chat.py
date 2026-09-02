@@ -5,7 +5,7 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
@@ -187,9 +187,12 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
     try:
         run = await _create_chat_run(body, session)
     except admission.AtCapacity as exc:
-        # M51: shed load explicitly — never an invisible wait
+        # M51: shed load explicitly — never an invisible wait; M53: the
+        # spend ceiling is the same shape with a 429
         raise HTTPException(
-            status_code=503, detail=exc.detail, headers={"Retry-After": str(exc.retry_after_s)}
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers={"Retry-After": str(exc.retry_after_s)},
         ) from exc
     start_run_task(run.id, shed_if_full=True)
     return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
@@ -225,44 +228,130 @@ async def _create_chat_run(body: ChatRequest, session: Any) -> Run:
     )
 
 
-class _StreamDone(Exception):
-    pass
+# M53 wire format (scale-B3): the heartbeat sits inside the tightest load-
+# balancer idle default (15 s), every run event carries a monotonic `id:`,
+# and a client that reconnects with Last-Event-ID gets only what it missed.
+SSE_HEARTBEAT_S = 15.0
+SSE_RECONNECT_RETRY_MS = 5000
+_TERMINAL = {"completed", "failed", "cancelled"}
+
+
+def _wire(event: dict[str, Any]) -> dict[str, Any]:
+    out = {"event": event["type"], "data": json.dumps(event)}
+    if event.get("seq"):
+        out["id"] = str(event["seq"])
+    return out
+
+
+def synthesize_terminal_events(run: Run, after: int) -> list[dict[str, Any]]:
+    """A run whose events are gone from this process (a deploy, an eviction)
+    still resolves for a reconnecting client: the row is the record. The
+    sequence continues from the client's Last-Event-ID so idempotent folding
+    keeps working."""
+    from app.orchestrator.recorder import sse_event
+
+    seq = after
+    events: list[dict[str, Any]] = []
+
+    def ev(event_type: str, payload: dict[str, Any]) -> None:
+        nonlocal seq
+        seq += 1
+        event = sse_event(event_type, run.id, payload)
+        event["seq"] = seq
+        event["replayed_from"] = "record"
+        events.append(event)
+
+    if run.status == "completed":
+        ev("run_status", {"status": "completed"})
+        ev(
+            "done",
+            {
+                "answer": run.final_answer or "",
+                "tokens": {
+                    "input_tokens": run.total_input_tokens,
+                    "output_tokens": run.total_output_tokens,
+                },
+            },
+        )
+    elif run.status == "failed":
+        ev("error", {"message": run.error or "run failed"})
+        ev("run_status", {"status": "failed"})
+    elif run.status == "cancelled":
+        ev("run_status", {"status": "cancelled"})
+    elif run.status == "paused_hitl":
+        ev("run_status", {"status": "paused_hitl"})
+    return events
+
+
+async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
+    """The event generator behind /chat/stream: replay after `after`, then
+    live, with a heartbeat every SSE_HEARTBEAT_S. While this process drains
+    (M53) a stream it cannot serve — the run is not executing here — is
+    closed politely with a `reconnect` hint; a run executing here streams
+    on until its terminal event."""
+    from app.orchestrator import admission
+    from app.orchestrator.runner import RUNNING_TASKS
+
+    history, queue = EVENT_BUS.subscribe(run_id, after=after)
+    try:
+        if not history:
+            if EVENT_BUS.is_done(run_id):
+                return  # the client already holds everything
+            if EVENT_BUS.last_seq(run_id) == 0:
+                async with get_session_factory()() as session:
+                    run = await session.get(Run, run_id)
+                if run is not None and run.status in _TERMINAL | {"paused_hitl"}:
+                    for event in synthesize_terminal_events(run, after):
+                        yield _wire(event)
+                    if run.status in _TERMINAL:
+                        return
+        for event in history:
+            yield _wire(event)
+            if _is_terminal(event):
+                return
+        while True:
+            if not admission.accepting() and run_id not in RUNNING_TASKS:
+                yield {
+                    "event": "reconnect",
+                    "data": json.dumps(
+                        {"reason": "draining", "retry_after_ms": SSE_RECONNECT_RETRY_MS}
+                    ),
+                    "retry": SSE_RECONNECT_RETRY_MS,
+                }
+                return
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_S)
+            except TimeoutError:
+                yield {"event": "ping", "data": "{}"}
+                continue
+            yield _wire(event)
+            if _is_terminal(event):
+                return
+    finally:
+        EVENT_BUS.unsubscribe(run_id, queue)
 
 
 @router.get("/chat/stream/{run_id}")
-async def chat_stream(run_id: UUID) -> EventSourceResponse:
+async def chat_stream(
+    run_id: UUID,
+    request: Request,
+    after: int | None = Query(default=None, ge=0),
+) -> EventSourceResponse:
     """SSE event stream (spec §7.1 contract): replay + live. M50 (arch-C1):
     the existence check uses a short-lived session released BEFORE the
-    stream opens — an open tab holds no pooled connection. The baseline
-    measured the old request-scoped session failing the pool at 15 tabs."""
+    stream opens — an open tab holds no pooled connection. M53: resumes
+    from `Last-Event-ID` (EventSource sends it on every reconnect) or the
+    `after` query for clients that cannot set headers."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-
-    async def gen() -> Any:
-        history, queue = EVENT_BUS.subscribe(run_id)
-        try:
-            terminal = False
-            for event in history:
-                yield {"event": event["type"], "data": json.dumps(event)}
-                if _is_terminal(event):
-                    terminal = True
-            if terminal:
-                return
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=120)
-                except TimeoutError:
-                    yield {"event": "ping", "data": "{}"}
-                    continue
-                yield {"event": event["type"], "data": json.dumps(event)}
-                if _is_terminal(event):
-                    return
-        finally:
-            EVENT_BUS.unsubscribe(run_id, queue)
-
-    return EventSourceResponse(gen())
+    last = request.headers.get("last-event-id", "")
+    start = after if isinstance(after, int) else (int(last) if last.isdigit() else 0)
+    return EventSourceResponse(
+        stream_run_events(run_id, after=start),
+        ping=60,  # sse-starlette's comment ping is only a backstop; `ping` events carry the beat
+    )
 
 
 def _is_terminal(event: dict[str, Any]) -> bool:

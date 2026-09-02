@@ -3,10 +3,17 @@
 # One command: docker compose up. A fourth service, redis, is profile-gated
 # (spec §7.3): opt in with `docker compose --profile redis up` + REDIS_URL;
 # the registry cache only uses it when the registry_cache_mode setting says so.
+#
+# M53 deploy and operate: every service restarts unless stopped, the backend
+# carries a container healthcheck on /health (liveness — /ready is the
+# readiness probe a balancer should use), memory/CPU limits bound each
+# container, and the frontend waits for a HEALTHY backend. Adjust the limits
+# to the host; they are ceilings, not reservations.
 services:
   db:
     # pgvector = official postgres image + extension (spec §16.1)
     image: pgvector/pgvector:0.8.6-pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-concierge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concierge}
@@ -18,12 +25,38 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
 
   backend:
     build: ./backend
-    # M51: SIGTERM starts a drain (readiness 503, in-flight runs get
-    # SHUTDOWN_GRACE_S, default 25 s); keep the kill deadline above it
-    stop_grace_period: 30s
+    restart: unless-stopped
+    # M51/M53: SIGTERM starts a drain (readiness 503, in-flight runs get
+    # SHUTDOWN_GRACE_S, default 25 s) after uvicorn's 5 s connection grace;
+    # keep the kill deadline above both. deploy.sh sends SIGUSR1 first so
+    # readiness flips while the port is still open.
+    stop_grace_period: 40s
+    healthcheck:
+      # liveness only — the image has python, not curl
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1536M
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://concierge:concierge@db:5432/concierge}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -74,16 +107,28 @@ services:
   # and set REDIS_URL=redis://redis:6379/0; the default stack never runs it
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     profiles: [redis]
     ports:
       - '127.0.0.1:6379:6379'
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
       - '${FRONTEND_PORT:-5173}:80'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   pgdata:

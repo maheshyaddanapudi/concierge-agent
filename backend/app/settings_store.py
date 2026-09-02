@@ -143,6 +143,43 @@ DEFAULTS: dict[str, Any] = {
     "agentic_recursion_limit": 100,
     "a2a_http_timeout_s": 15,
     "a2a_fence_max_chars": 8000,
+    # M53 retention (arch-M6): the six unbounded tables, one purge each,
+    # every purge behind its own §3.7.1 gate enforced in-function. Deleting
+    # is destructive, so five are born dark; the expired-session sweep
+    # defaults on because the login path already did it opportunistically.
+    "retention_ambient_events_enabled": False,
+    "retention_ambient_events_days": 30,
+    "retention_deliveries_enabled": False,
+    "retention_deliveries_days": 90,
+    "retention_ambient_policies_enabled": False,
+    "retention_ambient_policies_days": 365,
+    "retention_pattern_instances_enabled": False,
+    "retention_pattern_instances_days": 7,
+    "retention_a2a_tasks_enabled": False,
+    "retention_a2a_tasks_days": 90,
+    "retention_auth_sessions_enabled": True,
+    "retention_auth_sessions_days": 7,
+    # M53 MCP reconnection: automatic, with backoff (5 s doubling to 5 min)
+    # and a circuit breaker after this many failed attempts; the operator's
+    # reconnect button resets the breaker. Its own gate, like every job.
+    "mcp_auto_reconnect_enabled": True,
+    "mcp_reconnect_max_attempts": 8,
+    # M53 cost model: operator price overrides ({"provider:model":
+    # {"input_per_m", "output_per_m"}} USD per 1M tokens) and ONE spend
+    # ceiling across every run kind, behind its own gate — off = the
+    # pre-M53 admission, byte-identical
+    "model_prices": {},
+    "spend_ceiling_enabled": False,
+    "spend_ceiling_usd_per_day": 10.0,
+}
+
+RETENTION_DAY_KEYS = {
+    "retention_ambient_events_days",
+    "retention_deliveries_days",
+    "retention_ambient_policies_days",
+    "retention_pattern_instances_days",
+    "retention_a2a_tasks_days",
+    "retention_auth_sessions_days",
 }
 
 _MODEL_KEYS = {
@@ -212,6 +249,15 @@ _BOOL_KEYS = {
     "memory_compaction_enabled",
     "ambient_anticipation_enabled",
     "evals_enabled",
+    # M53 gates
+    "retention_ambient_events_enabled",
+    "retention_deliveries_enabled",
+    "retention_ambient_policies_enabled",
+    "retention_pattern_instances_enabled",
+    "retention_a2a_tasks_enabled",
+    "retention_auth_sessions_enabled",
+    "mcp_auto_reconnect_enabled",
+    "spend_ceiling_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
@@ -265,6 +311,28 @@ def _validate_pair(merged: dict[str, Any], model_key: str, errors: list[str]) ->
         errors.append(f"{model_key} must be a 'provider:model' string")
         return
     errors.extend(f"{model_key}: {e}" for e in validate_model_selection(ref, params))
+
+
+def _validate_model_prices(value: Any) -> list[str]:
+    """{"provider:model": {"input_per_m": n, "output_per_m": n}} — USD per
+    1M tokens, both non-negative numbers, keys shaped like model refs."""
+    if not isinstance(value, dict):
+        return ["model_prices must be an object of 'provider:model' → {input_per_m, output_per_m}"]
+    errors: list[str] = []
+    for ref, row in value.items():
+        if not isinstance(ref, str) or ":" not in ref or ref.startswith(":") or ref.endswith(":"):
+            errors.append(f"model_prices: {ref!r} is not a 'provider:model' reference")
+            continue
+        if not isinstance(row, dict):
+            errors.append(
+                f"model_prices[{ref!r}] must be an object with input_per_m and output_per_m"
+            )
+            continue
+        for field in ("input_per_m", "output_per_m"):
+            amount = row.get(field)
+            if not isinstance(amount, int | float) or isinstance(amount, bool) or float(amount) < 0:
+                errors.append(f"model_prices[{ref!r}].{field} must be a non-negative number")
+    return errors
 
 
 def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[str]:
@@ -420,6 +488,20 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("memory_half_life_days must be a positive number")
         elif key == "memory_community_budget_tokens" and (not isinstance(value, int) or value < 0):
             errors.append("memory_community_budget_tokens must be an integer ≥ 0 (0 disables)")
+        elif key in RETENTION_DAY_KEYS and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 3650
+        ):
+            errors.append(f"{key} must be an integer number of days between 1 and 3650")
+        elif key == "mcp_reconnect_max_attempts" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 100
+        ):
+            errors.append("mcp_reconnect_max_attempts must be an integer between 1 and 100")
+        elif key == "spend_ceiling_usd_per_day" and (
+            not isinstance(value, int | float) or isinstance(value, bool) or float(value) <= 0
+        ):
+            errors.append("spend_ceiling_usd_per_day must be a positive number of USD")
+        elif key == "model_prices":
+            errors.extend(_validate_model_prices(value))
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):

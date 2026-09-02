@@ -132,7 +132,10 @@ async def test_chat_stream_holds_no_pooled_connection_while_open(client: AsyncCl
     assert "session" not in inspect.signature(chat_stream).parameters
     run_id = await _paused_run(client)
     pool = get_engine().pool
-    responses = [await chat_stream(UUID(run_id)) for _ in range(3)]
+    from starlette.requests import Request
+
+    scope = {"type": "http", "headers": [], "query_string": b""}
+    responses = [await chat_stream(UUID(run_id), Request(scope), after=None) for _ in range(3)]
     assert pool.checkedout() == 0
     iterators = [r.body_iterator for r in responses]
     for it in iterators:

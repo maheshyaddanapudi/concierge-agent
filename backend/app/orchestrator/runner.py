@@ -52,13 +52,19 @@ async def create_run(
     eval_skill_id: UUID | None = None,
     user_id: UUID | None = None,
     shed_if_full: bool = False,
+    trigger_kind: str = "chat",
 ) -> Run:
     """Insert the run row (M51: as `queued` — it is `running` only once it
     holds an execution slot). Raises admission.AtCapacity before inserting
     when the process is draining, or when `shed_if_full` and the queue is
-    full — the caller turns that into an explicit 503."""
+    full — the caller turns that into an explicit 503. M53: the spend
+    ceiling is enforced HERE, for every trigger kind (chat, direct, ambient,
+    eval), as a 429-shaped AtCapacity."""
     from app.auth import auth_enabled, current_user_id
+    from app.cost import enforce_spend_ceiling
     from app.orchestrator import admission
+
+    kind = "eval" if is_eval else ("direct" if mode == "direct" else trigger_kind)
 
     if user_id is None:
         user_id = current_user_id()  # §18.8: requester owns the work; None when dark
@@ -80,6 +86,7 @@ async def create_run(
                 raise ValueError(f"conversation {conversation_id} not found")  # invisible
         settings = await load_settings_snapshot()
         admission.check_admission(settings, shed_if_full=shed_if_full)
+        await enforce_spend_ceiling(settings, kind)
         run = Run(
             conversation_id=conversation_id,
             chat_message=message,

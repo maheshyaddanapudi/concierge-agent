@@ -5,6 +5,7 @@ import { cx } from './ui'
 
 export interface AmbientStreamEvent {
   id: string
+  seq?: number
   mode: 'interrupt' | 'notify' | 'digest'
   tier: number
   urgency: number
@@ -23,7 +24,8 @@ const MAX_TOASTS = 4
 /** Ambient delivery toast (spec §18.4): subscribes to the global ambient
  * SSE stream ONLY while the settings snapshot says ambient is on — with
  * ambient dark there is no stream, no subscription, no toast. Tier-0/1
- * events toast; digests stay in the inbox. */
+ * events toast; digests stay in the inbox. M53: deliveries arrive as
+ * `delivery` events with an id; `ping` events are the heartbeat. */
 export function AmbientToaster() {
   const { data: settings } = useSettings()
   const ambientOn = Boolean(settings?.ambient_enabled)
@@ -32,7 +34,7 @@ export function AmbientToaster() {
   useEffect(() => {
     if (!ambientOn) return
     const source = new EventSource(sseUrl('/ambient/stream'))
-    source.onmessage = (e: MessageEvent) => {
+    const onDelivery = (e: MessageEvent) => {
       let event: AmbientStreamEvent
       try {
         event = JSON.parse(e.data as string) as AmbientStreamEvent
@@ -41,9 +43,14 @@ export function AmbientToaster() {
       }
       if (event.tier > 1) return // digest/silent ride the inbox, not a toast
       const key = `${event.id}:${event.at}`
-      setToasts((current) => [...current, { ...event, key }].slice(-MAX_TOASTS))
+      setToasts((current) =>
+        current.some((t) => t.key === key)
+          ? current
+          : [...current, { ...event, key }].slice(-MAX_TOASTS),
+      )
       setTimeout(() => setToasts((current) => current.filter((t) => t.key !== key)), TOAST_MS)
     }
+    source.addEventListener('delivery', onDelivery)
     return () => source.close()
   }, [ambientOn])
 
@@ -51,6 +58,8 @@ export function AmbientToaster() {
   return (
     <div
       data-testid="ambient-toaster"
+      role="status"
+      aria-live="polite"
       className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2"
     >
       {toasts.map((toast) => (
@@ -71,7 +80,8 @@ export function AmbientToaster() {
               ambient {toast.mode} · {toast.category}
             </span>
             <button
-              aria-label="dismiss"
+              type="button"
+              aria-label={`dismiss: ${toast.title}`}
               className="text-slate-500 hover:text-slate-200"
               onClick={() => setToasts((current) => current.filter((t) => t.key !== toast.key))}
             >
