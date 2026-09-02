@@ -26,6 +26,7 @@ from a2a.client import A2ACardResolver, Client, ClientConfig, ClientFactory
 from a2a.types import AgentCard
 from sqlalchemy import select
 
+from app import egress
 from app.a2a.auth import AgentCredentialService, ConciergeAuthInterceptor, scheme_supported
 from app.db import get_session_factory
 from app.models import RemoteAgent, Tool
@@ -86,7 +87,9 @@ def skill_description(skill: Any) -> str:
 
 class A2AManager:
     def __init__(self) -> None:
-        self._http = httpx.AsyncClient(timeout=CARD_FETCH_TIMEOUT_S)
+        # M52: card fetches and A2A calls go through the egress policy —
+        # every request, every redirect hop
+        self._http = egress.client(timeout=CARD_FETCH_TIMEOUT_S)
         self._refresh_task: asyncio.Task[None] | None = None
 
     # ── lifecycle ────────────────────────────────────────────────
@@ -104,7 +107,7 @@ class A2AManager:
             timeout_s = CARD_FETCH_TIMEOUT_S
         if timeout_s != CARD_FETCH_TIMEOUT_S:
             old = self._http
-            self._http = httpx.AsyncClient(timeout=timeout_s)
+            self._http = egress.client(timeout=timeout_s)
             await old.aclose()
         if await self._enabled():
             async with get_session_factory()() as db:
@@ -148,10 +151,11 @@ class A2AManager:
             if agent is None or agent.deleted_at is not None:
                 return
             card_url = agent.card_url
+            secrets = _credential_strings(agent.credentials)
         try:
             card = await self.fetch_card(card_url)
         except BaseException as exc:  # noqa: BLE001 - recorded on the row
-            await self._record_status(agent_id, "error", error=_describe(exc))
+            await self._record_status(agent_id, "error", error=_describe(exc, secrets=secrets))
             logger.warning(
                 "a2a_card_fetch_failed",
                 tier="a2a",
@@ -293,13 +297,32 @@ class A2AManager:
             await db.commit()
 
 
-def _describe(exc: BaseException) -> str:
+def _credential_strings(credentials: dict[str, Any] | None) -> list[str]:
+    """The agent's own secrets, resolved, for the sanitizer (M52)."""
+    from app.a2a.auth import resolve_credential_value
+
+    out: list[str] = []
+    for value in (credentials or {}).values():
+        resolved = resolve_credential_value(value)
+        if isinstance(resolved, dict):
+            out.extend(str(v) for v in resolved.values() if v)
+        elif resolved:
+            out.append(str(resolved))
+    return out
+
+
+def _describe(exc: BaseException, *, secrets: list[str] | None = None) -> str:
+    """Error text for the row — through the one sanitizer (M52), with the
+    record's own credentials as extra secrets."""
+    from app.sanitize import sanitize_error
+
     if isinstance(exc, TimeoutError | httpx.TimeoutException):
         return "card fetch timed out"
     if isinstance(exc, BaseExceptionGroup):
-        parts = [_describe(e) for e in exc.exceptions]
+        parts = [_describe(e, secrets=secrets) for e in exc.exceptions]
         return "; ".join(dict.fromkeys(parts))
-    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    raw = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return sanitize_error(raw, extra_secrets=secrets or ()) or raw
 
 
 _manager: A2AManager | None = None

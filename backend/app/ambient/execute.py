@@ -44,15 +44,35 @@ def _first_line(text: str, limit: int = 200) -> str:
     return line[:limit]
 
 
+_PAYLOAD_MAX_CHARS = 4000
+
+
+def render_fire_prompt(kind: str, **vars: Any) -> str:
+    """The trusted prompt for a fired event with its UNTRUSTED payload
+    rendered through the one fence choke point (M52): `event_payload` is
+    neutralized and the fence tags carry a per-render token."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    prompt = load_prompt("ambient_run") if kind == "routine" else load_prompt("ambient_intent_run")
+    return untrusted.render(
+        prompt,
+        mode="format",
+        body_var="event_payload",
+        body=str(vars.pop("event_payload", "")),
+        max_chars=_PAYLOAD_MAX_CHARS,
+        **vars,
+    )
+
+
 async def prepare_run(event: AmbientEvent) -> Run | None:
     """Build the run for a fired event: fresh conversation, trusted prompt +
     untrusted-fenced payload + abstain instruction, trigger provenance set
     BEFORE the task starts (the runner reads it for the projection)."""
     from app.orchestrator.runner import create_run
-    from app.prompts import load_prompt
 
     decision = event.decision or {}
-    payload_json = json.dumps(event.payload or {}, default=str)[:4000]
+    payload_json = json.dumps(event.payload or {}, default=str)[:_PAYLOAD_MAX_CHARS]
     routine: Routine | None = None
     intent: StandingIntent | None = None
 
@@ -68,7 +88,8 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
             )
             return None
         name = routine.name
-        prompt = load_prompt("ambient_run").format(
+        prompt = render_fire_prompt(
+            "routine",
             routine_name=routine.name,
             routine_prompt=routine.prompt,
             autonomy=routine.autonomy,
@@ -83,7 +104,8 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
         if intent is None or intent.status != "active":
             return None
         name = f"watch: {intent.text[:50]}"
-        prompt = load_prompt("ambient_intent_run").format(
+        prompt = render_fire_prompt(
+            "intent",
             intent_text=intent.text,
             event_kind=event.kind,
             event_source=event.source,

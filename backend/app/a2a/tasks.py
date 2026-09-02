@@ -93,7 +93,9 @@ async def update_task(
         if result_text is not None:
             row.result = {"text": result_text}
         if error is not None:
-            row.error = error
+            from app.sanitize import sanitize_error
+
+            row.error = sanitize_error(error)  # M52
         if parked:
             row.state = "parked"
             row.parked_at = datetime.now(UTC)

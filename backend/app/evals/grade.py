@@ -20,6 +20,24 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
 
+def render_judge_prompt(*, expected: str, judge_notes: str, answer: str, input_hint: str) -> str:
+    """The judge prompt through the one fence choke point (M52): the
+    candidate answer is untrusted model output and cannot close the fence."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    return untrusted.render(
+        load_prompt("eval_judge"),
+        mode="format",
+        body_var="answer",
+        body=answer,
+        max_chars=8000,
+        input_hint=input_hint,
+        expected=expected[:4000] or "(none given)",
+        judge_notes=judge_notes[:2000] or "(none)",
+    )
+
+
 async def grade_case(
     *, grader: str, answer: str, expected: str, judge_notes: str
 ) -> dict[str, Any]:
@@ -43,13 +61,9 @@ async def grade_case(
     # llm_judge
     try:
         from app.memory.extract import _extraction_model
-        from app.prompts import load_prompt
 
-        prompt = load_prompt("eval_judge").format(
-            input_hint="",
-            expected=expected[:4000] or "(none given)",
-            judge_notes=judge_notes[:2000] or "(none)",
-            answer=answer[:8000],
+        prompt = render_judge_prompt(
+            expected=expected, judge_notes=judge_notes, answer=answer, input_hint=""
         )
         _, model = await _extraction_model()
         out = await model.with_structured_output(EvalVerdict).ainvoke(prompt)  # type: ignore[attr-defined]

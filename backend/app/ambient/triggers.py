@@ -124,7 +124,9 @@ async def evaluate_schedules(now: datetime | None = None) -> int:
 
 
 async def _record_trigger_failure(routine_id: Any, exc: BaseException) -> None:
-    reason = f"trigger evaluation failed: {type(exc).__name__}: {exc}"[:500]
+    from app.sanitize import sanitize_error
+
+    reason = (sanitize_error(f"trigger evaluation failed: {type(exc).__name__}: {exc}") or "")[:500]
     async with get_session_factory()() as session:
         row = await session.get(Routine, routine_id)
         if row is None:

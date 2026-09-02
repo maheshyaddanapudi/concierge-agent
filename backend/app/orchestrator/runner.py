@@ -434,9 +434,10 @@ def _describe_failure(exc: BaseException, settings: dict[str, Any]) -> str:
     an opaque SDK traceback."""
     from app import obs
     from app.llm import classify_provider_error
+    from app.sanitize import sanitize_error
 
     kind = classify_provider_error(exc)
-    base = f"{type(exc).__name__}: {exc}"
+    base = sanitize_error(f"{type(exc).__name__}: {exc}") or type(exc).__name__  # M52
     if kind == "provider_error":
         return base
     obs.LLM_ERRORS.labels(kind=kind).inc()
@@ -446,6 +447,9 @@ def _describe_failure(exc: BaseException, settings: dict[str, Any]) -> str:
 
 
 async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) -> None:
+    from app.sanitize import sanitize_error
+
+    message = sanitize_error(message) or message  # M52: nothing secret is ever persisted
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is not None:

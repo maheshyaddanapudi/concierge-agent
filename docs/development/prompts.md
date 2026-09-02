@@ -15,6 +15,10 @@ Every prompt file has a **golden set** beside it in `backend/app/prompts/golden/
 
 What it catches, before a request does: a binding sentence edited out of a prompt (the planner's `no_confident_match` contract, an untrusted-data fence, the ambient abstain protocol); a placeholder renamed in the file while the consumer still passes the old name (`.format` would `KeyError`; `.replace` would silently leave the token in the prompt); a prompt file that no code loads any more. It runs three ways, like doclint: `pytest tests/test_prompt_golden.py`, by hand, and as a Docker build gate (`RUN python -m app.prompts.check` in `backend/Dockerfile`). The golden directory is the authoritative per-prompt index — the catalog below describes the orchestration prompts in prose; the memory, ambient, A2A, eval and salience prompts are documented by their golden sets.
 
+### Fence tokens (M52)
+
+Every prompt that carries untrusted content — a remote agent's output, a fired event's payload, a delivery body, a candidate answer, member memories, a watch request, the remembered-context block — wraps it in a tag whose opening AND closing forms carry `token="{fence_token}"`. The consumer never fills that placeholder itself: it loads the prompt and hands it to `app.untrusted.render(...)`, the one choke point, which neutralizes any fence-shaped tag inside the payload (`<untrusted_…`, `</untrusted_…`, `<remembered_context` become `&lt;…`) and binds a fresh 12-hex-char token per render. In the golden sets the token is an ordinary placeholder (`fence_token: "0123456789ab"` in `vars`, or listed in `placeholders` for replace-mode prompts), so a case can assert the tokened tags literally. When you add an untrusted-bearing prompt, add the token to both tags, route the consumer through `untrusted.render`, and add a fence-escape case to `tests/test_m52_untrusted.py`.
+
 ## Catalog
 
 | File | Loaded by | When it runs | Template slots |

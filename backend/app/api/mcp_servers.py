@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
+from app import egress
 from app.api.deps import (
     FiltersDep,
     SessionDep,
@@ -15,6 +16,7 @@ from app.api.deps import (
     fetch_or_404,
     reject_static_delete,
 )
+from app.mcp.secrets import mask_map, merge_secret_map
 from app.models import McpServer, Skill, Tool, skill_tools
 from app.schemas.mcp_server import McpServerCreate, McpServerOut, McpServerPatch
 
@@ -35,7 +37,22 @@ async def _tool_counts(session: SessionDep, server_ids: list[UUID]) -> dict[UUID
 def _to_out(server: McpServer, tool_count: int = 0) -> McpServerOut:
     out = McpServerOut.model_validate(server)
     out.tool_count = tool_count
+    # M52: env and headers are write-only — the API never returns a value
+    out.env = mask_map(server.env)
+    out.headers = mask_map(server.headers)
     return out
+
+
+def _check_egress(url: str | None) -> None:
+    """Save-time half of the egress policy (M52): the static checks, so a
+    private or non-http target is refused with a 422 instead of a
+    connection attempt; the resolved-address check runs at connect time."""
+    if not url:
+        return
+    try:
+        egress.check_url_static(url)
+    except egress.EgressError as exc:
+        raise HTTPException(422, f"url refused by the egress policy ({exc.kind})") from exc
 
 
 @router.get("", response_model=list[McpServerOut])
@@ -48,6 +65,8 @@ async def list_servers(session: SessionDep, filters: FiltersDep) -> list[McpServ
 
 @router.post("", response_model=McpServerOut, status_code=201)
 async def create_server(body: McpServerCreate, session: SessionDep) -> McpServerOut:
+    if body.transport == "http":
+        _check_egress(body.url)
     server = McpServer(
         **body.model_dump(),
         source="dynamic",
@@ -79,6 +98,13 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
     server = await fetch_or_404(session, McpServer, server_id)
     changes: dict[str, Any] = body.model_dump(exclude_unset=True)
     enforce_static_rules(server, set(changes))
+    if "url" in changes and (changes["url"] or server.transport == "http"):
+        _check_egress(changes["url"])
+    # M52: write-only secrets merge — `***` keeps, null removes, else replaces
+    if "env" in changes:
+        server.env = merge_secret_map(server.env, changes.pop("env"))
+    if "headers" in changes:
+        server.headers = merge_secret_map(server.headers, changes.pop("headers"))
     for field, value in changes.items():
         setattr(server, field, value)
     await session.commit()

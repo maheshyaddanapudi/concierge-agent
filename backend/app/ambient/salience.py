@@ -58,12 +58,17 @@ def fence_delivery_content(body: str, *, category: str, urgency: int, recurrence
     """Delivered content is untrusted — remote-agent output reaches
     deliveries through §19.6 — so it is fenced before entering any model
     context, exactly like a remote tool result."""
-    return (
-        load_prompt("delivery_salience")
-        .replace("{category}", category.replace('"', "'"))
-        .replace("{urgency}", str(urgency))
-        .replace("{recurrence}", str(recurrence))
-        .replace("{content}", (body or "").strip()[:_MAX_JUDGED_CHARS] or "(empty)")
+    from app import untrusted
+
+    return untrusted.render(
+        load_prompt("delivery_salience"),
+        mode="replace",
+        body_var="content",
+        body=body,
+        max_chars=_MAX_JUDGED_CHARS,
+        category=untrusted.quote_attr(category),
+        urgency=str(urgency),
+        recurrence=str(recurrence),
     )
 
 

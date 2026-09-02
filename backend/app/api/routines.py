@@ -46,12 +46,13 @@ class TriggerFilter(BaseModel):
     @classmethod
     def _regex_compiles(cls, v: Any, info: Any) -> Any:
         if info.data.get("op") == "regex" and isinstance(v, str):
-            import re as _re
+            # M52: compiles, bounded in length, no nested repetition, no
+            # backreferences — the same guard the matcher re-applies
+            from app.ambient.regex_guard import check_pattern
 
-            try:
-                _re.compile(v)
-            except _re.error as exc:
-                raise ValueError(f"regex filter does not compile: {exc}") from exc
+            problem = check_pattern(v)
+            if problem:
+                raise ValueError(f"regex filter refused: {problem}")
         return v
 
 

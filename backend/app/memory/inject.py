@@ -140,12 +140,10 @@ async def build_memory_block(
         ):
             return "", stats
 
-        from app.prompts import load_prompt
-
         def section(title: str, lines: list[str]) -> str:
             return f"\n{title}:\n" + "\n".join(lines) + "\n" if lines else ""
 
-        block = load_prompt("memory_block").format(
+        block = render_memory_block(
             pinned_section=section("Pinned profile", pinned_lines),
             instructions_section=section(
                 "Approved standing instructions (the user approved these — follow them "
@@ -168,6 +166,36 @@ async def build_memory_block(
     except Exception as exc:  # noqa: BLE001 — memory never breaks a run
         logger.warning("memory_inject_failed", surface=surface, error=str(exc))
         return "", stats
+
+
+_BLOCK_MAX_CHARS = 20_000
+
+
+def render_memory_block(
+    *,
+    pinned_section: str,
+    instructions_section: str,
+    memories_section: str,
+    episodes_section: str,
+    communities_section: str,
+) -> str:
+    """The remembered-context block through the one fence choke point
+    (M52): memories were extracted from untrusted text, so every section
+    is neutralized and the fence tags carry a per-render token."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    return untrusted.render(
+        load_prompt("memory_block"),
+        mode="format",
+        body_var="memories_section",
+        body=memories_section,
+        max_chars=_BLOCK_MAX_CHARS,
+        pinned_section=untrusted.neutralize(pinned_section),
+        instructions_section=untrusted.neutralize(instructions_section),
+        episodes_section=untrusted.neutralize(episodes_section),
+        communities_section=untrusted.neutralize(communities_section),
+    )
 
 
 def _record_injected(memory_ids: list[str]) -> None:

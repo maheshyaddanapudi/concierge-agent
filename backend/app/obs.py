@@ -28,12 +28,15 @@ def configure_logging(level: str = "INFO") -> None:
     # basicConfig is a no-op once handlers exist — set the level explicitly
     # so runtime re-configuration actually takes effect
     logging.getLogger().setLevel(getattr(logging, level.upper(), logging.INFO))
+    from app.sanitize import redact_processor
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.format_exc_info,
+            redact_processor,  # M52: no credential shape or known secret reaches a log line
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
@@ -87,6 +90,16 @@ DELIVERY_SENDS = Counter(
     "concierge_delivery_sends_total",
     "External channel send attempts by outcome: ok, retry, dead (M51)",
     ["channel", "status"],
+)
+EGRESS_REFUSED = Counter(
+    "concierge_egress_refused_total",
+    "Outbound fetches refused or failed under the egress policy, by kind (M52)",
+    ["kind"],
+)
+REGEX_GUARD = Counter(
+    "concierge_regex_guard_total",
+    "Authored regex filters refused by the static guard or stopped by the timeout (M52)",
+    ["outcome"],
 )
 AMBIENT_EVALUATOR_ERRORS = Counter(
     "concierge_ambient_evaluator_errors_total",

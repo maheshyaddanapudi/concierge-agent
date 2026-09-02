@@ -15,7 +15,7 @@ run as an enterprise system — the Conductor model.
 | M49 | ✅ done | `docs/acceptance/prod/M49/` — baseline (before any fix), prompt-harness proof, ruff triage |
 | M50 | ✅ done | `docs/acceptance/prod/M50/` — 60 streams with a healthy probe (baseline failed at 15), `/runs` flat 1k→10k at a 47 KB page (baseline 2.2 s / 9.5 MB), quarantine transcript, timezone proof, screenshots |
 | M51 | ✅ done | `docs/acceptance/prod/M51/` — hung provider ends at the wall clock (45 s, heartbeat on record), 429 classified and counted, 503 + Retry-After then a visible `queued` run on the live model, SIGTERM drain + SIGKILL reap leave zero non-terminal rows, Redis killed → served from Postgres with the degraded counter, webhook retries with backoff to dead-letter (attempt 2 on the real clock, dead at 4), 30-min ambient soak with RSS +1.1 MB over the final 15 min after warm-up, 29 contract tests |
-| M52 | ☐ | |
+| M52 | ✅ done | `docs/acceptance/prod/M52/` — a fence-escape payload fired at the live model (tags escaped, tokened fence, injection reported not obeyed), SSRF refused at the API and in the fetch path (metadata address, private ranges, local names, a redirect into loopback on hop 2), billion-laughs and oversized bodies refused, MCP secrets write-only with the row intact, a provider failure redacted in the run row and the log, catastrophic regexes refused at the API and bounded at match time, 40 contract tests |
 | M53 | ☐ | |
 | M54 | ☐ | |
 | M55 | ☐ | |

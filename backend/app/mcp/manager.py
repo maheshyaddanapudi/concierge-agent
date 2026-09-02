@@ -54,11 +54,13 @@ def _stdio_env(server_env: dict[str, Any] | None) -> dict[str, str]:
 
     from mcp.client.stdio import get_default_environment
 
+    from app.mcp.secrets import resolve_secret_map
+
     env = get_default_environment()
     for key, value in os.environ.items():
         if key in _STDIO_ENV_PASSTHROUGH or key.startswith(_STDIO_ENV_PREFIXES):
             env[key] = value
-    env.update({str(k): str(v) for k, v in (server_env or {}).items()})
+    env.update(resolve_secret_map(server_env))  # M52: env:VAR indirection
     return env
 
 
@@ -120,9 +122,14 @@ class McpManager:
                 raise conn.error
             await self._ingest(server_id)
         except BaseException as exc:  # noqa: BLE001 - connection failure path
+            from app.mcp.secrets import secret_strings
+
             await self._teardown(server_id)
-            await self._record_status(server_id, "error", error=_describe(exc))
-            logger.warning("mcp_connect_failed", server_id=str(server_id), error=_describe(exc))
+            described = _describe(
+                exc, secrets=secret_strings(server.env) + secret_strings(server.headers)
+            )
+            await self._record_status(server_id, "error", error=described)
+            logger.warning("mcp_connect_failed", server_id=str(server_id), error=described)
             return
         await self._record_status(server_id, "active", connected=True)
         logger.info("mcp_connected", server_id=str(server_id), server_name=server.name)
@@ -137,8 +144,19 @@ class McpManager:
                 )
                 client_ctx: Any = stdio_client(params)
             else:
-                headers = {str(k): str(v) for k, v in (server.headers or {}).items()}
-                client_ctx = streamablehttp_client(server.url or "", headers=headers or None)
+                from app import egress
+                from app.mcp.secrets import resolve_secret_map
+
+                # M52: the server URL is judged by the egress policy before
+                # a connection is attempted, the SDK's own client carries
+                # the policy hook, and header secrets resolve env: here
+                egress.check_url_static(server.url or "")
+                headers = resolve_secret_map(server.headers)
+                client_ctx = streamablehttp_client(
+                    server.url or "",
+                    headers=headers or None,
+                    httpx_client_factory=egress.mcp_client_factory,
+                )
             async with client_ctx as streams:
                 read, write = streams[0], streams[1]
 
@@ -299,13 +317,18 @@ class McpManager:
             await db.commit()
 
 
-def _describe(exc: BaseException) -> str:
+def _describe(exc: BaseException, *, secrets: list[str] | None = None) -> str:
+    """Error text for the row — through the one sanitizer (M52), with the
+    server's own env/header values as extra secrets."""
+    from app.sanitize import sanitize_error
+
     if isinstance(exc, TimeoutError):
         return "connection timed out"
     if isinstance(exc, BaseExceptionGroup):
-        parts = [_describe(e) for e in exc.exceptions]
+        parts = [_describe(e, secrets=secrets) for e in exc.exceptions]
         return "; ".join(dict.fromkeys(parts))
-    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    raw = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return sanitize_error(raw, extra_secrets=secrets or ()) or raw
 
 
 _manager: McpManager | None = None

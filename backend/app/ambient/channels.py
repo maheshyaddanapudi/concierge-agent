@@ -47,7 +47,11 @@ def set_http_client_factory(fn: Callable[[], httpx.AsyncClient] | None) -> None:
 def _client() -> httpx.AsyncClient:
     if _http_client_factory is not None:
         return _http_client_factory()
-    return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+    from app import egress
+
+    # M52: the operator's sink is still an outbound fetch — same policy,
+    # and a POST never follows a redirect (it would resend the envelope)
+    return egress.client(timeout=15.0, follow_redirects=False)
 
 
 def register_channel_adapter(name: str, fn: ChannelAdapter | None) -> None:
@@ -242,10 +246,12 @@ def _send_entry(
 ) -> dict[str, Any]:
     """One channel's ledger entry: attempt counter, next attempt with
     backoff, dead-letter flag (M51). `ok` resets the retry state."""
+    from app.sanitize import sanitize_error
+
     attempts = int((prior or {}).get("attempts") or 0) + 1
     entry: dict[str, Any] = {
         "ok": ok,
-        "error": None if ok else (error or "unknown error")[:500],
+        "error": None if ok else (sanitize_error(error) or "unknown error")[:500],
         "at": now.isoformat(),
         "attempts": attempts,
         "next_attempt_at": None,

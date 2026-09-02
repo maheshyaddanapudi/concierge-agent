@@ -57,6 +57,10 @@ services:
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-}
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-}
       SHUTDOWN_GRACE_S: ${SHUTDOWN_GRACE_S:-}
+      # M52: the egress policy for every outbound fetch (see .env.example)
+      EGRESS_POLICY: ${EGRESS_POLICY:-}
+      EGRESS_ALLOW_HOSTS: ${EGRESS_ALLOW_HOSTS:-}
+      EGRESS_MAX_BYTES: ${EGRESS_MAX_BYTES:-}
     volumes:
       - workspace:/workspace
     ports:

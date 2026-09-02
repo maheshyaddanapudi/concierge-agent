@@ -16,6 +16,7 @@ used by mcp_tool (the default resolves the server by name and invokes the
 tool through the MCP manager).
 """
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -26,9 +27,11 @@ from xml.etree import ElementTree
 
 import httpx
 import structlog
+from defusedxml import DefusedXmlException
 from defusedxml import ElementTree as DefusedElementTree
 from sqlalchemy import func, select
 
+from app import egress
 from app.db import get_session_factory
 from app.models import Run
 
@@ -55,7 +58,8 @@ def set_mcp_invoker(fn: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | N
 def _client() -> httpx.AsyncClient:
     if _http_client_factory is not None:
         return _http_client_factory()
-    return httpx.AsyncClient(timeout=20.0, follow_redirects=True)
+    # M52: the egress client — every request, every redirect hop, checked
+    return egress.client(timeout=20.0)
 
 
 # ── shared helpers ───────────────────────────────────────────────────
@@ -122,9 +126,7 @@ async def http_json_source(
     if not url:
         raise ValueError("http_json needs config.url")
     async with _client() as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = await egress.fetch_json(client, url)  # M52: policy + streamed cap
     items = _as_items(_walk_path(payload, config.get("items_path")))
     return _dedupe(items, watermark, str(config.get("id_field") or "id"))
 
@@ -140,6 +142,16 @@ def _first_text(elem: ElementTree.Element, *tags: str) -> str:
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 
+def _parse_feed(text: str) -> ElementTree.Element:
+    """defusedxml refuses entity expansion, DTD tricks and external
+    references (M49); M52 gives every refusal ONE message — the document
+    itself never reaches a log or a model."""
+    try:
+        return DefusedElementTree.fromstring(text)
+    except (DefusedXmlException, ElementTree.ParseError, ValueError) as exc:
+        raise ValueError("feed refused: unsafe or malformed XML") from exc
+
+
 async def rss_source(
     watermark: str | None, config: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -148,10 +160,10 @@ async def rss_source(
     if not url:
         raise ValueError("rss needs config.url")
     async with _client() as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        text = resp.text
-    root = DefusedElementTree.fromstring(text)  # untrusted body: entity/bomb-safe (M49)
+        text = await egress.fetch_text(client, url)  # M52: policy + streamed cap
+    # M52: parsed off the event loop — a large or hostile document costs a
+    # worker thread, never the tick
+    root = await asyncio.to_thread(_parse_feed, text)
     items: list[dict[str, Any]] = []
     for entry in root.iter("item"):  # RSS 2.0
         link = _first_text(entry, "link")

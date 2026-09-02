@@ -129,7 +129,7 @@ async def test_prepare_run_carries_provenance_and_fenced_payload() -> None:
     assert run.trigger["source"] == "schedule"
     # trusted routine prompt + untrusted-fenced payload + abstain instruction
     assert "check the thing" in run.chat_message
-    assert "<untrusted_event_payload>" in run.chat_message
+    assert '<untrusted_event_payload token="' in run.chat_message  # M52: tokened fence
     assert "conveyor stopped" in run.chat_message
     assert "ABSTAIN" in run.chat_message
     assert "propose" in run.chat_message

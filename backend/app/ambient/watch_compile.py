@@ -9,7 +9,7 @@ active, on either surface.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 VALID_FILTER_OPS = {"equals", "contains", "starts_with", "one_of", "regex"}
 
@@ -19,6 +19,36 @@ class WatchFilter(BaseModel):
     op: Literal["equals", "contains", "starts_with", "one_of", "regex"] = "equals"
     value: str = ""
     values: list[str] = Field(default_factory=list)
+
+    @field_validator("value")
+    @classmethod
+    def _regex_is_bounded(cls, v: str, info: ValidationInfo) -> str:
+        # M52: a model-compiled regex is authored input — the same guard the
+        # API applies, so a catastrophic pattern never reaches the tick
+        if info.data.get("op") == "regex":
+            from app.ambient.regex_guard import check_pattern
+
+            problem = check_pattern(v)
+            if problem:
+                raise ValueError(f"regex filter refused: {problem}")
+        return v
+
+
+def render_compile_prompt(*, text: str, poll_sources: str, state_probes: str) -> str:
+    """The compiler prompt through the one fence choke point (M52): the
+    user's request is data and cannot close the fence."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    return untrusted.render(
+        load_prompt("ambient_watch_compile"),
+        mode="format",
+        body_var="text",
+        body=text,
+        max_chars=2000,
+        poll_sources=poll_sources,
+        state_probes=state_probes,
+    )
 
 
 class WatchCompile(BaseModel):
@@ -50,7 +80,6 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
     from app.db import get_session_factory
     from app.llm import ModelParams, get_model
     from app.models import StandingIntent
-    from app.prompts import load_prompt
     from app.registry_cache import get_cache
 
     cache = get_cache()
@@ -67,8 +96,8 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
             or "(none registered)"
         )
 
-    prompt = load_prompt("ambient_watch_compile").format(
-        text=text[:2000],
+    prompt = render_compile_prompt(
+        text=text,
         poll_sources=_registry_lines(poll_source_specs()),
         state_probes=_registry_lines(state_probe_specs()),
     )

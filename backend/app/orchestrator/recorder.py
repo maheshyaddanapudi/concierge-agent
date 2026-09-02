@@ -17,6 +17,7 @@ from app import obs
 from app.db import get_session_factory
 from app.models import Run, RunStep
 from app.orchestrator.context import EVENT_BUS
+from app.sanitize import sanitize_error
 
 logger = structlog.get_logger("run")
 
@@ -154,7 +155,7 @@ class RunRecorder:
             if step is not None:
                 step.status = status
                 step.output = output
-                step.error = error
+                step.error = sanitize_error(error)  # M52: one sanitizer before persistence
                 step.input_tokens = input_tokens
                 step.output_tokens = output_tokens
                 step.finished_at = datetime.now(UTC)

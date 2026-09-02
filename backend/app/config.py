@@ -53,6 +53,16 @@ class AppConfig(BaseSettings):
     # M51: how long a draining replica lets in-flight runs finish before
     # cancelling them with a truthful terminal status
     shutdown_grace_s: int = 25
+    # M52: one egress policy for every outbound fetch the platform makes on
+    # someone else's say-so (A2A cards and calls, poll sources, HTTP MCP
+    # servers, the webhook channel). `public` denies loopback, link-local,
+    # private and metadata ranges except the hosts named in
+    # `egress_allow_hosts` (suffix match — an internal MCP server or agent);
+    # `allowlist` admits only those hosts; `open` keeps only the size/time
+    # caps (lab use).
+    egress_policy: str = "public"
+    egress_allow_hosts: str = ""
+    egress_max_bytes: int = 5 * 1024 * 1024
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

@@ -199,7 +199,7 @@ async def test_block_contains_memories_episodes_and_abstention() -> None:
     block, stats = await build_memory_block(
         "which database does the user prefer", conversation_id=other_id, surface="planner"
     )
-    assert "<remembered_context>" in block
+    assert '<remembered_context token="' in block  # M52: tokened fence
     assert "never invent a remembered fact" in block
     assert "favorite database is postgres" in block
     assert "Similar past episodes" in block

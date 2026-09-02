@@ -34,9 +34,11 @@ class McpServerPatch(ApiModel):
     description: str | None = None
     command: str | None = None
     args: list[str] | None = None
-    env: dict[str, str] | None = None
+    # M52 write-only merge: `***` keeps the stored value, null removes the
+    # key, anything else replaces it — a masked round-trip never clobbers
+    env: dict[str, str | None] | None = None
     url: str | None = None
-    headers: dict[str, str] | None = None
+    headers: dict[str, str | None] | None = None
     status: Status | None = None
 
 
