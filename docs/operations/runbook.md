@@ -24,6 +24,7 @@ Notes from the scripts themselves:
 | Check | Command | Healthy looks like |
 |---|---|---|
 | Backend liveness | `curl -s http://localhost:8000/health` | `{"status":"ok"}` |
+| Backend readiness (M51) | `curl -s -i http://localhost:8000/ready` | `200` with `{"status":"ready","accepting":true,"running":n,"queued":n,"max_concurrent":8}`; `503` while the process is draining for shutdown — point the load balancer's readiness probe here, liveness at `/health` |
 | DB container | `docker compose ps db` | `healthy` (compose healthcheck: `pg_isready -U concierge`, 3 s interval, 20 retries) |
 | All containers | `docker compose ps` | `db` healthy, `backend` and `frontend` `Up` |
 | Backend logs | `docker compose logs -f backend` | JSON structlog lines; `registry_cache_started`, `mcp_connected` per seeded server at startup |

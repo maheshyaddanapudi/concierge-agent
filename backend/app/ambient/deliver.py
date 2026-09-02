@@ -277,6 +277,39 @@ async def _digest_due(
 APPROVAL_CATEGORIES = {"hitl", "learning"}
 
 
+async def _deliver_batch(mode: str, rows: list[Delivery], now: datetime) -> int:
+    """Dispatch, THEN commit (M51, arch-H9). The flush decides a batch with
+    nothing written, fans it out to the SSE hub and the external channels,
+    and only then marks the rows delivered — together with the per-channel
+    ledger — in one transaction. A crash between the two re-delivers on
+    the next pass instead of silently losing a toast the row claims was
+    sent. Returns how many rows this call actually marked delivered."""
+    if not rows:
+        return 0
+    from app.ambient.channels import dispatch_delivered
+
+    entries = await dispatch_delivered(mode, rows, record=False)
+    written = 0
+    async with get_session_factory()() as session:
+        fresh_rows = list(
+            (
+                await session.execute(
+                    select(Delivery).where(
+                        Delivery.id.in_([r.id for r in rows]), Delivery.delivered_at.is_(None)
+                    )
+                )
+            ).scalars()
+        )
+        for row in fresh_rows:
+            row.delivered_at = now
+            row.channel = mode
+            if entries:
+                row.external = {**(row.external or {}), **entries}
+            written += 1
+        await session.commit()
+    return written
+
+
 async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool = False) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
     (demoted interrupts lead — they kept urgency 5). Approval items
@@ -286,8 +319,7 @@ async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool
     eff = await effective_ambient_settings(owner if scoped else None)
     escalation_budget = int(eff["ambient_escalation_budget_per_day"])
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    flushed = 0
-    delivered_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     async with get_session_factory()() as session:
         approvals_query = select(func.count()).where(
             Delivery.category.in_(APPROVAL_CATEGORIES),
@@ -304,15 +336,8 @@ async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool
                 if allowed <= 0:
                     continue  # over the escalation budget — next digest
                 allowed -= 1
-            row.delivered_at = now
-            row.channel = "digest"
-            flushed += 1
-            delivered_rows.append(row)
-        await session.commit()
-    if delivered_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("digest", delivered_rows)
+            chosen.append(row)
+    flushed = await _deliver_batch("digest", chosen, now)
     if flushed:
         from app import obs
 
@@ -332,8 +357,7 @@ async def _flush_tier1(
     """Tier 1: the user-returned edge (or current presence) delivers; the
     bounded deferral (spec §17.5, Horvitz) delivers past the deadline even
     with nobody present."""
-    delivered = 0
-    delivered_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     present = force or await _presence_active(owner, scoped)
     async with get_session_factory()() as session:
         for row in await _pending(session, 1, owner, scoped):
@@ -345,16 +369,9 @@ async def _flush_tier1(
             if quiet:
                 row.tier = 2  # quiet hours absolute — rides the digest
                 continue
-            row.delivered_at = now
-            row.channel = "notify"
-            delivered += 1
-            delivered_rows.append(row)
-        await session.commit()
-    if delivered_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("notify", delivered_rows)
-    return delivered
+            chosen.append(row)
+        await session.commit()  # demotions only — deliveries commit after dispatch
+    return await _deliver_batch("notify", chosen, now)
 
 
 async def _flush_bucket(
@@ -367,7 +384,7 @@ async def _flush_bucket(
     )
     budget = int(eff["ambient_notification_budget_per_day"])
 
-    interrupt_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     async with get_session_factory()() as session:
         used = await _interrupts_delivered_today(session, now, owner, scoped)
         for row in await _pending(session, 0, owner, scoped):
@@ -382,16 +399,10 @@ async def _flush_bucket(
                     reason="quiet hours" if quiet else "budget exhausted",
                 )
                 continue
-            row.delivered_at = now
-            row.channel = "interrupt"
             used += 1
-            out["interrupt"] += 1
-            interrupt_rows.append(row)
-        await session.commit()
-    if interrupt_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("interrupt", interrupt_rows)
+            chosen.append(row)
+        await session.commit()  # demotions only — deliveries commit after dispatch
+    out["interrupt"] += await _deliver_batch("interrupt", chosen, now)
 
     out["notify"] += await _flush_tier1(now, quiet=quiet, owner=owner, scoped=scoped)
 

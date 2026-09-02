@@ -10,15 +10,47 @@ from uuid import UUID
 
 
 class RunEventBus:
-    """In-memory SSE fan-out per run: history replay + live queues."""
+    """In-memory SSE fan-out per run: history replay + live queues.
 
-    def __init__(self) -> None:
+    M51: bounded. Finished runs are evicted after `done_ttl_s` and the map
+    never holds more than `max_runs` entries (oldest finished go first);
+    read paths (`is_done`) allocate nothing. Before M51 every run ever
+    emitted lived here until purge — the arch-H review's unbounded growth."""
+
+    def __init__(self, max_runs: int = 500, done_ttl_s: float = 900.0) -> None:
         self._runs: dict[UUID, dict[str, Any]] = {}
+        self.max_runs = max_runs
+        self.done_ttl_s = done_ttl_s
 
     def _entry(self, run_id: UUID) -> dict[str, Any]:
-        return self._runs.setdefault(run_id, {"history": [], "queues": set(), "done": False})
+        return self._runs.setdefault(
+            run_id, {"history": [], "queues": set(), "done": False, "done_at": None}
+        )
 
-    def emit(self, run_id: UUID, event: dict[str, Any]) -> None:
+    @staticmethod
+    def _now() -> float:
+        import time
+
+        return time.monotonic()
+
+    def _evict(self, now: float) -> None:
+        expired = [
+            rid
+            for rid, e in self._runs.items()
+            if e["done"] and e["done_at"] is not None and now - e["done_at"] >= self.done_ttl_s
+        ]
+        for rid in expired:
+            self._runs.pop(rid, None)
+        if len(self._runs) > self.max_runs:
+            finished = sorted(
+                (rid for rid, e in self._runs.items() if e["done"]),
+                key=lambda rid: self._runs[rid]["done_at"] or 0.0,
+            )
+            for rid in finished[: len(self._runs) - self.max_runs]:
+                self._runs.pop(rid, None)
+
+    def emit(self, run_id: UUID, event: dict[str, Any], now: float | None = None) -> None:
+        now = self._now() if now is None else now
         entry = self._entry(run_id)
         entry["history"].append(event)
         if event.get("type") == "done" or (
@@ -26,12 +58,15 @@ class RunEventBus:
             and event.get("payload", {}).get("status") in {"failed", "cancelled", "completed"}
         ):
             entry["done"] = True
+            entry["done_at"] = now
         for queue in list(entry["queues"]):
             with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(event)
+        self._evict(now)
 
     def is_done(self, run_id: UUID) -> bool:
-        return bool(self._entry(run_id)["done"])
+        entry = self._runs.get(run_id)
+        return bool(entry and entry["done"])
 
     def subscribe(self, run_id: UUID) -> tuple[list[dict[str, Any]], asyncio.Queue[Any]]:
         entry = self._entry(run_id)

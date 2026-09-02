@@ -8,6 +8,7 @@ a digest is never allowed to fail the pipeline.
 """
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,21 @@ logger = structlog.get_logger("memory")
 _RRF_K = 60
 _LEG_LIMIT = 25
 _DIGEST_HALF_LIFE_HOURS = 14 * 24.0
+
+
+@dataclass
+class _FoldPlan:
+    """One conversation's compaction, decided in the read pass and applied
+    in the write pass (M51: the embedding happens in between, sessionless)."""
+
+    conversation_id: UUID
+    period_id: UUID | None
+    text: str
+    runs_folded: int
+    covers_from: datetime
+    covers_to: datetime
+    digest_ids: list[UUID]
+    embedded: tuple[str, list[float]] | None = None
 
 
 async def harvest_signals(run: Run, steps: list[RunStep]) -> dict[str, Any]:
@@ -90,14 +106,20 @@ async def _llm_digest(run: Run) -> str | None:
         return None
 
 
+async def _existing_digest(session: Any, run_id: UUID) -> RunDigest | None:
+    return (  # type: ignore[no-any-return]
+        await session.execute(select(RunDigest).where(RunDigest.run_id == run_id))
+    ).scalar_one_or_none()
+
+
 async def digest_run(run_id: UUID) -> RunDigest | None:
-    """Create (or return the existing) digest for a completed run."""
-    from app.memory.store import _embed_ref
+    """Create (or return the existing) digest for a completed run.
+    M51 (arch-H15): read → close → model call + embedding → write; no
+    session is held across either provider round trip."""
+    from app.memory.store import _embed_text, _store_embedding
 
     async with get_session_factory()() as session:
-        existing = (
-            await session.execute(select(RunDigest).where(RunDigest.run_id == run_id))
-        ).scalar_one_or_none()
+        existing = await _existing_digest(session, run_id)
         if existing is not None:
             return existing
         run = await session.get(Run, run_id)
@@ -107,16 +129,22 @@ async def digest_run(run_id: UUID) -> RunDigest | None:
             (await session.execute(select(RunStep).where(RunStep.run_id == run_id))).scalars()
         )
         signals = await harvest_signals(run, steps)
-        text = await _llm_digest(run) or _mechanical_digest(run)
+        conversation_id = run.conversation_id
+    text = await _llm_digest(run) or _mechanical_digest(run)
+    embedded = await _embed_text(text)
+    async with get_session_factory()() as session:
+        existing = await _existing_digest(session, run_id)
+        if existing is not None:  # a concurrent digest of the same run won
+            return existing
         digest = RunDigest(
             run_id=run_id,
-            conversation_id=run.conversation_id,
+            conversation_id=conversation_id,
             text=text,
             signals=signals,
         )
         session.add(digest)
         await session.flush()
-        await _embed_ref(session, digest.id, "run_digests", digest.text)
+        await _store_embedding(session, digest.id, "run_digests", embedded)
         await session.commit()
         await session.refresh(digest)
     logger.info(
@@ -174,7 +202,7 @@ async def compact_digests(now: datetime | None = None) -> int:
     with an irreversible effect, so no call path may reach the delete
     while the switch is off."""
     from app.memory.lifecycle import JOB_COMPACT, JOB_GATES, gate_open
-    from app.memory.store import _embed_ref
+    from app.memory.store import _embed_text, _store_embedding
     from app.registry_cache import get_cache
 
     if not await gate_open(JOB_GATES[JOB_COMPACT]):
@@ -182,6 +210,8 @@ async def compact_digests(now: datetime | None = None) -> int:
     days = int(await get_cache().setting("memory_digest_compact_days"))
     cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
     folded = 0
+    # pass 1 (read): decide every fold with nothing written
+    plans: list[_FoldPlan] = []
     async with get_session_factory()() as session:
         old = list(
             (
@@ -206,43 +236,65 @@ async def compact_digests(now: datetime | None = None) -> int:
             pieces = ([period.text] if period is not None else []) + [d.text for d in digests]
             text = " ".join(" ".join(p.split()) for p in pieces)[:2400]
             prev = int((period.signals or {}).get("runs_folded", 0)) if period is not None else 0
-            runs_folded = len(digests) + prev
-            covers_from = min(
-                [d.created_at for d in digests]
-                + ([period.covers_from] if period is not None and period.covers_from else [])
-            )
-            covers_to = max(
-                [d.created_at for d in digests]
-                + ([period.covers_to] if period is not None and period.covers_to else [])
-            )
-            if period is None:
-                period = RunDigest(
-                    run_id=None,
+            plans.append(
+                _FoldPlan(
                     conversation_id=conv_id,
-                    kind="period",
+                    period_id=period.id if period is not None else None,
                     text=text,
-                    signals={"runs_folded": runs_folded},
-                    covers_from=covers_from,
-                    covers_to=covers_to,
-                )
-                session.add(period)
-                await session.flush()
-            else:
-                period.text = text
-                period.signals = {"runs_folded": runs_folded}
-                period.covers_from = covers_from
-                period.covers_to = covers_to
-            digest_ids = [d.id for d in digests]
-            await session.execute(
-                delete(MemoryEmbedding).where(
-                    MemoryEmbedding.table_ref == "run_digests",
-                    MemoryEmbedding.ref_id.in_(digest_ids),
+                    runs_folded=len(digests) + prev,
+                    covers_from=min(
+                        [d.created_at for d in digests]
+                        + (
+                            [period.covers_from]
+                            if period is not None and period.covers_from
+                            else []
+                        )
+                    ),
+                    covers_to=max(
+                        [d.created_at for d in digests]
+                        + ([period.covers_to] if period is not None and period.covers_to else [])
+                    ),
+                    digest_ids=[d.id for d in digests],
                 )
             )
-            await session.execute(delete(RunDigest).where(RunDigest.id.in_(digest_ids)))
-            await _embed_ref(session, period.id, "run_digests", period.text)
-            folded += len(digests)
-        if folded:
+    # M51: the embedding round trips run with NO session open
+    for plan in plans:
+        plan.embedded = await _embed_text(plan.text)
+    # pass 2 (write): apply every fold in one transaction
+    if plans:
+        async with get_session_factory()() as session:
+            for plan in plans:
+                period = (
+                    await session.get(RunDigest, plan.period_id)
+                    if plan.period_id is not None
+                    else None
+                )
+                if period is None:
+                    period = RunDigest(
+                        run_id=None,
+                        conversation_id=plan.conversation_id,
+                        kind="period",
+                        text=plan.text,
+                        signals={"runs_folded": plan.runs_folded},
+                        covers_from=plan.covers_from,
+                        covers_to=plan.covers_to,
+                    )
+                    session.add(period)
+                    await session.flush()
+                else:
+                    period.text = plan.text
+                    period.signals = {"runs_folded": plan.runs_folded}
+                    period.covers_from = plan.covers_from
+                    period.covers_to = plan.covers_to
+                await session.execute(
+                    delete(MemoryEmbedding).where(
+                        MemoryEmbedding.table_ref == "run_digests",
+                        MemoryEmbedding.ref_id.in_(plan.digest_ids),
+                    )
+                )
+                await session.execute(delete(RunDigest).where(RunDigest.id.in_(plan.digest_ids)))
+                await _store_embedding(session, period.id, "run_digests", plan.embedded)
+                folded += len(plan.digest_ids)
             await session.commit()
     from app import obs
 

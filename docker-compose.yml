@@ -21,6 +21,9 @@ services:
 
   backend:
     build: ./backend
+    # M51: SIGTERM starts a drain (readiness 503, in-flight runs get
+    # SHUTDOWN_GRACE_S, default 25 s); keep the kill deadline above it
+    stop_grace_period: 30s
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://concierge:concierge@db:5432/concierge}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -50,6 +53,10 @@ services:
       DB_POOL_SIZE: ${DB_POOL_SIZE:-}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-}
       DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-}
+      # M51: provider-port limits and the shutdown drain window
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-}
+      SHUTDOWN_GRACE_S: ${SHUTDOWN_GRACE_S:-}
     volumes:
       - workspace:/workspace
     ports:

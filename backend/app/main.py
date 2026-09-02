@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.mcp.manager import McpManager, set_manager
 
     await get_checkpointer()  # create checkpoint tables up front
+    # M51: runs left running/queued by the previous process cannot resume
+    from app.orchestrator.runner import drain_running_tasks, reap_orphaned_runs
+
+    await reap_orphaned_runs()
     from app.registry_cache import get_cache
     from app.retrieval import backfill_embeddings
 
@@ -90,7 +94,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     ambient_stop = asyncio.Event()
     ambient_loop_task = asyncio.create_task(run_ambient_loop(ambient_stop))
+    from app.orchestrator import admission
+
+    admission.set_accepting(True)
     yield
+    # M51 shutdown: readiness off → stop accepting → drain in-flight runs
+    # within the grace period → cancel the rest (each finalizes terminal)
+    from app.config import get_config as _cfg
+
+    await drain_running_tasks(grace_s=float(_cfg().shutdown_grace_s))
     ambient_stop.set()
     ambient_loop_task.cancel()
     memory_stop.set()
@@ -135,6 +147,21 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready() -> Response:
+        """M51 readiness: 503 while draining so a balancer stops routing here;
+        /health stays liveness."""
+        import json as _json
+
+        from app.orchestrator import admission
+
+        snap = admission.snapshot()
+        return Response(
+            content=_json.dumps({"status": "ready" if snap["accepting"] else "draining", **snap}),
+            media_type="application/json",
+            status_code=200 if snap["accepting"] else 503,
+        )
 
     @app.get("/metrics")
     async def metrics() -> Response:

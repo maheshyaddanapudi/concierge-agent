@@ -32,6 +32,12 @@ from app.orchestrator.recorder import RunRecorder
 logger = structlog.get_logger("orchestrator.runner")
 
 RUNNING_TASKS: dict[UUID, asyncio.Task[None]] = {}
+HEARTBEAT_INTERVAL_S = 30.0  # M51: every run proves liveness; the reaper trusts it
+_PROVIDER_LABELS = {
+    "rate_limited": "provider rate-limited (429) after the port's retry budget",
+    "timeout": "provider call timed out (LLM_TIMEOUT_S)",
+    "unknown_model": "model not served by the provider (retired or misspelled)",
+}
 
 
 async def create_run(
@@ -45,8 +51,14 @@ async def create_run(
     is_eval: bool = False,
     eval_skill_id: UUID | None = None,
     user_id: UUID | None = None,
+    shed_if_full: bool = False,
 ) -> Run:
+    """Insert the run row (M51: as `queued` — it is `running` only once it
+    holds an execution slot). Raises admission.AtCapacity before inserting
+    when the process is draining, or when `shed_if_full` and the queue is
+    full — the caller turns that into an explicit 503."""
     from app.auth import auth_enabled, current_user_id
+    from app.orchestrator import admission
 
     if user_id is None:
         user_id = current_user_id()  # §18.8: requester owns the work; None when dark
@@ -67,10 +79,11 @@ async def create_run(
             if auth_enabled() and existing.user_id != user_id:
                 raise ValueError(f"conversation {conversation_id} not found")  # invisible
         settings = await load_settings_snapshot()
+        admission.check_admission(settings, shed_if_full=shed_if_full)
         run = Run(
             conversation_id=conversation_id,
             chat_message=message,
-            status="running",
+            status="queued",
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
             target_sub_agent_id=target_sub_agent_id,
             include_history_summary=include_history_summary,
@@ -85,10 +98,138 @@ async def create_run(
         return run
 
 
-def start_run_task(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
-    task = asyncio.create_task(_execute(run_id, resume=resume))
+def start_run_task(
+    run_id: UUID, resume: dict[str, Any] | None = None, *, shed_if_full: bool = False
+) -> None:
+    """Schedule a run: it waits for an admission slot (`queued`), then
+    executes under the wall clock with a heartbeat (M51). `shed_if_full`
+    is recorded for the slot policy; the shed decision itself was made
+    at create_run."""
+    _ = shed_if_full
+    task = asyncio.create_task(bounded_execute(run_id, resume))
     RUNNING_TASKS[run_id] = task
     task.add_done_callback(lambda t: RUNNING_TASKS.pop(run_id, None))
+
+
+async def _heartbeat(run_id: UUID) -> None:
+    """Refresh last_heartbeat_at while the run executes — the reaper
+    (ambient/execute.reap_stalled_runs) covers every run kind since M51."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+        async with get_session_factory()() as session:
+            await session.execute(
+                update(Run)
+                .where(Run.id == run_id, Run.status == "running")
+                .values(last_heartbeat_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+
+async def bounded_execute(
+    run_id: UUID,
+    resume: dict[str, Any] | None = None,
+    *,
+    wall_clock_s: float | None = None,
+) -> None:
+    """M51: admission slot → status running → heartbeat + wall clock around
+    _execute. A run that outlives `run_wall_clock_s` ends `failed` with the
+    clock named; one cancelled while still queued ends `cancelled`."""
+    from app.orchestrator import admission
+
+    settings = await load_settings_snapshot()
+    wall = float(
+        wall_clock_s if wall_clock_s is not None else settings.get("run_wall_clock_s") or 900
+    )
+    mode = "graph"
+    async with get_session_factory()() as session:
+        row = await session.get(Run, run_id)
+        if row is None:
+            return
+        mode = row.orchestrator_mode
+    started = False
+    try:
+        async with admission.slot(run_id, settings):
+            started = True
+            await _set_status(run_id, "running")
+            beat = asyncio.create_task(_heartbeat(run_id))
+            try:
+                await asyncio.wait_for(_execute(run_id, resume=resume), timeout=wall)
+            except TimeoutError:
+                await _finalize_failure(
+                    run_id,
+                    mode,
+                    "failed",
+                    f"exceeded the run wall clock ({wall:g}s, run_wall_clock_s) — terminated",
+                )
+            finally:
+                beat.cancel()
+                with contextlib.suppress(BaseException):
+                    await beat
+    except asyncio.CancelledError:
+        if not started:
+            await _finalize_failure(
+                run_id, mode, "cancelled", _SHUTDOWN_REASON or "cancelled while queued"
+            )
+        raise
+
+
+async def reap_orphaned_runs() -> int:
+    """Startup (M51): a run that was running or queued when the previous
+    process died cannot be resumed — mark it failed, truthfully. Paused
+    runs are checkpointed and resumable, so they are left alone."""
+    now = datetime.now(UTC)
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            update(Run)
+            .where(Run.status.in_(["running", "queued"]))
+            .values(status="failed", error="orphaned by a restart", finished_at=now)
+            .returning(Run.id)
+        )
+        ids = [r[0] for r in result.all()]
+        if ids:
+            await session.execute(
+                update(RunStep)
+                .where(RunStep.run_id.in_(ids), RunStep.status == "running")
+                .values(status="cancelled", finished_at=now)
+            )
+        await session.commit()
+    if ids:
+        logger.warning("runs_orphaned_by_restart", count=len(ids))
+    return len(ids)
+
+
+_SHUTDOWN_REASON: str | None = None
+
+
+async def drain_running_tasks(grace_s: float) -> dict[str, int]:
+    """Shutdown (M51): stop accepting, let in-flight runs finish for
+    `grace_s`, then cancel the rest — each cancelled run finalizes itself
+    with a terminal status on the way out, and its error names the
+    shutdown (not a user's Stop) so the record says why it ended."""
+    global _SHUTDOWN_REASON
+    from app.orchestrator import admission
+
+    admission.set_accepting(False)
+    tasks = list(RUNNING_TASKS.values())
+    finished = cancelled = 0
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=grace_s)
+        finished = len(done)
+        if pending:
+            _SHUTDOWN_REASON = (
+                f"cancelled by shutdown: the process stopped before this run finished "
+                f"(drain grace {grace_s:g}s, SHUTDOWN_GRACE_S) — retry it"
+            )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(BaseException):
+                await task
+            cancelled += 1
+        _SHUTDOWN_REASON = None  # the finalizers have run; a later Stop is a user's Stop
+    RUNNING_TASKS.clear()
+    logger.info("runs_drained", finished=finished, cancelled=cancelled, grace_s=grace_s)
+    return {"finished": finished, "cancelled": cancelled}
 
 
 async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
@@ -204,13 +345,13 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             (datetime.now(UTC) - started).total_seconds()
         )
     except asyncio.CancelledError:
-        await _finalize_failure(run_id, mode, "cancelled", "run cancelled")
+        await _finalize_failure(run_id, mode, "cancelled", _SHUTDOWN_REASON or "run cancelled")
         raise
     except RunFailed as exc:
         await _finalize_failure(run_id, mode, "failed", str(exc))
     except Exception as exc:  # noqa: BLE001 - all failures surface in chat
         logger.exception("run_failed", run_id=str(run_id))
-        await _finalize_failure(run_id, mode, "failed", f"{type(exc).__name__}: {exc}")
+        await _finalize_failure(run_id, mode, "failed", _describe_failure(exc, settings))
 
 
 async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
@@ -274,12 +415,34 @@ async def _maybe_format_answer(
     )
     if usage["input_tokens"] or usage["output_tokens"]:
         async with get_session_factory()() as session:
-            run = await session.get(Run, ctx.run_id)
-            if run is not None:
-                run.total_input_tokens += usage["input_tokens"]
-                run.total_output_tokens += usage["output_tokens"]
-                await session.commit()
+            # M51: atomic in-database increment — never read-modify-write
+            await session.execute(
+                update(Run)
+                .where(Run.id == ctx.run_id)
+                .values(
+                    total_input_tokens=Run.total_input_tokens + usage["input_tokens"],
+                    total_output_tokens=Run.total_output_tokens + usage["output_tokens"],
+                )
+            )
+            await session.commit()
     return payload
+
+
+def _describe_failure(exc: BaseException, settings: dict[str, Any]) -> str:
+    """M51: a provider failure names its class (rate-limited / timed out /
+    model not served) and the setting(s) whose model ref was in play — not
+    an opaque SDK traceback."""
+    from app import obs
+    from app.llm import classify_provider_error
+
+    kind = classify_provider_error(exc)
+    base = f"{type(exc).__name__}: {exc}"
+    if kind == "provider_error":
+        return base
+    obs.LLM_ERRORS.labels(kind=kind).inc()
+    refs = {k: v for k, v in settings.items() if k.endswith("_model") and isinstance(v, str) and v}
+    where = ", ".join(f"{k}={v}" for k, v in sorted(refs.items())) or "default_model"
+    return f"{_PROVIDER_LABELS[kind]} — {base} (model settings in play: {where})"
 
 
 async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) -> None:
@@ -290,6 +453,7 @@ async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) 
             run.error = message
             run.finished_at = datetime.now(UTC)
             await session.commit()
+            mode = run.orchestrator_mode or mode
         await session.execute(
             update(RunStep)
             .where(RunStep.run_id == run_id, RunStep.status == "running")

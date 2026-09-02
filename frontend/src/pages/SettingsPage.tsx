@@ -911,6 +911,22 @@ export function SettingsPage() {
             k="rate_limit_per_s"
             hint="tokens restored per second per user"
           />
+          <IntSetting
+            label="Max concurrent runs"
+            k="run_max_concurrent"
+            hint="M51 admission: runs executing at once on this replica (1–64); the rest wait as queued"
+          />
+          <IntSetting
+            label="Run queue"
+            k="run_queue_max"
+            hint="how many runs may wait for a slot (0–500) — past it, chat gets an explicit 503 with Retry-After; ambient fires always queue"
+            min={0}
+          />
+          <IntSetting
+            label="Run wall clock (s)"
+            k="run_wall_clock_s"
+            hint="every run — chat, ambient, eval — is terminated as failed past this (30–86400 s); provider call timeouts are LLM_TIMEOUT_S (env)"
+          />
         </div>
         <BoolSetting
           label="Evals surface"

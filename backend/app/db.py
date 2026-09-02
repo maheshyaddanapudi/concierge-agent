@@ -1,5 +1,6 @@
 """Async SQLAlchemy engine and session factory."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -14,6 +15,45 @@ from app.config import get_config
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+# M51: sessions open per asyncio task. The fake provider refuses a call
+# made while one is open (strict mode in tests), which is how the rule
+# "no session spans a provider call" (spec §16.2, arch-H8/H15) is enforced
+# rather than documented. Keyed by task id, never a ContextVar: a task
+# spawned inside a request handler must not inherit the handler's count.
+_OPEN: dict[int, int] = {}
+
+
+def _task_key() -> int:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return id(task) if task is not None else 0
+
+
+def open_sessions() -> int:
+    """How many tracked sessions the CURRENT task holds open."""
+    return _OPEN.get(_task_key(), 0)
+
+
+class TrackedSession(AsyncSession):
+    """AsyncSession that counts itself while entered as a context manager."""
+
+    async def __aenter__(self) -> "TrackedSession":
+        key = _task_key()
+        _OPEN[key] = _OPEN.get(key, 0) + 1
+        self._tracked_key = key
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        key = getattr(self, "_tracked_key", _task_key())
+        left = _OPEN.get(key, 1) - 1
+        if left <= 0:
+            _OPEN.pop(key, None)
+        else:
+            _OPEN[key] = left
+        await super().__aexit__(*exc)
 
 
 def get_engine() -> AsyncEngine:
@@ -33,7 +73,9 @@ def get_engine() -> AsyncEngine:
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     global _session_factory
     if _session_factory is None:
-        _session_factory = async_sessionmaker(get_engine(), expire_on_commit=False)
+        _session_factory = async_sessionmaker(
+            get_engine(), expire_on_commit=False, class_=TrackedSession
+        )
     return _session_factory
 
 

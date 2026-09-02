@@ -467,35 +467,42 @@ async def test_reaper_stalls_run_and_pauses_routine() -> None:
         assert str(run_id) in (fresh_routine.status_reason or "")
 
 
-async def test_reaper_ignores_interactive_and_fresh_runs() -> None:
+async def test_reaper_covers_interactive_runs_but_never_fresh_ones() -> None:
+    """M51: every run heartbeats, so the reaper covers every run kind — an
+    interactive run left `running` by a dead task is reaped like an ambient
+    one (pre-M51 it was skipped and stayed running forever). A run with a
+    fresh heartbeat is never touched."""
     await _enable()
     async with get_session_factory()() as session:
         conv = Conversation(title="t")
         session.add(conv)
         await session.commit()
-        # interactive run (no trigger) with a stale heartbeat: not ambient's
-        session.add(
-            Run(
-                conversation_id=conv.id,
-                chat_message="m",
-                status="running",
-                orchestrator_mode="graph",
-                last_heartbeat_at=datetime.now(UTC) - timedelta(hours=1),
-            )
+        # interactive run (no trigger) with a stale heartbeat: reaped since M51
+        stale = Run(
+            conversation_id=conv.id,
+            chat_message="m",
+            status="running",
+            orchestrator_mode="graph",
+            last_heartbeat_at=datetime.now(UTC) - timedelta(hours=1),
         )
-        # ambient run with a fresh heartbeat
-        session.add(
-            Run(
-                conversation_id=conv.id,
-                chat_message="m",
-                status="running",
-                orchestrator_mode="graph",
-                trigger={"routine_id": str(uuid4())},
-                last_heartbeat_at=datetime.now(UTC),
-            )
+        # ambient run with a fresh heartbeat: untouched
+        fresh = Run(
+            conversation_id=conv.id,
+            chat_message="m",
+            status="running",
+            orchestrator_mode="graph",
+            trigger={"routine_id": str(uuid4())},
+            last_heartbeat_at=datetime.now(UTC),
         )
+        session.add_all([stale, fresh])
         await session.commit()
-    assert await reap_stalled_runs() == 0
+        stale_id, fresh_id = stale.id, fresh.id
+    assert await reap_stalled_runs() == 1
+    async with get_session_factory()() as session:
+        reaped = await session.get(Run, stale_id)
+        untouched = await session.get(Run, fresh_id)
+        assert reaped is not None and reaped.status == "stalled"
+        assert untouched is not None and untouched.status == "running"
 
 
 # ── HITL timeout semantics (spec §17.4/§17.5) ────────────────────────

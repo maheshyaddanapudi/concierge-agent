@@ -385,10 +385,12 @@ async def execute_fired_event(event_id: UUID, poll_s: float = 15.0) -> UUID | No
 
 
 async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | None = None) -> int:
-    """H3 reaper: ambient runs whose heartbeat went silent are marked
-    stalled, their task (if any) cancelled, and the owning routine paused
-    with a visible reason (spec §17.4). Returns runs reaped. The window is
-    the live `run_stall_after_s` setting (M40) unless a test passes one."""
+    """H3 reaper: runs whose heartbeat went silent are marked stalled, their
+    task (if any) cancelled, and — for ambient runs — the owning routine
+    paused with a visible reason (spec §17.4). M51: covers EVERY run kind;
+    every run heartbeats since M51, so a chat run left running by a dead
+    task is reaped the same way. Returns runs reaped. The window is the
+    live `run_stall_after_s` setting (M40) unless a test passes one."""
     from app.orchestrator.runner import RUNNING_TASKS
 
     if stall_after_s is None:
@@ -402,7 +404,6 @@ async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | No
             (
                 await session.execute(
                     select(Run).where(
-                        Run.trigger.isnot(None),
                         Run.status == "running",
                         or_(
                             Run.last_heartbeat_at <= cutoff,

@@ -9,11 +9,12 @@ no-op while `ambient_enabled` is false (byte-identity when dark).
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 
 import structlog
+from sqlalchemy import bindparam
 from sqlalchemy import text as sql_text
 
 from app.ambient.store import NOTIFY_CHANNEL
@@ -24,7 +25,9 @@ logger = structlog.get_logger("ambient")
 
 # processor contract: return (verdict, reason) or (verdict, reason, decision)
 # or None to leave pending. Processors MUST NOT write ambient_events rows —
-# the drain holds them FOR UPDATE and applies the outcome itself.
+# the drain applies the outcome itself. M51: a processor runs with NO row
+# lock and NO session open (the batch is claimed and committed first), so a
+# model call inside it never holds a pooled connection or a row lock.
 ProcessorResult = tuple[str, str] | tuple[str, str, dict[str, "object"]] | None
 Processor = Callable[[AmbientEvent], Awaitable[ProcessorResult]]
 _processor: Processor | None = None
@@ -38,6 +41,7 @@ _EXEC_TASKS: set[asyncio.Task[object]] = set()
 
 
 EVALUATOR_TIMEOUT_S = 60.0  # M50: no single evaluator may hold the tick longer
+RECLAIM_AFTER_S = 600  # M51: a claim this old belonged to a process that died mid-batch
 
 
 async def run_evaluator(
@@ -84,52 +88,79 @@ async def default_processor(event: AmbientEvent) -> ProcessorResult:
 
 
 async def drain_once(limit: int = 20) -> int:
-    """Claim and process pending events. Returns events handled."""
+    """Claim and process pending events. Returns events handled.
+
+    M51 (arch-H8): three phases. 1) CLAIM a batch — `verdict='processing'`
+    under FOR UPDATE SKIP LOCKED, committed, lock released. 2) PROCESS each
+    event with no lock and no session open (the processor may call a
+    model). 3) WRITE BACK the verdict. A claim older than RECLAIM_AFTER_S
+    belonged to a process that died mid-batch and is picked up again."""
     handled = 0
     to_execute: list[Any] = []
+    now = datetime.now(UTC)
     async with get_session_factory()() as session:
-        rows = (
+        ids = list(
             (
                 await session.execute(
                     sql_text(
                         """
                         SELECT id FROM ambient_events
                         WHERE verdict IS NULL
+                           OR (verdict = 'processing' AND processed_at <= :reclaim)
                         ORDER BY received_at
                         LIMIT :n
                         FOR UPDATE SKIP LOCKED
                         """
                     ),
-                    {"n": limit},
+                    {"n": limit, "reclaim": now - timedelta(seconds=RECLAIM_AFTER_S)},
                 )
             )
             .scalars()
             .all()
         )
-        for event_id in rows:
+        if ids:
+            await session.execute(
+                sql_text(
+                    "UPDATE ambient_events SET verdict = 'processing', processed_at = :now "
+                    "WHERE id = ANY(:ids)"
+                ).bindparams(bindparam("ids", expanding=False)),
+                {"now": now, "ids": list(ids)},
+            )
+        await session.commit()
+    for event_id in ids:
+        async with get_session_factory()() as session:
             event = await session.get(AmbientEvent, event_id)
-            if event is None:
+            if event is not None:
+                session.expunge(event)
+        if event is None:
+            continue
+        outcome: ProcessorResult = None
+        if _processor is not None:
+            try:
+                outcome = await _processor(event)
+            except Exception as exc:  # noqa: BLE001 — the drain never dies
+                outcome = ("held", f"processor error: {exc}")
+        async with get_session_factory()() as session:
+            row = await session.get(AmbientEvent, event_id)
+            if row is None:
                 continue
-            outcome: ProcessorResult = None
-            if _processor is not None:
-                try:
-                    outcome = await _processor(event)
-                except Exception as exc:  # noqa: BLE001 — the drain never dies
-                    outcome = ("held", f"processor error: {exc}")
-            if outcome is not None:
-                event.verdict = outcome[0]
-                event.verdict_reason = outcome[1]
+            if outcome is None:
+                row.verdict = None  # back to pending — no processor, no verdict
+                row.processed_at = None
+            else:
+                row.verdict = outcome[0]
+                row.verdict_reason = outcome[1]
                 if len(outcome) == 3:
-                    event.decision = outcome[2]
-                event.processed_at = datetime.now(UTC)
+                    row.decision = outcome[2]
+                row.processed_at = datetime.now(UTC)
                 handled += 1
                 if (
                     outcome[0] == "fired"
                     and len(outcome) == 3
                     and dict(outcome[2]).get("fired_for")
                 ):
-                    to_execute.append(event.id)
-        await session.commit()
+                    to_execute.append(row.id)
+            await session.commit()
     # tier 3 — the run (spec §17.4): launched only after the rows are
     # committed and released, never while the drain holds them FOR UPDATE
     if _executor is not None:
@@ -219,6 +250,11 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> 
                         "evaluate_presence", partial(evaluate_presence, idle_minutes)
                     )
                     await run_evaluator("flush_deliveries", flush_deliveries)
+                    # M51: failed external sends retry with backoff here,
+                    # bounded per tick, until they succeed or dead-letter
+                    from app.ambient.channels import retry_external_sends
+
+                    await run_evaluator("retry_external_sends", retry_external_sends)
                     # M42 §17.5: re-judge what nobody saw. Runs AFTER the
                     # flush so this tick's misses are already visible, and
                     # is a no-op while ambient_salience_mode is off

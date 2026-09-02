@@ -64,6 +64,13 @@ def _openrouter_chat_class() -> type:
     return _openrouter_chat_cls
 
 
+def port_limits() -> dict[str, Any]:
+    """M51: timeout + retry budget for every provider call, from env
+    (LLM_TIMEOUT_S / LLM_MAX_RETRIES) — applied by every adapter."""
+    cfg = get_config()
+    return {"timeout": float(cfg.llm_timeout_s), "max_retries": int(cfg.llm_max_retries)}
+
+
 def _check_params(provider: "ModelProviderBase", model: str, params: ModelParams | None) -> None:
     info = next((m for m in provider.list_models() if m.id == model), None)
     if info is not None:
@@ -110,7 +117,7 @@ class AnthropicProvider(ModelProviderBase):
         _check_params(self, model, params)
         from langchain_anthropic import ChatAnthropic
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = dict(port_limits())
         if params:
             if params.effort and params.effort != "none":
                 if model.startswith(_CLAUDE5_PREFIXES):
@@ -152,7 +159,7 @@ class GoogleGenAIProvider(ModelProviderBase):
         _check_params(self, model, params)
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = dict(port_limits())
         if params:
             if params.effort is not None:
                 kwargs["thinking_budget"] = _GEMINI_THINKING_BUDGET[params.effort]
@@ -203,7 +210,7 @@ class OpenAIProvider(ModelProviderBase):
         _check_params(self, model, params)
         from langchain_openai import ChatOpenAI
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = dict(port_limits())
         if params:
             if params.effort is not None:
                 # current OpenAI reasoning models reject function tools +
@@ -264,6 +271,7 @@ class OpenRouterProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {
             "base_url": _OPENROUTER_BASE_URL,
             "api_key": config.openrouter_api_key,
+            **port_limits(),
         }
         extra_body: dict[str, Any] = {}
         if params:
@@ -327,6 +335,7 @@ class CustomGatewayProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {
             "base_url": config.custom_gateway_base_url,
             "api_key": config.custom_gateway_api_key,
+            **port_limits(),
         }
         if params:
             if params.temperature is not None:

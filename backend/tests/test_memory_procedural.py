@@ -350,9 +350,13 @@ async def test_contradiction_sweep_quarantines_duplicate_entity_keys() -> None:
                 await session.execute(select(Memory).where(Memory.entity_key == "deploy.branch"))
             ).scalars()
         )
-    assert frow is not None and frow.status == "active"  # oldest validity kept
+    # M51: the NEWEST valid row stays active — the older duplicate is the one
+    # quarantined (pre-M51 the sweep kept the oldest, so drift won)
+    assert frow is not None and frow.status == "quarantined"
     statuses = sorted(m.status for m in rows)
     assert statuses == ["active", "quarantined"]
+    newest = next(m for m in rows if m.status == "active")
+    assert newest.text == "the deploy branch is release"
 
 
 async def test_run_due_jobs_respects_master_switch_and_locks() -> None:

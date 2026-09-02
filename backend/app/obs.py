@@ -73,6 +73,21 @@ AMBIENT_JUDGE_TOKENS = Counter(
 )
 # §18.9: 1 while this replica holds the ambient-tick leader lease
 AMBIENT_LEADER = Gauge("concierge_ambient_leader", "1 when this replica leads the ambient tick")
+LLM_ERRORS = Counter(
+    "concierge_llm_errors_total",
+    "Provider failures by classified kind: rate_limited, timeout, unknown_model, provider_error (M51)",
+    ["kind"],
+)
+CACHE_DEGRADED = Counter(
+    "concierge_cache_degraded_total",
+    "Registry-cache backend failures served from Postgres instead (M51 fail-open)",
+    ["backend"],
+)
+DELIVERY_SENDS = Counter(
+    "concierge_delivery_sends_total",
+    "External channel send attempts by outcome: ok, retry, dead (M51)",
+    ["channel", "status"],
+)
 AMBIENT_EVALUATOR_ERRORS = Counter(
     "concierge_ambient_evaluator_errors_total",
     "Ambient tick evaluators that raised or timed out (M50 isolation)",

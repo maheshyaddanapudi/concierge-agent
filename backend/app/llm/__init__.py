@@ -13,6 +13,7 @@ from app.llm.port import (
     ModelProvider,
     ProviderNotConfiguredError,
     UnsupportedParamsError,
+    classify_provider_error,
 )
 from app.llm.registry import (
     UnknownProviderError,
@@ -35,6 +36,7 @@ __all__ = [
     "ProviderNotConfiguredError",
     "UnknownProviderError",
     "UnsupportedParamsError",
+    "classify_provider_error",
     "get_embeddings",
     "get_model",
     "get_provider",

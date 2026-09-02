@@ -204,9 +204,11 @@ async def reflection() -> int:
 
 async def contradiction_sweep() -> int:
     """Deterministic drift catcher: two ACTIVE rows sharing an entity_key
-    should not coexist (supersession handles the normal path) — quarantine
-    the newer of each pair for human review. Returns rows quarantined.
-    Gated in-function (M48 §3.7.1)."""
+    should not coexist (supersession handles the normal path) — the NEWEST
+    valid row stays active and the older ones are quarantined for review
+    (M51: the sweep used to keep the oldest, so a corrected fact drifted
+    back to its stale value). Returns rows quarantined. Gated in-function
+    (M48 §3.7.1)."""
     if not await gate_open(JOB_GATES[JOB_CONTRADICT]):
         return 0
     quarantined = 0
@@ -216,7 +218,9 @@ async def contradiction_sweep() -> int:
                 await session.execute(
                     select(Memory)
                     .where(Memory.status == "active", Memory.entity_key.isnot(None))
-                    .order_by(Memory.entity_key, Memory.valid_from)
+                    .order_by(
+                        Memory.entity_key, Memory.valid_from.desc(), Memory.recorded_at.desc()
+                    )
                 )
             ).scalars()
         )
@@ -226,9 +230,9 @@ async def contradiction_sweep() -> int:
                 continue  # selected non-null; defensive, never an assert
             by_key.setdefault((m.scope, m.entity_key), []).append(m)
         for group in by_key.values():
-            for extra in group[1:]:  # keep the oldest-validity row active
+            for extra in group[1:]:  # group[0] is the newest-validity row: it stays
                 extra.status = "quarantined"
-                extra.review_note = "contradiction sweep: duplicate active entity_key"
+                extra.review_note = "contradiction sweep: older duplicate of an active entity_key"
                 quarantined += 1
         if quarantined:
             await session.commit()

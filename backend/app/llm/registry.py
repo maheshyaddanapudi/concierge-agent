@@ -65,6 +65,10 @@ def validate_model_selection(ref: str, params: ModelParams | None = None) -> lis
     info = next((m for m in provider.list_models() if m.id == model), None)
     if info is None:
         errors.append(f"model {model!r} is not in provider {provider_id!r}'s model list")
+    elif info.deprecated:
+        errors.append(
+            f"model {model!r} is retired by provider {provider_id!r} — pick a current model"
+        )
     else:
         unsupported = info.unsupported_params(params)
         if unsupported:

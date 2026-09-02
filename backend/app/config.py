@@ -45,6 +45,14 @@ class AppConfig(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
     db_pool_timeout: int = 30
+    # M51: every provider call carries a timeout and a bounded retry budget,
+    # set ONCE at the port (spec §2.1 — the port is unbreached, so this is
+    # the one place a hang or a retry storm can be bounded)
+    llm_timeout_s: int = 120
+    llm_max_retries: int = 2
+    # M51: how long a draining replica lets in-flight runs finish before
+    # cancelling them with a truthful terminal status
+    shutdown_grace_s: int = 25
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

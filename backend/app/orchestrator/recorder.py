@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy import update
 
 from app import obs
 from app.db import get_session_factory
@@ -158,10 +159,17 @@ class RunRecorder:
                 step.output_tokens = output_tokens
                 step.finished_at = datetime.now(UTC)
                 await session.commit()
-            run = await session.get(Run, self.run_id)
-            if run is not None and (input_tokens or output_tokens):
-                run.total_input_tokens += input_tokens
-                run.total_output_tokens += output_tokens
+            if input_tokens or output_tokens:
+                # M51: atomic in-database increment (the totals feed the ambient
+                # budget — a lost update under-counts spend)
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == self.run_id)
+                    .values(
+                        total_input_tokens=Run.total_input_tokens + input_tokens,
+                        total_output_tokens=Run.total_output_tokens + output_tokens,
+                    )
+                )
                 await session.commit()
         logger.info("step_finish", **labels)
         tier = str(labels.get("tier") or "orchestrator")

@@ -18,7 +18,7 @@ import asyncio
 import json
 import smtplib
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from typing import Any
 
@@ -205,27 +205,15 @@ async def _record_send(rows: list[Delivery], channel: str, entry: dict[str, Any]
 _REALTIME_MODES = {"interrupt", "notify"}
 
 
-async def _record_in_app_outcome(mode: str, rows: list[Delivery], watchers: int) -> None:
-    """M42: record the truth when the in-app broadcast reached nobody.
+def _in_app_outcome(mode: str, watchers: int) -> dict[str, Any] | None:
+    """M42: the truth when the in-app broadcast reached nobody.
 
-    Written ONLY on the lossy path — the happy path leaves `external` null,
-    so byte-identity at defaults is preserved (spec §18.4)."""
+    Recorded ONLY on the lossy path — the happy path leaves `external` null,
+    so byte-identity at defaults is preserved (spec §18.4). This is an
+    outcome record, never a send to retry (M51)."""
     if mode not in _REALTIME_MODES or watchers > 0:
-        return
-    entry = {
-        "ok": False,
-        "error": "no subscriber",
-        "at": datetime.now(UTC).isoformat(),
-    }
-    await _record_send(rows, "in_app", entry)
-    logger.info(
-        "ambient_delivered_unseen",
-        tier="ambient",
-        kind="deliver",
-        mode=mode,
-        count=len(rows),
-        delivery_ids=[str(r.id) for r in rows],
-    )
+        return None
+    return {"ok": False, "error": "no subscriber", "at": datetime.now(UTC).isoformat()}
 
 
 def _pursue(pursuit: str, watchers: int) -> bool:
@@ -243,12 +231,57 @@ def _pursue(pursuit: str, watchers: int) -> bool:
     return True  # 'always', and any unknown value fails safe to it
 
 
-async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
+MAX_SEND_ATTEMPTS = 4  # M51: then the channel entry is dead-lettered
+_SEND_BACKOFF_S = (60, 300, 1800)  # after attempt 1, 2, 3+
+_RETRY_BATCH = 20
+_RETRY_WINDOW_DAYS = 7
+
+
+def _send_entry(
+    prior: dict[str, Any] | None, ok: bool, error: str | None, now: datetime
+) -> dict[str, Any]:
+    """One channel's ledger entry: attempt counter, next attempt with
+    backoff, dead-letter flag (M51). `ok` resets the retry state."""
+    attempts = int((prior or {}).get("attempts") or 0) + 1
+    entry: dict[str, Any] = {
+        "ok": ok,
+        "error": None if ok else (error or "unknown error")[:500],
+        "at": now.isoformat(),
+        "attempts": attempts,
+        "next_attempt_at": None,
+        "dead": False,
+    }
+    if not ok:
+        if attempts >= MAX_SEND_ATTEMPTS:
+            entry["dead"] = True
+        else:
+            backoff = _SEND_BACKOFF_S[min(attempts - 1, len(_SEND_BACKOFF_S) - 1)]
+            entry["next_attempt_at"] = (now + timedelta(seconds=backoff)).isoformat()
+    return entry
+
+
+async def _send_one(name: str, mode: str, rows: list[Delivery]) -> tuple[bool, str | None]:
+    adapter = _ADAPTERS.get(name)
+    if adapter is None:
+        return False, f"channel {name!r} is not registered"
+    try:
+        await adapter(mode, rows)
+    except Exception as exc:  # noqa: BLE001 — never blocks the outbox
+        return False, str(exc)[:500]
+    return True, None
+
+
+async def dispatch_delivered(
+    mode: str, rows: list[Delivery], *, record: bool = True
+) -> dict[str, dict[str, Any]]:
     """Fan a just-delivered batch out: SSE stream always, external channels
     per the `ambient_channels` routing. Failures are ledgered, logged, and
-    never raised — the in-app outbox is already the source of truth."""
+    never raised — the in-app outbox is already the source of truth.
+    M51: returns the per-channel ledger entries (attempt counter, next
+    attempt, dead flag); with `record=False` the caller writes them in its
+    own transaction (dispatch-then-commit in the flush)."""
     if not rows:
-        return
+        return {}
     # sample the oracle BEFORE publishing: this count is precisely the
     # audience `_publish` is about to reach (spec §18.4, M41)
     watchers = stream_subscriber_count()
@@ -257,9 +290,22 @@ async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
 
     routing = dict(await get_cache().setting("ambient_channels") or {})
     names = [str(n) for n in (routing.get(mode) or []) if n != "in_app"]
+    entries: dict[str, dict[str, Any]] = {}
     # §17.5 pursuit: a routing modifier over the EXTERNAL half only — the
     # in-app outbox row and its toast above are already decided and sent
-    await _record_in_app_outcome(mode, rows, watchers)
+    in_app = _in_app_outcome(mode, watchers)
+    if in_app is not None:
+        entries["in_app"] = in_app
+        logger.info(
+            "ambient_delivered_unseen",
+            tier="ambient",
+            kind="deliver",
+            mode=mode,
+            count=len(rows),
+            delivery_ids=[str(r.id) for r in rows],
+        )
+        if record:
+            await _record_send(rows, "in_app", in_app)
     pursuit = str(await get_cache().setting("ambient_pursuit") or "always")
     if names and not _pursue(pursuit, watchers):
         logger.info(
@@ -271,29 +317,83 @@ async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
             watchers=watchers,
             channels=names,
         )
-        return
+        return entries
+    from app import obs
+
     for name in names:
-        adapter = _ADAPTERS.get(name)
-        entry: dict[str, Any] = {"at": datetime.now(UTC).isoformat()}
-        if adapter is None:
-            entry.update(ok=False, error=f"channel {name!r} is not registered")
-        else:
-            try:
-                await adapter(mode, rows)
-                entry.update(ok=True, error=None)
-            except Exception as exc:  # noqa: BLE001 — never blocks the outbox
-                entry.update(ok=False, error=str(exc)[:500])
-        if not entry["ok"]:
+        ok, error = await _send_one(name, mode, rows)
+        entry = _send_entry(None, ok, error, datetime.now(UTC))
+        if not ok:
             logger.warning(
                 "ambient_channel_failed",
                 tier="ambient",
                 kind="deliver",
                 channel=name,
                 error=entry.get("error"),
+                attempts=entry["attempts"],
+                next_attempt_at=entry["next_attempt_at"],
             )
-        await _record_send(rows, name, entry)
-        from app import obs
+        entries[name] = entry
+        if record:
+            await _record_send(rows, name, entry)
+        obs.AMBIENT_OPS.labels(kind="channel", status=f"{name}_{'ok' if ok else 'error'}").inc()
+        obs.DELIVERY_SENDS.labels(channel=name, status="ok" if ok else "retry").inc()
+    return entries
 
-        obs.AMBIENT_OPS.labels(
-            kind="channel", status=f"{name}_{'ok' if entry['ok'] else 'error'}"
-        ).inc()
+
+async def retry_external_sends(now: datetime | None = None, batch: int = _RETRY_BATCH) -> int:
+    """M51: re-send failed external channel entries whose backoff has
+    elapsed, at most `batch` sends per tick; an entry that has exhausted
+    MAX_SEND_ATTEMPTS is dead-lettered and never retried. Returns sends
+    attempted."""
+    now = now or datetime.now(UTC)
+    from sqlalchemy import select
+
+    from app import obs
+
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(Delivery)
+                    .where(
+                        Delivery.external.isnot(None),
+                        Delivery.delivered_at.isnot(None),
+                        Delivery.delivered_at >= now - timedelta(days=_RETRY_WINDOW_DAYS),
+                    )
+                    .order_by(Delivery.delivered_at.desc())
+                    .limit(500)
+                )
+            ).scalars()
+        )
+    attempted = 0
+    for row in rows:
+        if attempted >= batch:
+            break
+        for name, prior in dict(row.external or {}).items():
+            if name == "in_app" or not isinstance(prior, dict):
+                continue
+            if prior.get("ok") or prior.get("dead"):
+                continue
+            due = prior.get("next_attempt_at")
+            if not due or datetime.fromisoformat(str(due)) > now:
+                continue
+            ok, error = await _send_one(name, str(row.channel or "notify"), [row])
+            entry = _send_entry(prior, ok, error, now)
+            await _record_send([row], name, entry)
+            attempted += 1
+            obs.DELIVERY_SENDS.labels(
+                channel=name, status="ok" if ok else ("dead" if entry["dead"] else "retry")
+            ).inc()
+            logger.info(
+                "ambient_channel_retry",
+                tier="ambient",
+                kind="deliver",
+                channel=name,
+                ok=ok,
+                attempts=entry["attempts"],
+                dead=entry["dead"],
+            )
+            if attempted >= batch:
+                break
+    return attempted

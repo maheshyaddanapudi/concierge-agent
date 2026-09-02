@@ -14,6 +14,7 @@ from app.api.deps import SessionDep
 from app.auth import owns_row, scope_to_user
 from app.db import get_session_factory
 from app.models import Conversation, Run
+from app.orchestrator import admission
 from app.orchestrator.context import EVENT_BUS
 from app.orchestrator.runner import create_run, resume_run, start_run_task
 from app.schemas.common import ApiModel
@@ -183,6 +184,18 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             detail="include_history_summary applies only to sub-agent-pinned messages — "
             "the orchestrator always receives conversation history",
         )
+    try:
+        run = await _create_chat_run(body, session)
+    except admission.AtCapacity as exc:
+        # M51: shed load explicitly — never an invisible wait
+        raise HTTPException(
+            status_code=503, detail=exc.detail, headers={"Retry-After": str(exc.retry_after_s)}
+        ) from exc
+    start_run_task(run.id, shed_if_full=True)
+    return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
+
+
+async def _create_chat_run(body: ChatRequest, session: Any) -> Run:
     if body.target_sub_agent_id is not None:
         # pinned message (spec §7.5): same gating as /sub-agents/{id}/invoke
         from app.models import SubAgent
@@ -197,7 +210,7 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
                 status_code=403,
                 detail=f"sub agent {agent.name!r} is not exposed for direct invocation",
             )
-        run = await create_run(
+        return await create_run(
             body.conversation_id,
             body.message,
             mode="direct",
@@ -205,11 +218,11 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             include_history_summary=body.include_history_summary,
             include_memories=body.include_memories,
             project_key=body.project,
+            shed_if_full=True,
         )
-    else:
-        run = await create_run(body.conversation_id, body.message, project_key=body.project)
-    start_run_task(run.id)
-    return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
+    return await create_run(
+        body.conversation_id, body.message, project_key=body.project, shed_if_full=True
+    )
 
 
 class _StreamDone(Exception):

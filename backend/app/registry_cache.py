@@ -360,15 +360,27 @@ class RegistryCache:
             return await _load_registry(registry)
         async with self._locks[registry]:
             if self._mode == "redis":
-                redis = await self._get_redis()
-                key = f"{_REDIS_PREFIX}{registry}"
-                if not force:
-                    blob = await redis.get(key)
-                    if blob is not None:
-                        loaded: list[dict[str, Any]] | dict[str, Any] = json.loads(blob)
-                        return loaded
-                data = await _load_registry(registry)
-                await redis.set(key, json.dumps(data))
+                try:
+                    redis = await self._get_redis()
+                    key = f"{_REDIS_PREFIX}{registry}"
+                    if not force:
+                        blob = await redis.get(key)
+                        if blob is not None:
+                            loaded: list[dict[str, Any]] | dict[str, Any] = json.loads(blob)
+                            return loaded
+                    data = await _load_registry(registry)
+                    await redis.set(key, json.dumps(data))
+                except Exception as exc:  # noqa: BLE001 — M51: the cache fails OPEN, Postgres is the truth
+                    from app import obs
+
+                    obs.CACHE_DEGRADED.labels(backend="redis").inc()
+                    logger.warning(
+                        "cache_backend_degraded",
+                        backend="redis",
+                        registry=registry,
+                        error=str(exc)[:200],
+                    )
+                    return await _load_registry(registry)
                 self._data[registry] = data
                 self._loaded_at[registry] = datetime.now(UTC).isoformat()
                 self._dirty.discard(registry)

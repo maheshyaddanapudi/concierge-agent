@@ -52,7 +52,7 @@ async def _await_run(run_id: UUID) -> Run:
             await resume_run(run_id, "approve", "eval mode auto-approve", None)
             await asyncio.sleep(_POLL_S)
             continue
-        if status != "running":
+        if status not in {"running", "queued"}:
             async with get_session_factory()() as session:
                 final = await session.get(Run, run_id)
                 if final is None:

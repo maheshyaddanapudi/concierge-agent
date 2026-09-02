@@ -95,6 +95,11 @@ DEFAULTS: dict[str, Any] = {
     # M50 (arch-M4): quiet hours and digest times are wall-clock in THIS
     # zone; UTC keeps pre-M50 behavior byte-identical
     "ambient_timezone": "UTC",
+    # M51 bounded work: admission (slots + visible queue) and the per-run
+    # wall clock; provider timeouts/retries are env (LLM_TIMEOUT_S, §13)
+    "run_max_concurrent": 8,
+    "run_queue_max": 32,
+    "run_wall_clock_s": 900,
     "ambient_interrupt_threshold": 4,
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
@@ -377,6 +382,18 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
                                 f"ambient_channels[{mode!r}]: unknown channel(s) "
                                 f"{sorted(unknown)} — registered: {sorted(known)}"
                             )
+        elif key == "run_max_concurrent" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 64
+        ):
+            errors.append("run_max_concurrent must be an integer between 1 and 64")
+        elif key == "run_queue_max" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 500
+        ):
+            errors.append("run_queue_max must be an integer between 0 and 500")
+        elif key == "run_wall_clock_s" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 30 <= value <= 86400
+        ):
+            errors.append("run_wall_clock_s must be an integer between 30 and 86400 seconds")
         elif key == "ambient_timezone":
             from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
