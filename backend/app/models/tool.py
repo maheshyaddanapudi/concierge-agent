@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, Index, String
+from sqlalchemy import Boolean, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import RegistryRecord
@@ -11,8 +11,19 @@ from app.models.base import RegistryRecord
 
 class Tool(RegistryRecord):
     __tablename__ = "tools"
-    # M50 (arch-C2): the server → tools join had no index
-    __table_args__ = (Index("tools_mcp_server_idx", "mcp_server_id"),)
+    # M50 (arch-C2): the server → tools join had no index; M54 (scale-H6): one
+    # row per (server, tool name) is a database fact, so N replicas ingesting
+    # the same server at once upsert instead of racing a unique violation
+    __table_args__ = (
+        Index("tools_mcp_server_idx", "mcp_server_id"),
+        Index(
+            "tools_server_tool_uq",
+            "mcp_server_id",
+            "tool_name",
+            unique=True,
+            postgresql_where=text("mcp_server_id IS NOT NULL"),
+        ),
+    )
 
     kind: Mapped[str] = mapped_column(String(16))  # 'mcp' | 'native' | 'a2a'
     mcp_server_id: Mapped[uuid.UUID | None] = mapped_column(

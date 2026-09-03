@@ -267,6 +267,11 @@ async def embedding_backfill(limit: int = 500) -> int:
     if key is None:
         return 0
     model = str(await get_cache().setting("embedding_model"))
+    from app.memory.dims import vector_column
+
+    if vector_column(key) is None:
+        logger.warning("memory_backfill_dims_unsupported", model_key=key)
+        return 0
     surfaces: list[tuple[str, Any, Any, Any]] = [
         ("memories", Memory, Memory.text, Memory.status.in_(("active", "quarantined"))),
         ("run_digests", RunDigest, RunDigest.text, true()),
@@ -301,7 +306,7 @@ async def embedding_backfill(limit: int = 500) -> int:
                     # a concurrent write-through may have landed the same PK
                     if await session.get(MemoryEmbedding, (ref_id, table_ref, key)) is None:
                         session.add(
-                            MemoryEmbedding(
+                            MemoryEmbedding.build(
                                 ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec
                             )
                         )
@@ -329,11 +334,25 @@ async def _extraction_tuner_moves() -> int:
     return out["kind_routes"] + out["floor_moves"]
 
 
-async def _due(job_id: int, now: float) -> bool:
-    last = _LAST_RUN.get(job_id)
-    if last is None:
-        return True  # never ran (or clock reset) ⇒ due now
-    return (now - last) >= _INTERVALS_S[job_id]
+_JOB_NAMES: dict[int, str] = {
+    JOB_DECAY: "memory:decay",
+    JOB_REFLECT: "memory:reflect",
+    JOB_CONTRADICT: "memory:contradict",
+    JOB_MINE: "memory:mine",
+    JOB_COMPACT: "memory:compact",
+    JOB_COMMUNITIES: "memory:communities",
+    JOB_BACKFILL: "memory:backfill",
+    JOB_EXTRACT_TUNE: "memory:extract_tune",
+}
+
+
+async def _due(job_id: int, now: Any = None) -> bool:
+    """M54: the clock is `job_clock` in the database (spec §18.9) — an
+    interval is a cluster property, so a job runs once per interval on
+    whichever replica leads it and a restart re-runs nothing."""
+    from app.jobclock import job_due
+
+    return await job_due(_JOB_NAMES[job_id], _INTERVALS_S[job_id], now=now)
 
 
 async def run_due_jobs() -> dict[str, int]:
@@ -345,7 +364,11 @@ async def run_due_jobs() -> dict[str, int]:
     if not await get_cache().setting("memory_enabled"):
         return {}
     results: dict[str, int] = {}
-    now = asyncio.get_event_loop().time()
+    from datetime import UTC, datetime
+
+    from app.jobclock import job_ran
+
+    now = datetime.now(UTC)
     from app.memory.communities import rebuild_communities
     from app.memory.episodic import compact_digests
 
@@ -375,7 +398,7 @@ async def run_due_jobs() -> dict[str, int]:
                 continue
             try:
                 results[name] = await fn()
-                _LAST_RUN[job_id] = now
+                await job_ran(_JOB_NAMES[job_id], now=now)
             except Exception as exc:  # noqa: BLE001 — jobs never crash the loop
                 logger.warning("memory_job_failed", job=name, error=str(exc))
             finally:
@@ -385,7 +408,7 @@ async def run_due_jobs() -> dict[str, int]:
             if await acquire_job_lock(session, JOB_MINE):
                 try:
                     results["mine"] = len(await mine_fallback_skills())
-                    _LAST_RUN[JOB_MINE] = now
+                    await job_ran(_JOB_NAMES[JOB_MINE], now=now)
                 except Exception as exc:  # noqa: BLE001 — jobs are independent
                     logger.warning("memory_job_failed", job="mine", error=str(exc))
                 finally:
@@ -424,6 +447,21 @@ async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
         except Exception as exc:  # noqa: BLE001 — a gauge refresh must never take the loop down
             obs.LOOP_ERRORS.labels(loop="spend").inc()
             logger.warning("spend_gauge_refresh_failed", error=str(exc))
+        # M54: runs whose owning replica stopped heartbeating are failed
+        # truthfully on any replica; the limiter's idle keys are evicted
+        # hourly so its key space stays bounded (scale-H3)
+        try:
+            from app.jobclock import job_due, job_ran
+            from app.orchestrator.runner import reap_dead_owner_runs
+            from app.ratelimit import IDLE_EVICT_S, evict_idle
+
+            await reap_dead_owner_runs()
+            if await job_due("ratelimit:evict", IDLE_EVICT_S):
+                await evict_idle()
+                await job_ran("ratelimit:evict")
+        except Exception as exc:  # noqa: BLE001 — cluster housekeeping must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="cluster").inc()
+            logger.warning("cluster_housekeeping_failed", error=str(exc))
         try:
             await asyncio.wait_for(stop.wait(), timeout=tick_s)
         except TimeoutError:
@@ -431,5 +469,7 @@ async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
 
 
 def reset_job_clock() -> None:
-    """Testing hook: make every job due immediately."""
+    """Testing hook, kept for the suites that call it: since M54 the clock
+    is the `job_clock` table (truncated between tests), so there is no
+    process-local state to clear — the name documents the intent."""
     _LAST_RUN.clear()

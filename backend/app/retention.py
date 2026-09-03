@@ -207,16 +207,19 @@ async def run_retention(now: datetime | None = None) -> dict[str, int]:
 
 async def maybe_run_retention() -> dict[str, int] | None:
     """Periodic-loop hook: run once per RETENTION_INTERVAL_S (first tick
-    included — the gates decide whether anything is deleted)."""
-    global _LAST_RUN
-    now = asyncio.get_event_loop().time()
-    if _LAST_RUN is not None and now - _LAST_RUN < RETENTION_INTERVAL_S:
+    included — the gates decide whether anything is deleted). M54: the
+    clock is `job_clock`, so the interval holds across the fleet."""
+    from app.jobclock import job_due, job_ran
+
+    if not await job_due("retention", RETENTION_INTERVAL_S):
         return None
-    _LAST_RUN = now
-    return await run_retention()
+    result = await run_retention()
+    await job_ran("retention")
+    return result
 
 
 def reset_retention_clock() -> None:
-    """Testing hook."""
+    """Testing hook — the clock is `job_clock` since M54 (truncated between
+    tests); kept for the suites that call it."""
     global _LAST_RUN
     _LAST_RUN = None

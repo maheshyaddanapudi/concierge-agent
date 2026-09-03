@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -73,6 +74,12 @@ def _run_out(
         "include_memories": run.include_memories,
         # §17.4 ambient provenance — None for interactive runs
         "trigger": run.trigger,
+        # M54 (spec §18.9): who executes it, and a cancel intent it has not
+        # yet acted on
+        "owner_replica": run.owner_replica,
+        "cancel_requested_at": (
+            run.cancel_requested_at.isoformat() if run.cancel_requested_at else None
+        ),
         "plan": run.plan,
         "snapshot": run.snapshot,
         "final_answer": run.final_answer,
@@ -146,12 +153,17 @@ async def get_run(run_id: UUID, session: SessionDep) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/cancel")
-async def cancel(run_id: UUID) -> dict[str, Any]:
+async def cancel(run_id: UUID) -> Response:
+    """M54 (spec §18.9): the response is the run's REAL status. A run
+    executing on another replica gets a persisted cancel intent the owner
+    acts on; `202 cancel_requested` says the owner has not acted yet."""
     try:
-        await cancel_run(run_id)
+        status = await cancel_run(run_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "cancelled"}
+    return JSONResponse(
+        {"status": status}, status_code=202 if status == "cancel_requested" else 200
+    )
 
 
 @router.post("/{run_id}/retry", status_code=201)

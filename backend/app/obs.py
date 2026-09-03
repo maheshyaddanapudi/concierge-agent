@@ -178,6 +178,9 @@ RETENTION_DELETED = Counter(
     "concierge_retention_deleted_total", "Rows removed by the retention job", ["table"]
 )
 SPEND_TODAY = Gauge("concierge_spend_usd_today", "Priced spend across every run kind, UTC day")
+REPLICA_INFO = Gauge(
+    "concierge_replica_info", "1 for this process, labelled with its replica id (M54)", ["replica"]
+)
 SPEND_REFUSED = Counter(
     "concierge_spend_ceiling_refusals_total", "Runs refused at the spend ceiling", ["kind"]
 )

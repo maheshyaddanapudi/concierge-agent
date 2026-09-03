@@ -283,16 +283,33 @@ def synthesize_terminal_events(run: Run, after: int) -> list[dict[str, Any]]:
     return events
 
 
+async def _record_terminal(run_id: UUID, after: int) -> list[dict[str, Any]] | None:
+    """The run row's terminal events, when it has reached one (M53 record
+    path) — None while it is still going."""
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+    if run is None or run.status not in _TERMINAL | {"paused_hitl"}:
+        return None
+    return synthesize_terminal_events(run, after)
+
+
 async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
     """The event generator behind /chat/stream: replay after `after`, then
     live, with a heartbeat every SSE_HEARTBEAT_S. While this process drains
     (M53) a stream it cannot serve — the run is not executing here — is
     closed politely with a `reconnect` hint; a run executing here streams
-    on until its terminal event."""
+    on until its terminal event. M54 (spec §18.9): a run executing on
+    ANOTHER replica has no events here — the stream waits for the owner's
+    terminal announcement on the control channel (re-reading the row at
+    each beat as the fallback) and then serves the recorded terminal
+    events, continuing the client's sequence."""
+    from app import control
     from app.orchestrator import admission
     from app.orchestrator.runner import RUNNING_TASKS
 
     history, queue = EVENT_BUS.subscribe(run_id, after=after)
+    foreign = False
+    wake: asyncio.Event | None = None
     try:
         if not history:
             if EVENT_BUS.is_done(run_id):
@@ -305,6 +322,9 @@ async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
                         yield _wire(event)
                     if run.status in _TERMINAL:
                         return
+                elif run is not None and run_id not in RUNNING_TASKS:
+                    foreign = True  # executing elsewhere: the record will resolve it
+                    wake = control.watch_terminal(run_id)
         for event in history:
             yield _wire(event)
             if _is_terminal(event):
@@ -319,6 +339,29 @@ async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
                     "retry": SSE_RECONNECT_RETRY_MS,
                 }
                 return
+            if foreign and wake is not None:
+                waiter = asyncio.create_task(wake.wait())
+                getter = asyncio.create_task(queue.get())
+                done, pending = await asyncio.wait(
+                    {waiter, getter}, timeout=SSE_HEARTBEAT_S, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                if getter in done:
+                    event = getter.result()
+                    yield _wire(event)
+                    if _is_terminal(event):
+                        return
+                    continue
+                # announced, or one beat elapsed: the row is the truth
+                recorded = await _record_terminal(run_id, after)
+                if recorded is not None:
+                    for event in recorded:
+                        yield _wire(event)
+                    return
+                wake.clear()
+                yield {"event": "ping", "data": "{}"}
+                continue
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_S)
             except TimeoutError:
@@ -328,6 +371,8 @@ async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
             if _is_terminal(event):
                 return
     finally:
+        if wake is not None:
+            control.unwatch_terminal(run_id, wake)
         EVENT_BUS.unsubscribe(run_id, queue)
 
 

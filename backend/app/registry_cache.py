@@ -20,6 +20,7 @@ call". TTLs are deliberately absent: an entry is current or invalidated.
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -27,12 +28,24 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy import select
 
+from app.config import get_config
 from app.models import Skill, SubAgent, Tool
 
 logger = structlog.get_logger("registry_cache")
 
 Registry = Literal["tools", "skills", "sub_agents", "settings"]
 REGISTRIES: tuple[Registry, ...] = ("tools", "skills", "sub_agents", "settings")
+
+# M54 (§7.3): the ceiling on any coherency gap — every cached entry, memory
+# or redis, expires on it. None = the REGISTRY_CACHE_TTL_S env (default 300 s).
+CACHE_TTL_S: float | None = None
+
+
+def _ttl_s() -> float:
+    if CACHE_TTL_S is not None:
+        return float(CACHE_TTL_S)
+    return float(get_config().registry_cache_ttl_s)
+
 
 _REDIS_PREFIX = "concierge:cache:"
 _NOTIFY_CHANNEL = "registry_cache_inv"
@@ -176,6 +189,7 @@ class RegistryCache:
         self._data: dict[str, list[dict[str, Any]] | dict[str, Any]] = {}
         self._generation: dict[str, int] = dict.fromkeys(REGISTRIES, 0)
         self._loaded_at: dict[str, str | None] = dict.fromkeys(REGISTRIES)
+        self._loaded_mono: dict[str, float] = {}  # M54: TTL clock per entry
         self._dirty: set[str] = set(REGISTRIES)
         self._locks: dict[str, asyncio.Lock] = {r: asyncio.Lock() for r in REGISTRIES}
         self._redis: Any = None
@@ -335,6 +349,7 @@ class RegistryCache:
                 out["registries"][registry] = {
                     "records": None,
                     "generation": self._generation[registry],
+                    "dirty": registry in self._dirty,
                     "loaded_at": None,
                     "cached": False,
                 }
@@ -348,6 +363,8 @@ class RegistryCache:
         return {
             "records": len(data),
             "generation": self._generation[registry],
+            "dirty": registry
+            in self._dirty,  # M54: a bumped generation with a stale blob is visible
             "loaded_at": self._loaded_at.get(registry),
             "cached": self._mode != "bypass",
         }
@@ -382,8 +399,14 @@ class RegistryCache:
                         if blob is not None:
                             loaded: list[dict[str, Any]] | dict[str, Any] = json.loads(blob)
                             return loaded
+                    # M54 (scale-B4 race B): a slow read-through must not
+                    # resurrect a blob a peer deleted meanwhile — write only
+                    # if no invalidation moved the generation under the load,
+                    # and always with a TTL so nothing stale outlives it
+                    generation = self._generation[registry]
                     data = await _load_registry(registry)
-                    await redis.set(key, json.dumps(data))
+                    if self._generation[registry] == generation:
+                        await redis.set(key, json.dumps(data), ex=int(_ttl_s()))
                 except Exception as exc:  # noqa: BLE001 — M51: the cache fails OPEN, Postgres is the truth
                     from app import obs
 
@@ -397,14 +420,25 @@ class RegistryCache:
                     return await _load_registry(registry)
                 self._data[registry] = data
                 self._loaded_at[registry] = datetime.now(UTC).isoformat()
-                self._dirty.discard(registry)
+                self._loaded_mono[registry] = time.monotonic()
+                if self._generation[registry] == generation:
+                    self._dirty.discard(registry)
                 return data
-            # memory: reload-on-dirty
-            if force or registry in self._dirty or registry not in self._data:
+            # memory: reload-on-dirty, and on the TTL (M54 — a lost NOTIFY
+            # costs at most one TTL of staleness)
+            loaded_mono = self._loaded_mono.get(registry)
+            expired = loaded_mono is None or (time.monotonic() - loaded_mono) >= _ttl_s()
+            if force or registry in self._dirty or registry not in self._data or expired:
+                # M54 (scale-B4 race A): a peer invalidation landing DURING
+                # the load must survive it — discard the dirty flag only if
+                # the generation is what it was when the load started
+                generation = self._generation[registry]
                 data = await _load_registry(registry)
                 self._data[registry] = data
                 self._loaded_at[registry] = datetime.now(UTC).isoformat()
-                self._dirty.discard(registry)
+                self._loaded_mono[registry] = time.monotonic()
+                if self._generation[registry] == generation:
+                    self._dirty.discard(registry)
             return self._data[registry]
 
     async def _rows(self, registry: Registry) -> list[dict[str, Any]]:

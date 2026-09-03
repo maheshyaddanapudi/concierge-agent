@@ -32,6 +32,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app import obs
 from app.db import get_session_factory
@@ -40,6 +42,8 @@ from app.models import McpServer, Tool
 logger = structlog.get_logger("mcp.manager")
 
 CONNECT_TIMEOUT_S = 25.0
+# M54: per-server ingest lock (transaction-scoped) — its own classid
+INGEST_LOCK_CLASSID = 427020
 PING_TIMEOUT_S = 5.0
 
 # The MCP SDK spawns stdio servers with a minimal default environment, which
@@ -102,6 +106,7 @@ class McpManager:
         self._conns: dict[UUID, _Connection] = {}
         self._breakers: dict[UUID, _Breaker] = {}
         self._health_task: asyncio.Task[None] | None = None
+        self._seen: set[UUID] = set()  # M54: servers this replica has attempted
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -113,6 +118,7 @@ class McpManager:
                     await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
                 ).scalars()
             )
+        self._seen.update(server_ids)
         await asyncio.gather(
             *(self.connect_server(sid, timeout_s=connect_timeout) for sid in server_ids),
             return_exceptions=True,
@@ -143,6 +149,7 @@ class McpManager:
         self._cancel_reconnect(breaker)
         breaker.attempts = 0
         breaker.circuit_open = False
+        self._seen.add(server_id)
         if not await self._connect_once(server_id, timeout_s):
             await self._schedule_reconnect(server_id)
         self._publish_states()
@@ -342,6 +349,14 @@ class McpManager:
             raise RuntimeError(f"server {server_id} is not connected")
         result = await conn.session.list_tools()
         async with get_session_factory()() as db:
+            # M54 (scale-H6): N replicas ingest the same server at once — a
+            # per-server transaction advisory lock serializes the reconcile,
+            # and the insert upserts on (server, tool name) so a racer that
+            # got in first is folded into, never collided with
+            await db.execute(
+                sql_text("SELECT pg_advisory_xact_lock(:c, :o)"),
+                {"c": INGEST_LOCK_CLASSID, "o": server_id.int % (2**31)},
+            )
             server = await db.get(McpServer, server_id)
             if server is None:
                 return
@@ -361,20 +376,30 @@ class McpManager:
                     if key in taken_keys:  # collision-safe (spec §3.2)
                         key = f"{key}-{uuid4().hex[:6]}"
                     taken_keys.add(key)
-                    db.add(
-                        Tool(
-                            name=spec.name,
-                            description=spec.description or "",
-                            kind="mcp",
-                            source=server.source,  # inherited (spec §5)
-                            status="active",
-                            mcp_server_id=server_id,
-                            tool_name=spec.name,
-                            tool_key=key,
-                            input_schema=spec.inputSchema,
-                            ingest_state="present",
-                        )
+                    stmt = pg_insert(Tool).values(
+                        id=uuid4(),
+                        name=spec.name,
+                        description=spec.description or "",
+                        kind="mcp",
+                        source=server.source,  # inherited (spec §5)
+                        status="active",
+                        mcp_server_id=server_id,
+                        tool_name=spec.name,
+                        tool_key=key,
+                        direct_exposure=False,
+                        input_schema=spec.inputSchema,
+                        ingest_state="present",
                     )
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["mcp_server_id", "tool_name"],
+                        index_where=sql_text("mcp_server_id IS NOT NULL"),
+                        set_={
+                            "description": stmt.excluded.description,
+                            "input_schema": stmt.excluded.input_schema,
+                            "ingest_state": "present",
+                        },
+                    )
+                    await db.execute(stmt)
                 else:
                     row.description = spec.description or ""
                     row.input_schema = spec.inputSchema
@@ -432,6 +457,35 @@ class McpManager:
                 await self._schedule_reconnect(server_id)  # M53
         self._publish_states()
 
+    async def reconcile(self) -> dict[str, int]:
+        """M54 (spec §18.9): each replica reconciles ITS subprocess set
+        against the registry — a server registered through another replica
+        is connected here, one deleted elsewhere is torn down here. Servers
+        this replica already tried (in error, mid-reconnect, or with the
+        circuit open) are left to the reconnect machinery."""
+        async with get_session_factory()() as db:
+            wanted = set(
+                (
+                    await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
+                ).scalars()
+            )
+        connected = added = removed = 0
+        for server_id in list(self._conns):
+            if server_id not in wanted:
+                await self.disconnect_server(server_id)
+                self._seen.discard(server_id)
+                removed += 1
+        for server_id in wanted:
+            if server_id in self._conns or server_id in self._seen:
+                continue
+            self._seen.add(server_id)
+            await self.connect_server(server_id)
+            added += 1
+        connected = sum(1 for c in self._conns.values() if c.session is not None)
+        if added or removed:
+            logger.info("mcp_reconciled", added=added, removed=removed, connected=connected)
+        return {"added": added, "removed": removed, "connected": connected}
+
     async def _health_loop(self) -> None:
         from app.settings_store import get_setting
 
@@ -440,6 +494,7 @@ class McpManager:
                 async with get_session_factory()() as db:
                     interval = int(await get_setting(db, "mcp_health_interval_s"))
                 await asyncio.sleep(max(interval, 1))
+                await self.reconcile()  # M54: the registry is the fleet's truth
                 await self.ping_all()
             except asyncio.CancelledError:
                 raise

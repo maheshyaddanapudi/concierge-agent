@@ -21,7 +21,7 @@ Scenarios (pick with --scenarios, default all):
               the first step whose probe fails is the SSE ceiling; then the
               global /ambient/stream, which holds no DB session, as contrast
   recall      /memories/recall latency at seeded corpus sizes
-              (--recall-sizes, fake 64-dim embeddings under the fake key)
+              (--recall-sizes, fake 64-dim embeddings under the fake key, in the M54 typed `emb_64` column)
   ambient     webhook backlog: N routine fires, time-to-drain and the
               fired/held split, runs to terminal state
 
@@ -538,9 +538,9 @@ class Harness:
             )
         await self.sql_exec(
             """
-            INSERT INTO memory_embeddings (ref_id, table_ref, model_key, embedding)
+            INSERT INTO memory_embeddings (ref_id, table_ref, model_key, emb_64)
             SELECT m.id, 'memories', $2::text,
-                   (SELECT array_agg(random())::vector FROM generate_series(1, 64) WHERE m.id IS NOT NULL)
+                   (SELECT array_agg(random())::vector(64) FROM generate_series(1, 64) WHERE m.id IS NOT NULL)
             FROM memories m
             WHERE m.text LIKE $1::text || ' memory %'
               AND NOT EXISTS (SELECT 1 FROM memory_embeddings e
@@ -582,7 +582,7 @@ class Harness:
                 EXPLAIN (FORMAT JSON) SELECT m.id FROM memories m
                 JOIN memory_embeddings e ON e.ref_id = m.id AND e.table_ref = 'memories' AND e.model_key = $1
                 WHERE m.status = 'active'
-                ORDER BY e.embedding <=> (SELECT embedding FROM memory_embeddings WHERE model_key = $1 LIMIT 1)
+                ORDER BY e.emb_64 <=> (SELECT emb_64 FROM memory_embeddings WHERE model_key = $1 LIMIT 1)
                 LIMIT 40
                 """,
                 FAKE_EMBED_KEY,

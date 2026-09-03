@@ -12,6 +12,7 @@ and the operator surfaces the Settings page exposes.
 | Leader loss | [leader-loss.md](./leader-loss.md) | `concierge_ambient_leader` 0 on every replica, evaluators silent while fires queue |
 | Provider outage | [provider-outage.md](./provider-outage.md) | `concierge_llm_calls_total{status!="ok"}` rate, `concierge_llm_latency_seconds` p95 at `LLM_TIMEOUT_S`, runs failing with a classified error |
 | Delivery backlog | [delivery-backlog.md](./delivery-backlog.md) | `concierge_backlog_depth{queue="deliveries"}` climbing, `concierge_delivery_sends_total{status="retry"|"dead"}` |
+| A replica died (M54) | [dead-replica.md](./dead-replica.md) | a `replicas` row with a frozen `heartbeat_at` (`GET /replicas` → `live: false`), `runs_reaped_dead_owner` in the survivors' logs, a Prometheus target down |
 
 Related: the day-2 procedures in [`../runbook.md`](../runbook.md), the
 deploy lifecycle in [`../scaling.md`](../scaling.md), and the restore drill

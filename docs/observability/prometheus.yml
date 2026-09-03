@@ -5,7 +5,15 @@ global:
 scrape_configs:
   - job_name: concierge-backend
     metrics_path: /metrics
-    static_configs:
-      - targets: ['backend:8000']
-        labels:
-          service: concierge-agent
+    # M54: every replica is its own target — Docker's DNS returns one A
+    # record per `--scale backend=N` container, so `instance` is the replica
+    # and counters are never mixed across processes (a static `backend:8000`
+    # target would alternate replicas scrape by scrape and show resets)
+    dns_sd_configs:
+      - names: ['backend']
+        type: A
+        port: 8000
+        refresh_interval: 15s
+    relabel_configs:
+      - target_label: service
+        replacement: concierge-agent

@@ -305,9 +305,13 @@ async def ambient_event_stream() -> Any:
     from app import obs
     from app.ambient import channels
     from app.registry_cache import get_cache
+    from app.replica import replica_id
 
     sub_id, queue = channels.subscribe_stream()
     obs.SSE_SUBSCRIBERS.labels(stream="ambient").inc()
+    # M54: the stream names the replica serving it — how a subscriber (or the
+    # §14q-92 drill) tells which process it landed on behind a balancer
+    ping = json.dumps({"replica": replica_id()})
     try:
         while True:
             try:
@@ -317,9 +321,13 @@ async def ambient_event_stream() -> Any:
                 # only while ambient is on
                 if not bool(await get_cache().setting("ambient_enabled")):
                     return
-                yield {"event": "ping", "data": "{}"}
+                yield {"event": "ping", "data": ping}
                 continue
-            yield {"id": str(event.get("seq", "")), "event": "delivery", "data": json.dumps(event)}
+            yield {
+                "id": str(event.get("seq", "")),
+                "event": "delivery",
+                "data": json.dumps({**event, "replica": replica_id()}),
+            }
     finally:
         channels.unsubscribe_stream(sub_id)
         obs.SSE_SUBSCRIBERS.labels(stream="ambient").dec()

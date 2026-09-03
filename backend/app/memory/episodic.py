@@ -345,7 +345,11 @@ async def recall_digests(
         vec_ids: list[UUID] = []
         qvec = await _query_vector(query)
         model_key = await active_model_key() if qvec is not None else None
-        if qvec is not None and model_key is not None:
+        from app.memory.dims import vector_column
+
+        typed = vector_column(model_key) if model_key else None  # M54: the typed column
+        if qvec is not None and model_key is not None and typed is not None:
+            col, vtype = typed
             vec_rows = (
                 await session.execute(
                     sql_text(
@@ -355,7 +359,7 @@ async def recall_digests(
                           ON e.ref_id = d.id AND e.table_ref = 'run_digests'
                          AND e.model_key = :model_key
                         WHERE true {excl}
-                        ORDER BY e.embedding <=> CAST(:qvec AS vector)
+                        ORDER BY e.{col} <=> CAST(:qvec AS {vtype})
                         LIMIT :n
                         """  # noqa: S608 — fragments are code constants; values are bound params
                     ).bindparams(bindparam("qvec"), bindparam("model_key")),

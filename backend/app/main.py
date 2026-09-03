@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -59,22 +60,34 @@ async def _db_probe() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    await asyncio.to_thread(_run_migrations)
-    async with get_session_factory()() as session:
-        from app.seed.loader import seed_all
+    from app import control
+    from app.db import connection_budget
+    from app.replica import boot_lock, replica_id, run_replica_heartbeat_loop
 
-        await seed_all(session)
-        # spec §5b/§10: explicitly stored log_level / otlp_endpoint override
-        # the env bootstrap; absent rows keep the env-configured defaults
-        from app.models import AppSetting
-        from app.obs import apply_otlp_endpoint, configure_logging
+    # M54 (spec §18.9): N replicas booting together migrate and seed ONCE —
+    # the boot lock serializes them on a dedicated session connection
+    async with boot_lock():
+        await asyncio.to_thread(_run_migrations)
+        async with get_session_factory()() as session:
+            from app.seed.loader import seed_all
 
-        row = await session.get(AppSetting, "log_level")
-        if row is not None:
-            configure_logging(str(row.value.get("value")))
-        row = await session.get(AppSetting, "otlp_endpoint")
-        if row is not None:
-            apply_otlp_endpoint(str(row.value.get("value") or ""))
+            await seed_all(session)
+            # spec §5b/§10: explicitly stored log_level / otlp_endpoint
+            # override the env bootstrap; absent rows keep the env defaults
+            from app.models import AppSetting
+            from app.obs import apply_otlp_endpoint, configure_logging
+
+            row = await session.get(AppSetting, "log_level")
+            if row is not None:
+                configure_logging(str(row.value.get("value")))
+            row = await session.get(AppSetting, "otlp_endpoint")
+            if row is not None:
+                apply_otlp_endpoint(str(row.value.get("value") or ""))
+    budget = connection_budget()
+    _log = structlog.get_logger("boot")
+    (_log.warning if not budget["fits"] else _log.info)(
+        "db_connection_budget", replica=replica_id(), **budget
+    )
     from app.db import close_checkpointer, get_checkpointer
     from app.mcp.manager import McpManager, set_manager
 
@@ -132,12 +145,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # M53: SIGUSR1 is the pre-stop hook — readiness goes 503 while the port
     # is still open, so a balancer stops routing here BEFORE SIGTERM
     admission.install_drain_signal()
+    # M54: this replica's heartbeat row and the control channel it listens on
+    replica_stop = asyncio.Event()
+    replica_task = asyncio.create_task(run_replica_heartbeat_loop(replica_stop))
+    await control.start_listener()
     yield
     # M51 shutdown: readiness off → stop accepting → drain in-flight runs
     # within the grace period → cancel the rest (each finalizes terminal)
     from app.config import get_config as _cfg
 
     await drain_running_tasks(grace_s=float(_cfg().shutdown_grace_s))
+    replica_stop.set()
+    await _settle(replica_task)  # retires this replica's row (M54)
+    await control.stop_listener()
     ambient_stop.set()
     ambient_loop_task.cancel()
     await _settle(ambient_loop_task)  # releases the leader lease (M53)

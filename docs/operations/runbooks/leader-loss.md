@@ -26,6 +26,8 @@ database; two stacks pointed at different databases).
 ## First checks
 
 ```bash
+# M54: the fleet as the database sees it — which replicas are live
+curl -s http://localhost:8000/api/v1/replicas | python3 -m json.tool
 for h in backend-1 backend-2; do docker compose exec $h python -c \
   "import urllib.request;print('$h', urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode().split('concierge_ambient_leader ')[1][:3])"; done
 docker compose exec db psql -U concierge -d concierge -c \

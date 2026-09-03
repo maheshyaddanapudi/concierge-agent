@@ -1,6 +1,6 @@
 # Scaling
 
-Honesty first: this is a POC. The scale-out path below is **designed in but not load-tested** — the multi-replica machinery (LISTEN/NOTIFY invalidation, Redis cache backend) exists in code and is dormant on a single node; nobody has run this stack behind a load balancer under production traffic. Treat this document as the map of what is prepared, what to verify, and what is missing.
+Honesty first: this is a POC that has now been run at **three replicas** behind one balancer (M54, `docs/acceptance/prod/M54/`) — a run created on one replica cancelled from another, a delivery reaching subscribers on every replica, consolidation once per interval cluster-wide, the load scenarios at N=3 inside the declared connection budget. Before M54 this document identified the right requirement (the run plane, the delivery plane and the clocks were per-process) and drew the wrong conclusion from it ("sticky routing makes it work"); the sections below say what is shared now, what still favours affinity, and what is not solved.
 
 ## Single-node baseline (what ships)
 
@@ -15,7 +15,7 @@ The pooled ceiling per backend replica is explicit: `DB_POOL_SIZE` (5) + `DB_MAX
 
 ### Admission, wall clock and shutdown (M51)
 
-Work is bounded per replica, not discovered by exhaustion: `run_max_concurrent` (default 8) is the execution semaphore, `run_queue_max` (default 32) the number of runs that may wait in a visible `queued` status, and a chat request past both is shed with **503 + `Retry-After`** while ambient fires still queue (a fire is work already accepted). Every run has a wall clock (`run_wall_clock_s`, default 15 min) and a 30 s heartbeat; the reaper covers every run kind. On SIGTERM the process flips `GET /ready` to 503, refuses new runs, drains in-flight ones for `SHUTDOWN_GRACE_S` (default 25 s), cancels the remainder with the shutdown named in each run's error, and the next boot reaps anything still non-terminal as "orphaned by a restart" — so a rolling restart never leaves a run spinning forever. These counters are process-local (like `RUNNING_TASKS`) and exported as `concierge_runs_in_flight{state}` — the autoscaling signal; a shared control plane is M54.
+Work is bounded per replica, not discovered by exhaustion: `run_max_concurrent` (default 8) is the execution semaphore, `run_queue_max` (default 32) the number of runs that may wait in a visible `queued` status, and a chat request past both is shed with **503 + `Retry-After`** while ambient fires still queue (a fire is work already accepted). Every run has a wall clock (`run_wall_clock_s`, default 15 min) and a 30 s heartbeat; the reaper covers every run kind. On SIGTERM the process flips `GET /ready` to 503, refuses new runs, drains in-flight ones for `SHUTDOWN_GRACE_S` (default 25 s), cancels the remainder with the shutdown named in each run's error, and the next boot reaps anything still non-terminal as "orphaned by a restart" — so a rolling restart never leaves a run spinning forever. These counters are process-local (like `RUNNING_TASKS`) and exported as `concierge_runs_in_flight{state}` — the autoscaling signal per replica; the shared control plane (ownership, cancel intent, liveness) is M54, below.
 
 ### Deploy lifecycle (M53)
 
@@ -28,31 +28,66 @@ The order of events on one host, as `deploy.sh` runs it and as the M53 evidence 
 
 Probes: `/ready` for readiness (also 503 `degraded` when the database does not answer within 2 s), `/health` for liveness only. Compose carries the container healthcheck on `/health`, `restart: unless-stopped`, and resource limits for each service; the frontend waits for a **healthy** backend. Kubernetes maps one-to-one: readiness probe `/ready`, liveness probe `/health`, `preStop: kill -USR1 1; sleep 5`, `terminationGracePeriodSeconds: 40`.
 
-## Multi-replica: what is ready, what is not
+## Multi-replica (M54): what is shared, what still favours affinity
 
-### Cross-replica cache invalidation (ready, dormant)
+Every fact that used to belong to "the process" now belongs to the fleet, through Postgres and one LISTEN/NOTIFY control channel — no broker, no queue (spec §2). `spec.md` §18.9 is the contract; this is the operator's view.
 
-Implemented in `backend/app/registry_cache.py`:
+### Replica identity and liveness
 
-- **Mechanism**: every `invalidate(registry)` (a) marks the local cache dirty with relationship propagation (tools → skills → sub_agents), then (b) fires `SELECT pg_notify('registry_cache_inv', '<origin>:<registry>')`. Each process holds a dedicated asyncpg connection LISTENing on that channel (`start_listener`, called at startup) and marks its local cache dirty when a peer broadcasts.
-- **Origin filtering**: each process generates a random `origin` id at construction; notifications carrying its own origin are ignored, so invalidation loops are impossible by construction. The LISTEN callback calls `_mark_dirty` (local only, no re-notify) for the same reason.
-- **Best-effort semantics**: both the notify and the listener are wrapped in catch-log (`cache_notify_failed`, `cache_listener_unavailable`). Single-replica correctness never depends on the notify path — the writing process already marked itself dirty. Across replicas, a lost notification means a peer serves stale registry data until its next invalidation; there is no retry, no queue, no catch-up replay.
-- **What to verify when enabling multiple replicas**:
-  1. Each replica logs `cache_listener_started` with a distinct `origin` at startup.
-  2. A registry write on replica A (e.g. toggle a tool's `direct_exposure`) bumps the `generation` counter in `GET /cache/status` on replica B without a manual refresh.
-  3. No `cache_listener_unavailable` / `cache_notify_failed` warnings under steady state (poolers like pgbouncer in transaction mode break LISTEN/NOTIFY — the listener needs a real session-level connection).
-  4. In `memory` mode, confirm the mid-run visibility test from spec §11 (expose a tool mid-run → next model call sees it) across replicas, not just within one.
+- Each process has a `replica_id` (`REPLICA_ID`, else the container hostname) and upserts one row in `replicas` every 10 s: `heartbeat_at`, `subscribers` (its open ambient streams), `runs_in_flight`. A heartbeat older than **45 s** means dead.
+- `GET /replicas` lists the fleet with `live` per row, this process's id, whether its control listener is connected, and the connection-budget arithmetic. `concierge_replica_info{replica}` is on `/metrics`; `concierge_loop_errors_total{loop="replica"}` counts a heartbeat that failed.
+- Shutdown retires the row (the M53 drain awaits the heartbeat loop); a crash lapses it on the cutoff.
 
-### SSE and run execution: sticky is mandatory
+### The run plane
 
-Reasoned from code, not from hope:
+- **Ownership.** `runs.owner_replica` is stamped at creation — the creating process runs the task. `GET /runs/{id}` shows it.
+- **Cancel from anywhere.** `POST /runs/{id}/cancel` on the owner cancels the task as before. On any other replica it is a **persisted intent**: `cancel_requested_at` is set, a `cancel` message goes out on `concierge_control`, and the owner cancels at once (its 30 s heartbeat re-reads the intent as the fallback for a lost NOTIFY). The response is the row's real status — `200 cancelled` if the owner acted within ~3 s, `202 cancel_requested` otherwise. Nothing ever writes `cancelled` on a run it cannot stop (the pre-M54 false cancel that resurrected as `completed`).
+- **Reaping.** Boot-time reaping (`orphaned by a restart`) is scoped to the booting replica's own rows; runs whose owner is dead are failed on any replica by the periodic loop with `owner replica gone: <id>`; the M51 heartbeat reaper is unchanged.
+- **Streams.** A chat stream that lands on a replica not executing the run gets no intermediate events (the event bus is still per process — token fan-out across replicas is not built) but **does resolve**: the owner announces every terminal transition on the control channel, the holding replica wakes (or re-reads the row at its next 15 s beat) and serves the recorded terminal events (`run_status` + `done` with the answer, sequence continued). So affinity is *recommended* for chat — the user sees tokens stream only when the stream lands on the owner — and *never required* for correctness. Under compose the frontend's nginx round-robins; a `POST /chat` and its `GET /chat/stream` are two requests and can land on different replicas. Put a cookie-affine balancer in front for the streaming experience; the answer arrives either way.
+- **HITL resume** (`POST /runs/{id}/hitl`) still executes on the replica that receives it (the checkpoint is shared) — that replica becomes the owner of the resumed task.
 
-- SSE replay is **in-memory**: `RunEventBus` (`orchestrator/context.py`) keeps per-run event history in a process-local dict. `GET /chat/stream/{run_id}` (`api/chat.py`) replays that history, then tails a per-subscriber asyncio queue. Nothing about the event stream is DB-backed (run *steps* are persisted for traces, but the SSE event sequence — `token`, `thinking`, `activity`, `hitl_request`, `done` — is not).
-- The run itself executes as an asyncio task in whichever process handled `POST /chat`. Events are emitted only into that process's bus.
-- Therefore, with N replicas today: the SSE stream **must** land on the replica that owns the run — and so must `POST /runs/{id}/cancel` (it looks up `RUNNING_TASKS` in process memory) and `POST /runs/{id}/hitl` resume (any replica *could* resume from the shared Postgres checkpoint, but the resumed task's events would then stream from the resuming replica, stranding an open stream elsewhere).
-- Practical requirement: session-affinity routing keyed so that a conversation's chat POST, its stream GET, and its control POSTs hit the same replica. What multi-replica would additionally require to drop stickiness: moving the event bus out of process memory (e.g. Postgres LISTEN/NOTIFY or Redis pub/sub for events, plus DB-backed event history for replay) and a run-ownership/handoff story for cancel. **None of that exists today** — do not put a round-robin balancer in front of multiple backends and expect chat to work.
-- Related single-node caveat: a backend restart loses all SSE history; old runs' traces remain in the DB. Since M53 a reconnecting client still resolves — the new process synthesizes the terminal events from the run row — but intermediate events (`plan`, `route`, `activity`, tokens) are not replayed.
-- **HTTP/2 at the edge** (M53): browsers cap HTTP/1.1 at six connections per host, and every open chat stream, the ambient stream and the polling share that budget — three or four tabs with live runs is where a fresh install runs out. HTTP/2 multiplexes them over one connection, but browsers only speak it over TLS, so it is a property of the TLS terminator in front of the frontend container; `frontend/nginx.conf` carries a commented `listen 443 ssl; http2 on;` server block for the case where nginx itself is that terminator.
+### The delivery plane
+
+- The leader's flush publishes each in-app delivery on the control channel; every replica re-fans it to its own `/ambient/stream` subscribers, ignoring its own origin. A toast reaches the whole audience wherever the leader is.
+- The pursuit oracle (§18.4) is the **cluster audience** — this replica's subscribers plus the fresh `subscribers` count of every other live replica — so `ambient_pursuit: away` no longer emails people watching a tab on a non-leader replica, and the salience learner is no longer trained on a topology artefact.
+
+### Clocks and boot
+
+- The consolidation jobs and retention keep `last_run_at` in `job_clock`: once per interval cluster-wide, whichever replica leads; a restart re-runs nothing (compaction included). Advisory locks still guard concurrency; the clock guards scheduling.
+- Migrations and seeding run under a session advisory lock (classid 427019): N replicas booting together apply the schema once. Start them together freely.
+
+### The connection budget
+
+Per replica: `DB_POOL_SIZE + DB_MAX_OVERFLOW` pooled, the LangGraph checkpointer pool (10), and **4 session connections that cannot go through a transaction-mode pooler** — the registry-cache LISTEN, the ambient wake LISTEN, the control listener, the leader lease. With a 10-connection reserve for migrations, `psql` and the load harness:
+
+```
+needed = DB_REPLICAS × (pool + overflow + 10 + 4) + 10
+       = 3 × (5 + 10 + 10 + 4) + 10 = 97   ≤ DB_MAX_CONNECTIONS (100)
+```
+
+Declare the fleet with `DB_REPLICAS` and `DB_MAX_CONNECTIONS`; the arithmetic is logged at boot (`db_connection_budget`, a warning when it does not fit) and served by `GET /replicas` (`budget.max_replicas_at_declared` is the fleet size the declared Postgres seats). Beyond that, raise `max_connections` (each connection is ~10 MB of Postgres RAM) or put a pooler in front of the **pooled** connections only: `DB_STATEMENT_CACHE_SIZE=0` (the default) keeps them free of prepared statements so a transaction-mode pgbouncer works; the four session connections must bypass it. The M54 evidence records `pg_stat_activity` under the N=3 load scenarios against this arithmetic.
+
+### The rate limiter
+
+With auth on, the §18.8 token bucket lives in `rate_buckets` — one budget across replicas instead of N. One short transaction per request; keys idle for an hour are evicted by the periodic loop, so the key space is bounded even when the key is a client address an attacker controls. A database failure fails open with a log (M51 admission already bounds the work).
+
+### Cache coherency
+
+`registry_cache_mode: memory` is a per-process cache kept coherent by LISTEN/NOTIFY. Two races the review found — an invalidation landing *during* a reload being discarded, and a slow read-through resurrecting a deleted redis blob — are closed: a reload discards the dirty flag (and writes the redis blob) only if the generation it started from is unchanged, every entry expires on `REGISTRY_CACHE_TTL_S` (300 s) whatever happens, and `GET /cache/status` reports `dirty` beside `generation`. Verify at N>1 exactly as before: a write on replica A bumps `generation` on B and C, and `dirty` returns to `false` on their next read.
+
+### MCP under N replicas
+
+Every replica holds its own connection to every server (a tool call is served wherever the run executes), so N replicas mean N stdio subprocesses per server — budget memory for it. Ingest is idempotent (`ON CONFLICT` on `(server, tool name)` under a per-server advisory lock), so a concurrent cold boot produces every tool exactly once, and each replica reconciles its subprocess set against the registry on every health tick: a server registered or deleted through any replica is connected or torn down everywhere within `mcp_health_interval_s`.
+
+### Memory at scale
+
+Embeddings live in one typed column per supported dimension (`emb_64` … `emb_3072`, `halfvec` above 2000), each with a real HNSW cosine index — the untyped column the first schema carried could not be indexed and recall latency grew with the corpus. The M54 evidence records recall p50/p95 at 10k, 100k and 1M embeddings with `EXPLAIN` showing the index scan. A model whose dimension has no column degrades to lexical-only with a warning; adding a dimension is one migration (`alembic/versions/s8g9h0i1j2k3_m54_scale.py` is the template).
+
+### The edge
+
+- `docker compose up --scale backend=3` binds each replica to a host port from `BACKEND_PORT_RANGE` (8000, 8001, 8002); the frontend's nginx resolves `backend` per request through Docker's DNS (`resolver 127.0.0.11`), so replicas join and leave without a restart and requests round-robin.
+- Prometheus discovers each replica as its own target (`dns_sd_configs` in `docs/observability/prometheus.yml`); a scrape through the frontend VIP would alternate replicas and show counter resets.
+- **Deploys at N>1**: compose recreates every replica of a service together — `deploy.sh` at N=3 is a brief full outage, not a rolling roll. A rolling deploy is an orchestrator's job: on Kubernetes map `/ready`, `/health`, `preStop: kill -USR1 1; sleep 5` and `terminationGracePeriodSeconds: 40` as the M53 section says and let the rollout strategy roll one pod at a time; every M54 property (ownership, intents, fan-out, clocks) holds across the roll because none of it lives in a process.
 
 ### Cache promotion: memory → redis
 
@@ -61,7 +96,7 @@ The `redis` backend exists so multiple replicas can share one cache instead of N
 1. **Provision**: `./quick-setup.sh --redis` writes `REDIS_URL=redis://redis:6379/0` and `COMPOSE_PROFILES=redis` to `.env`; the next `./start.sh` includes the `redis:7-alpine` service (or run `docker compose --profile redis up -d`). For an external Redis, just set `REDIS_URL` — it is env-only by design (credentials never in DB/UI).
 2. **Restart the backend** if `REDIS_URL` changed (env vars are read at process start).
 3. **Flip the setting**: Settings → Registry cache → `redis`, or `PATCH /settings {"registry_cache_mode": "redis"}`. The save is **ping-validated** (`settings_store._ping_redis`): unreachable Redis → 422, mode unchanged. Missing `REDIS_URL` → 422 before the ping.
-4. **Verify**: `GET /cache/status` reports `mode: redis`; reads are read-through blobs (`concierge:cache:<registry>` keys), invalidation is delete-on-invalidate.
+4. **Verify**: `GET /cache/status` reports `mode: redis`; reads are read-through blobs (`concierge:cache:<registry>` keys, each with the TTL), invalidation is delete-on-invalidate.
 5. **Rollback lever**: flip back to `bypass` at any time — instant escape hatch, byte-identical pre-cache semantics.
 
 Note the redis backend still keeps per-process generation counters and pairs with the LISTEN/NOTIFY channel for dirty marking; Redis holds the data blobs, Postgres carries the invalidation signal.
@@ -73,12 +108,13 @@ When registries grow past what full prompt injection tolerates:
 - **Enable**: `PATCH /settings {"retrieval_enabled": true}`. Per registry it activates only above `retrieval_threshold` records (default 30); below that, full injection, bit-for-bit. `retrieval_top_k` (default 10) is the truncation size.
 - **Scoring** (`backend/app/retrieval.py`) runs in-process over the cache snapshot — never a per-call DB query: BM25 over name+description, fused (reciprocal-rank, k=60) with cosine over stored embeddings when an `embedding_model` is configured. No embedding model → lexical-only, silently.
 - **Safety valves**: plan-referenced and already-used ids are pinned past ranking; full-catalog fallback bypasses retrieval entirely; every truncation logs its drop count and the injected catalog carries a "showing N of M" footer.
-- **JSONB → pgvector swap path**: embeddings are stored today as plain `jsonb` float arrays with an `embedding_hash` (migration `f31a9c04e7d1`; see `../architecture/data-model.md`), and cosine runs in Python over the cache snapshot — deliberately, so the stock `postgres:16` image keeps working. When catalogs outgrow in-memory ranking, the documented swap (spec §7.3) is: pgvector-enabled Postgres image + a migration changing `embedding` to a `vector` column with an index, and moving the cosine/top-K step into SQL. The port surface (`get_embeddings("provider:model", texts)`) and the write-path/backfill embedding maintenance are unchanged by that swap. The full decision record is [ADR-0006](../adr/0006-jsonb-embeddings-before-pgvector.md); spec §7.3/§7.4 and the data-model doc carry the implementation detail.
+- **JSONB → pgvector swap path** (registry embeddings, not memory): embeddings are stored today as plain `jsonb` float arrays with an `embedding_hash` (migration `f31a9c04e7d1`; see `../architecture/data-model.md`), and cosine runs in Python over the cache snapshot — deliberately, so the registry stays small and fast. When catalogs outgrow in-memory ranking, the documented swap (spec §7.3) is a typed `vector` column with an index — the memory side-table (above) is the worked example. The full decision record is [ADR-0006](../adr/0006-jsonb-embeddings-before-pgvector.md).
 
 ## Explicitly NOT solved
 
-- **No authentication or authorization** — every endpoint is open; the UI is an unauthenticated admin surface. Out of scope by declaration (README "Scope notes").
+- **No authentication or authorization** — every endpoint is open; the UI is an unauthenticated admin surface. Out of scope by declaration (README "Scope notes"); the seam it plugs into is M55.
 - **No multi-tenancy** — one set of registries, conversations, and settings per deployment.
-- **Single-writer / single-process assumptions**: run execution, cancel (`RUNNING_TASKS`), SSE event bus, and the compiled-graph cache are process-local. The seed loader and Alembic migrations run at every backend startup and are idempotent for one process; concurrent first-boot of multiple replicas racing migrations/seeds has not been exercised — start one replica first.
-- **No horizontal run distribution** — there is no mechanism to move or resume a live run on another replica (HITL-paused runs are the exception: they restart from the Postgres checkpoint wherever the resume lands, subject to the SSE caveat above).
-- **No load testing** — every claim above is architectural, not empirical.
+- **Token streams do not follow the user across replicas** — the run event bus is per process; a stream on a non-owner replica resolves from the record (the answer arrives) but shows no intermediate events. Affinity for the chat plane is recommended, not required.
+- **No horizontal run migration** — a running task cannot move to another replica; a dead owner's run is failed truthfully and can be retried.
+- **Rolling deploys at N>1 are the orchestrator's job** — compose recreates all replicas of a service together.
+- **Load-tested at N=3 on one host** — the M54 numbers are a single Docker host with three backend containers, not three machines; network partitions between replicas and Postgres were not injected.

@@ -135,6 +135,8 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
             : run.cost_priced === false
               ? ' · unpriced'
               : ''}
+          {run.owner_replica ? ` · on ${run.owner_replica}` : ''}
+          {run.cancel_requested_at && run.status === 'running' ? ' · cancel requested' : ''}
         </span>
       </div>
       <Field label="Message">

@@ -154,6 +154,9 @@ export interface Run {
   total_output_tokens: number
   // M53 cost model: null when a model in play has no price
   cost_usd?: number | null
+  // M54: the replica executing the run, and a cancel intent it has not yet acted on
+  owner_replica?: string | null
+  cancel_requested_at?: string | null
   cost_priced?: boolean
   steps?: RunStep[]
 }

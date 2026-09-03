@@ -69,6 +69,14 @@ class Run(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # M54 (spec §18.9): the replica executing this run — stamped at creation
+    # (the creating process runs the task); a cancel from any other replica
+    # is a persisted INTENT the owner observes (NOTIFY first, heartbeat as
+    # the fallback), never a status written by a process that cannot stop it
+    owner_replica: Mapped[str | None] = mapped_column(String(128), default=None)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
     # the formatter's structured artifact (spec §7.1 answer_ui) — carries its
     # own presentation + coverage so history renders by run-time facts

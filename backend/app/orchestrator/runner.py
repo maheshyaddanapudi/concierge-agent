@@ -33,6 +33,13 @@ logger = structlog.get_logger("orchestrator.runner")
 
 RUNNING_TASKS: dict[UUID, asyncio.Task[None]] = {}
 HEARTBEAT_INTERVAL_S = 30.0  # M51: every run proves liveness; the reaper trusts it
+# M54: how long a cancel served by a replica that does not own the run waits
+# for the owner to act before answering `cancel_requested` (the owner sees
+# the NOTIFY at once; its heartbeat is the fallback)
+CANCEL_WAIT_S = 3.0
+# M54: the reason a locally cancelled run records — set by whoever cancels
+# (a user's Stop, a peer's intent, the reaper) before the task is cancelled
+_CANCEL_REASON: dict[UUID, str] = {}
 _PROVIDER_LABELS = {
     "rate_limited": "provider rate-limited (429) after the port's retry budget",
     "timeout": "provider call timed out (LLM_TIMEOUT_S)",
@@ -87,10 +94,13 @@ async def create_run(
         settings = await load_settings_snapshot()
         admission.check_admission(settings, shed_if_full=shed_if_full)
         await enforce_spend_ceiling(settings, kind)
+        from app.replica import replica_id
+
         run = Run(
             conversation_id=conversation_id,
             chat_message=message,
             status="queued",
+            owner_replica=replica_id(),  # M54: the creating process runs it
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
             target_sub_agent_id=target_sub_agent_id,
             include_history_summary=include_history_summary,
@@ -120,16 +130,26 @@ def start_run_task(
 
 async def _heartbeat(run_id: UUID) -> None:
     """Refresh last_heartbeat_at while the run executes — the reaper
-    (ambient/execute.reap_stalled_runs) covers every run kind since M51."""
+    (ambient/execute.reap_stalled_runs) covers every run kind since M51.
+    M54: the same round trip re-reads `cancel_requested_at`, so a cancel
+    intent from another replica is honoured even if its NOTIFY was lost."""
     while True:
         await asyncio.sleep(HEARTBEAT_INTERVAL_S)
         async with get_session_factory()() as session:
-            await session.execute(
-                update(Run)
-                .where(Run.id == run_id, Run.status == "running")
-                .values(last_heartbeat_at=datetime.now(UTC))
-            )
+            requested = (
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == run_id, Run.status == "running")
+                    .values(last_heartbeat_at=datetime.now(UTC))
+                    .returning(Run.cancel_requested_at)
+                )
+            ).scalar_one_or_none()
             await session.commit()
+        if requested is not None:
+            asyncio.get_running_loop().create_task(
+                cancel_local(run_id, reason="cancelled by request (seen at heartbeat)")
+            )
+            return
 
 
 async def bounded_execute(
@@ -175,7 +195,10 @@ async def bounded_execute(
     except asyncio.CancelledError:
         if not started:
             await _finalize_failure(
-                run_id, mode, "cancelled", _SHUTDOWN_REASON or "cancelled while queued"
+                run_id,
+                mode,
+                "cancelled",
+                _SHUTDOWN_REASON or _CANCEL_REASON.pop(run_id, None) or "cancelled while queued",
             )
         raise
 
@@ -183,12 +206,22 @@ async def bounded_execute(
 async def reap_orphaned_runs() -> int:
     """Startup (M51): a run that was running or queued when the previous
     process died cannot be resumed — mark it failed, truthfully. Paused
-    runs are checkpointed and resumable, so they are left alone."""
+    runs are checkpointed and resumable, so they are left alone. M54: scoped
+    to THIS replica's rows (and rows with no owner) — another replica's
+    in-flight runs are not ours to fail; a dead owner's runs are reaped by
+    `reap_dead_owner_runs` on any replica."""
+    from sqlalchemy import or_
+
+    from app.replica import replica_id
+
     now = datetime.now(UTC)
     async with get_session_factory()() as session:
         result = await session.execute(
             update(Run)
-            .where(Run.status.in_(["running", "queued"]))
+            .where(
+                Run.status.in_(["running", "queued"]),
+                or_(Run.owner_replica == replica_id(), Run.owner_replica.is_(None)),
+            )
             .values(status="failed", error="orphaned by a restart", finished_at=now)
             .returning(Run.id)
         )
@@ -202,6 +235,57 @@ async def reap_orphaned_runs() -> int:
         await session.commit()
     if ids:
         logger.warning("runs_orphaned_by_restart", count=len(ids))
+    return len(ids)
+
+
+async def reap_dead_owner_runs() -> int:
+    """M54: a run whose owning replica stopped heartbeating (spec §18.9)
+    cannot finish — its process is gone. Fail it truthfully, on any replica,
+    naming the owner; the M51 heartbeat reaper still covers a run whose
+    process is alive but silent."""
+    from sqlalchemy import select
+
+    from app.replica import live_replica_ids, replica_id
+
+    live = await live_replica_ids()
+    live.add(replica_id())
+    now = datetime.now(UTC)
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(Run.id, Run.owner_replica).where(
+                        Run.status.in_(["running", "queued"]),
+                        Run.owner_replica.is_not(None),
+                        Run.owner_replica.not_in(live),
+                    )
+                )
+            ).all()
+        )
+        ids = [r[0] for r in rows]
+        if ids:
+            for run_id, owner in rows:
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == run_id, Run.status.in_(["running", "queued"]))
+                    .values(
+                        status="failed",
+                        error=f"owner replica gone: {owner} stopped heartbeating — retry it",
+                        finished_at=now,
+                    )
+                )
+            await session.execute(
+                update(RunStep)
+                .where(RunStep.run_id.in_(ids), RunStep.status == "running")
+                .values(status="cancelled", finished_at=now)
+            )
+        await session.commit()
+    if ids:
+        from app import control
+
+        logger.warning("runs_reaped_dead_owner", count=len(ids))
+        for run_id in ids:
+            await control.notify("terminal", run_id=str(run_id), status="failed")
     return len(ids)
 
 
@@ -343,6 +427,10 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             recorder.emit("answer_ui", answer_ui)
         recorder.emit("run_status", {"status": "completed"})
         recorder.emit("done", {"answer": answer, "tokens": totals})
+        # M54: a stream held on another replica is waiting for this
+        from app import control
+
+        await control.notify("terminal", run_id=str(run_id), status="completed")
         # post-run memory pipeline (spec §16.2) — fire-and-forget, off = no-op
         from app.memory.scheduler import on_run_completed
 
@@ -352,7 +440,12 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             (datetime.now(UTC) - started).total_seconds()
         )
     except asyncio.CancelledError:
-        await _finalize_failure(run_id, mode, "cancelled", _SHUTDOWN_REASON or "run cancelled")
+        await _finalize_failure(
+            run_id,
+            mode,
+            "cancelled",
+            _SHUTDOWN_REASON or _CANCEL_REASON.pop(run_id, None) or "run cancelled",
+        )
         raise
     except RunFailed as exc:
         await _finalize_failure(run_id, mode, "failed", str(exc))
@@ -476,6 +569,9 @@ async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) 
         recorder.emit("error", {"message": message})
     recorder.emit("run_status", {"status": status})
     obs.RUNS_TOTAL.labels(mode=mode, status=status).inc()
+    from app import control  # M54: streams held elsewhere resolve from the record
+
+    await control.notify("terminal", run_id=str(run_id), status=status)
 
 
 async def _set_status(run_id: UUID, status: str) -> None:
@@ -752,21 +848,58 @@ async def resume_run(
     start_run_task(run_id, resume=resume)
 
 
-async def cancel_run(run_id: UUID) -> None:
-    """Cooperative cancel (spec §7.1); cancel on paused_hitl resolves it."""
+async def cancel_local(run_id: UUID, *, reason: str = "run cancelled") -> bool:
+    """Cancel a run executing in THIS process; False when it is not here."""
     task = RUNNING_TASKS.get(run_id)
-    if task is not None:
-        task.cancel()
-        with contextlib.suppress(BaseException):
-            await asyncio.wait_for(task, timeout=10)
-        return
+    if task is None:
+        return False
+    _CANCEL_REASON[run_id] = reason
+    logger.info("run_cancel_local", run_id=str(run_id), reason=reason)
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(task, timeout=10)
+    return True
+
+
+async def cancel_run(run_id: UUID) -> str:
+    """Cooperative cancel (spec §7.1); cancel on paused_hitl resolves it.
+    M54 (spec §18.9): a run executing on ANOTHER replica is not cancelled
+    here — that would write a status this process cannot make true. The
+    intent is persisted (`cancel_requested_at`), announced on the control
+    channel, and the owner acts on it (NOTIFY first, heartbeat as the
+    fallback). Returns the run's real status: `cancelled`, or
+    `cancel_requested` when the owner has not yet acted."""
+    from app import control
+    from app.replica import replica_id
+
+    if await cancel_local(run_id):
+        return "cancelled"
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
             raise ValueError("run not found")
-        if run.status not in {"running", "paused_hitl"}:
+        if run.status not in {"running", "paused_hitl", "queued"}:
             raise ValueError(f"run is {run.status}; only running/paused runs can be cancelled")
-    await _finalize_failure(run_id, "graph", "cancelled", "cancelled while paused")
+        owner = run.owner_replica
+        if run.status == "paused_hitl" or owner is None or owner == replica_id():
+            # no task anywhere can be waiting on this row (paused runs are
+            # checkpoints; an unowned or self-owned row with no local task
+            # is a leftover) — the terminal status is ours to write
+            await session.close()
+            await _finalize_failure(run_id, "graph", "cancelled", "cancelled while paused")
+            return "cancelled"
+        if run.cancel_requested_at is None:
+            run.cancel_requested_at = datetime.now(UTC)
+            await session.commit()
+    await control.notify("cancel", run_id=str(run_id))
+    deadline = asyncio.get_event_loop().time() + CANCEL_WAIT_S
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.1)
+        async with get_session_factory()() as session:
+            status = await session.scalar(select(Run.status).where(Run.id == run_id))
+        if status in {"cancelled", "failed", "completed", "stalled"}:
+            return str(status)
+    return "cancel_requested"
 
 
 async def retry_run(run_id: UUID) -> Run:

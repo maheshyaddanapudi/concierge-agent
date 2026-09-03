@@ -94,10 +94,21 @@ services:
       EGRESS_POLICY: ${EGRESS_POLICY:-}
       EGRESS_ALLOW_HOSTS: ${EGRESS_ALLOW_HOSTS:-}
       EGRESS_MAX_BYTES: ${EGRESS_MAX_BYTES:-}
+      # M54: the declared fleet (spec §18.9) — the connection budget is
+      # checked against it at boot and published on GET /replicas; the
+      # replica id defaults to the container hostname
+      REPLICA_ID: ${REPLICA_ID:-}
+      DB_REPLICAS: ${DB_REPLICAS:-}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-}
+      DB_STATEMENT_CACHE_SIZE: ${DB_STATEMENT_CACHE_SIZE:-}
+      REGISTRY_CACHE_TTL_S: ${REGISTRY_CACHE_TTL_S:-}
     volumes:
       - workspace:/workspace
+    # M54: a host-port RANGE, so `docker compose up --scale backend=N` binds
+    # each replica to its own port (8000, 8001, …) — pin a replica with it,
+    # scrape it, curl its /replicas; the frontend balances across all of them
     ports:
-      - '${BACKEND_PORT:-8000}:8000'
+      - '${BACKEND_PORT_RANGE:-8000-8010}:8000'
     depends_on:
       db:
         condition: service_healthy

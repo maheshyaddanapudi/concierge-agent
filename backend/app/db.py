@@ -56,6 +56,52 @@ class TrackedSession(AsyncSession):
         await super().__aexit__(*exc)
 
 
+# M54 (spec §18.9, scale-B2): the connection budget, declared and checked.
+# Per replica: the pooled ceiling, the LangGraph checkpointer pool, and the
+# session-level connections that cannot go through a transaction-mode pooler
+# (two supervised LISTENs, the control listener, the ambient leader lease).
+CHECKPOINTER_POOL = 10
+SESSION_CONNECTIONS = 4
+# headroom for migrations, psql, the load harness and Postgres' own
+# superuser reserve — outside any replica's share
+RESERVED_CONNECTIONS = 10
+
+
+def engine_connect_args() -> dict[str, Any]:
+    """asyncpg's statement cache and SQLAlchemy's prepared-statement cache,
+    both sized by DB_STATEMENT_CACHE_SIZE (default 0): a transaction-mode
+    pooler hands the next statement to a different server connection, where
+    a cached prepared statement does not exist — the classic
+    DuplicatePreparedStatementError. 0 costs a re-prepare per statement and
+    survives any pooler; the session connections are direct by design."""
+    size = int(get_config().db_statement_cache_size)
+    return {"statement_cache_size": size, "prepared_statement_cache_size": size}
+
+
+def connection_budget() -> dict[str, Any]:
+    """The arithmetic, published (GET /replicas) and checked at boot."""
+    cfg = get_config()
+    per_replica = (
+        int(cfg.db_pool_size) + int(cfg.db_max_overflow) + CHECKPOINTER_POOL + SESSION_CONNECTIONS
+    )
+    replicas = max(int(cfg.db_replicas), 1)
+    needed = replicas * per_replica + RESERVED_CONNECTIONS
+    declared = int(cfg.db_max_connections)
+    return {
+        "per_replica": per_replica,
+        "pool": int(cfg.db_pool_size),
+        "overflow": int(cfg.db_max_overflow),
+        "checkpointer": CHECKPOINTER_POOL,
+        "sessions": SESSION_CONNECTIONS,
+        "replicas": replicas,
+        "reserved": RESERVED_CONNECTIONS,
+        "needed": needed,
+        "declared_max": declared,
+        "fits": needed <= declared,
+        "max_replicas_at_declared": max((declared - RESERVED_CONNECTIONS) // per_replica, 0),
+    }
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
@@ -66,6 +112,7 @@ def get_engine() -> AsyncEngine:
             pool_size=cfg.db_pool_size,
             max_overflow=cfg.db_max_overflow,
             pool_timeout=cfg.db_pool_timeout,
+            connect_args=engine_connect_args(),  # M54: pooler-safe by default
         )
         from app.obs import bind_pool_gauges
 

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import HALFVEC, Vector
 from sqlalchemy import (
     Computed,
     DateTime,
@@ -95,22 +95,85 @@ class Memory(Base):
     )
 
 
+# M54 (scale-B5): the supported embedding dimensions, one typed column each.
+# 64 is the fake provider; the rest are what the supported providers publish
+# (256/512/1024/1536/3072 for OpenAI-shaped models, 384/768 for the common
+# open embedders and Google's text-embedding). pgvector indexes `vector` up
+# to 2000 dims and `halfvec` up to 4000, so the widest column is halfvec.
+EMBEDDING_DIMS: tuple[int, ...] = (64, 256, 384, 512, 768, 1024, 1536, 3072)
+HALFVEC_ABOVE = 2000
+
+
+def _embedding_type(dims: int) -> Any:
+    return HALFVEC(dims) if dims > HALFVEC_ABOVE else Vector(dims)
+
+
+def _hnsw_index(dims: int) -> Index:
+    column = f"emb_{dims}"
+    ops = "halfvec_cosine_ops" if dims > HALFVEC_ABOVE else "vector_cosine_ops"
+    return Index(
+        f"memory_embeddings_{column}_hnsw",
+        column,
+        postgresql_using="hnsw",
+        postgresql_ops={column: ops},
+    )
+
+
 class MemoryEmbedding(Base):
-    """Untyped-vector side-table keyed by (memory row, model) — the
+    """The embedding side-table keyed by (row, table, model) — the
     provider-agnostic dimension strategy (spec §16.1): a model switch
-    re-embeds in the background and flips, old and new coexisting."""
+    re-embeds in the background and flips, old and new coexisting. M54: the
+    vector lives in ONE typed column per supported dimension, each with a
+    real HNSW cosine index, chosen from the key's dims — the untyped column
+    the first schema carried could not be indexed at all (scale-B5)."""
 
     __tablename__ = "memory_embeddings"
-    __table_args__ = (Index("memory_embeddings_model_idx", "model_key"),)
+    __table_args__ = (
+        Index("memory_embeddings_model_idx", "model_key"),
+        *[_hnsw_index(d) for d in EMBEDDING_DIMS],
+    )
 
     # references memories.id OR run_digests.id — the `table_ref` column says which
     ref_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     table_ref: Mapped[str] = mapped_column(String(24), primary_key=True)  # 'memories'|'run_digests'
     model_key: Mapped[str] = mapped_column(String(255), primary_key=True)  # provider:model@dims
-    embedding: Mapped[Any] = mapped_column(Vector(None))
+    emb_64: Mapped[Any | None] = mapped_column(_embedding_type(64), nullable=True, default=None)
+    emb_256: Mapped[Any | None] = mapped_column(_embedding_type(256), nullable=True, default=None)
+    emb_384: Mapped[Any | None] = mapped_column(_embedding_type(384), nullable=True, default=None)
+    emb_512: Mapped[Any | None] = mapped_column(_embedding_type(512), nullable=True, default=None)
+    emb_768: Mapped[Any | None] = mapped_column(_embedding_type(768), nullable=True, default=None)
+    emb_1024: Mapped[Any | None] = mapped_column(_embedding_type(1024), nullable=True, default=None)
+    emb_1536: Mapped[Any | None] = mapped_column(_embedding_type(1536), nullable=True, default=None)
+    emb_3072: Mapped[Any | None] = mapped_column(_embedding_type(3072), nullable=True, default=None)
     embedded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    @property
+    def embedding(self) -> list[float] | None:
+        """Whichever typed column holds this row's vector."""
+        for dims in EMBEDDING_DIMS:
+            value = getattr(self, f"emb_{dims}")
+            if value is not None:
+                return [float(x) for x in value]
+        return None
+
+    def set_embedding(self, vector: list[float]) -> None:
+        dims = len(vector)
+        if dims not in EMBEDDING_DIMS:
+            raise ValueError(f"no embedding column for {dims} dimensions")
+        for other in EMBEDDING_DIMS:
+            if other != dims:
+                setattr(self, f"emb_{other}", None)
+        setattr(self, f"emb_{dims}", list(vector))
+
+    @classmethod
+    def build(
+        cls, *, ref_id: uuid.UUID, table_ref: str, model_key: str, embedding: list[float]
+    ) -> "MemoryEmbedding":
+        row = cls(ref_id=ref_id, table_ref=table_ref, model_key=model_key)
+        row.set_embedding(embedding)
+        return row
 
 
 class MemoryTombstone(Base):

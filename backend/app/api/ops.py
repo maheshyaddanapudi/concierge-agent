@@ -1,4 +1,5 @@
-"""Operator surfaces (M53): retention preview / run-now, and the day's spend."""
+"""Operator surfaces (M53): retention preview / run-now, the day's spend;
+(M54) the fleet — every replica's heartbeat and the connection budget."""
 
 from typing import Any
 
@@ -49,3 +50,38 @@ async def spend(session: SessionDep) -> dict[str, Any]:
 
     settings = await get_settings(session)
     return await spend_today(settings, fresh=True)
+
+
+@router.get("/replicas")
+async def replicas_status() -> dict[str, Any]:
+    """M54 (spec §18.9): the fleet as the database sees it — every replica's
+    heartbeat, subscriber count and runs in flight, which are live, this
+    process's id, and the connection-budget arithmetic against the declared
+    Postgres."""
+    from datetime import UTC, datetime
+
+    from app import control
+    from app.db import connection_budget
+    from app.replica import REPLICA_DEAD_AFTER_S, all_replicas, replica_id
+
+    now = datetime.now(UTC)
+    rows = await all_replicas()
+    return {
+        "self": replica_id(),
+        "control_listener": control.listener_connected(),
+        "dead_after_s": REPLICA_DEAD_AFTER_S,
+        "replicas": [
+            {
+                "replica_id": r.replica_id,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
+                "subscribers": int(r.subscribers),
+                "runs_in_flight": int(r.runs_in_flight),
+                "live": bool(
+                    r.heartbeat_at and (now - r.heartbeat_at).total_seconds() < REPLICA_DEAD_AFTER_S
+                ),
+            }
+            for r in rows
+        ],
+        "budget": connection_budget(),
+    }

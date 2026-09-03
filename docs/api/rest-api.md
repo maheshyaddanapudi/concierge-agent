@@ -129,8 +129,8 @@ See [skill-format.md](skill-format.md) for the `.skill.md` document shape these 
 | Method + path | Purpose | Errors |
 |---|---|---|
 | `GET /runs` | All runs, newest-first. Each: `{id, conversation_id, chat_message, status, orchestrator_mode, plan, snapshot, final_answer, answer_ui, error, started_at, finished_at, total_input_tokens, total_output_tokens}`. | — |
-| `GET /runs/{run_id}` | Run detail including ordered `steps`: `[{id, parent_step_id, sub_agent_id, node_id, step_type, input, output, model, input_tokens, output_tokens, status, started_at, finished_at, error}]`. | 404 |
-| `POST /runs/{run_id}/cancel` | Cooperative cancel; cancelling a `paused_hitl` run resolves it as `cancelled`. Returns `{status: "cancelled"}`. | 409 unless the run is `running` or `paused_hitl` |
+| `GET /runs/{run_id}` | Run detail — M54 adds `owner_replica` (the replica executing it) and `cancel_requested_at` — including ordered `steps`: `[{id, parent_step_id, sub_agent_id, node_id, step_type, input, output, model, input_tokens, output_tokens, status, started_at, finished_at, error}]`. | 404 |
+| `POST /runs/{run_id}/cancel` | Cooperative cancel; cancelling a `paused_hitl` run resolves it as `cancelled`. Returns the run's **real** status: `200 {status: "cancelled"}` when this replica executed the run (or nothing anywhere could be executing it). M54 (spec §18.9): when the run is executing on another replica the cancel is a persisted intent — `runs.cancel_requested_at` plus a control-channel announcement the owner acts on at once (its heartbeat is the fallback) — and the response is `200 {status: "cancelled"}` if the owner acted within ~3 s, else **`202 {status: "cancel_requested"}`**; poll `GET /runs/{run_id}`. A cancel never writes a terminal status the answering replica cannot make true. | 409 unless the run is `running`, `queued` or `paused_hitl` |
 | `POST /runs/{run_id}/retry` | Re-plan a **failed** run from its original message (201): `{run_id, conversation_id}` for the new run. | 409 `"only failed runs can be retried"` |
 | `DELETE /runs/{run_id}` | Hard-delete one run and its steps; also drops its SSE history. | 404; 409 if `running` (`"cancel the run before deleting it"`) |
 | `DELETE /runs` | Purge all run history (runs + steps + SSE event buffers). 204. | — |
@@ -141,7 +141,7 @@ Run `status` values: `running`, `paused_hitl`, `completed`, `failed`, `cancelled
 
 | Method + path | Purpose | Errors |
 |---|---|---|
-| `GET /cache/status` | Registry cache status: `{mode: "bypass"\|"memory"\|"redis", registries: {tools\|skills\|sub_agents\|settings: {records, generation, loaded_at, cached}}}`. In `bypass` mode `records`/`loaded_at` are `null` and `cached` is `false`. | — |
+| `GET /cache/status` | Registry cache status: `{mode: "bypass"\|"memory"\|"redis", registries: {tools\|skills\|sub_agents\|settings: {records, generation, loaded_at, cached}}}`. In `bypass` mode `records`/`loaded_at` are `null` and `cached` is `false`. | — M54: each registry entry also reports `dirty` — a generation bumped by an invalidation whose data has not been reloaded yet is visible rather than hidden behind a healthy-looking counter. |
 | `POST /cache/refresh/{registry}` | Operator-forced eager reload of one registry (`tools`, `skills`, `sub_agents`, `settings`) or `all`. | 422 `unknown registry '<x>'; one of [...]/all` |
 
 ## Seed router — `backend/app/api/seed.py`
@@ -165,3 +165,10 @@ Demo/testing only. Every endpoint returns **404** unless the `FAKE_LLM_ENABLED` 
 |---|---|
 | `GET /health` | Liveness: `{"status": "ok"}`. |
 | `GET /metrics` | Prometheus metrics (runs/steps/tokens/errors counters and histograms, `backend/app/obs.py`), `text/plain; version=0.0.4`. |
+
+
+### Fleet (M54)
+
+| Endpoint | Description | Errors |
+|---|---|---|
+| `GET /replicas` | M54 (spec §18.9): the fleet as the database sees it — `{self, control_listener, dead_after_s, replicas: [{replica_id, started_at, heartbeat_at, subscribers, runs_in_flight, live}], budget}`. `budget` is the connection-budget arithmetic (`per_replica`, `pool`, `overflow`, `checkpointer`, `sessions`, `replicas`, `reserved`, `needed`, `declared_max`, `fits`, `max_replicas_at_declared`). A replica whose heartbeat is older than `dead_after_s` (45 s) is not `live`; its runs are failed by the survivors with `owner replica gone`. | — |

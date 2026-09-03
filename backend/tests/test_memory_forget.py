@@ -31,6 +31,11 @@ pytestmark = pytest.mark.anyio
 API = "/api/v1"
 
 
+def _pad64(vector: list[float]) -> list[float]:
+    """M54: the side-table stores typed 64-dim vectors for the fake key."""
+    return list(vector) + [0.0] * (64 - len(vector))
+
+
 async def _set(**kv: Any) -> None:
     async with get_session_factory()() as session:
         await update_settings(session, kv)
@@ -174,7 +179,10 @@ class TestSuppression:
         }
 
         async def fake_embeddings(_model: str, texts: list[str]) -> list[list[float]]:
-            return [vecs[t] for t in texts] if texts[0] in vecs else [[0.5, 0.5, 0.5]]
+            # M54: vectors live in typed per-dimension columns, so the fake
+            # is padded to the fake provider's 64 dims (zeros keep the cosine)
+            raw = [vecs[t] for t in texts] if texts[0] in vecs else [[0.5, 0.5, 0.5]]
+            return [_pad64(v) for v in raw]
 
         monkeypatch.setattr("app.llm.get_embeddings", fake_embeddings)
         await _set(embedding_model="fake:scripted")
@@ -302,7 +310,7 @@ class TestHybridGate:
         self, client: Any, text: str, vecs: dict[str, list[float]], monkeypatch: Any
     ) -> None:
         async def fake_embeddings(_m: str, texts: list[str]) -> list[list[float]]:
-            return [vecs.get(t, [0.5, 0.5, 0.5]) for t in texts]
+            return [_pad64(vecs.get(t, [0.5, 0.5, 0.5])) for t in texts]
 
         monkeypatch.setattr("app.llm.get_embeddings", fake_embeddings)
         await _set(embedding_model="fake:scripted")

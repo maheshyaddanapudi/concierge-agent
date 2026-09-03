@@ -45,6 +45,15 @@ class AppConfig(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
     db_pool_timeout: int = 30
+    # M54 (spec §18.9): the declared fleet the connection budget is checked
+    # against at boot and on GET /replicas; the pooled connections keep no
+    # prepared-statement cache so they survive a transaction-mode pooler
+    db_replicas: int = 1
+    db_max_connections: int = 100
+    db_statement_cache_size: int = 0
+    replica_id: str | None = None
+    # M54 (§7.3): the ceiling on any cache-coherency gap — every blob expires
+    registry_cache_ttl_s: int = 300
     # M51: every provider call carries a timeout and a bounded retry budget,
     # set ONCE at the port (spec §2.1 — the port is unbreached, so this is
     # the one place a hang or a retry storm can be bounded)

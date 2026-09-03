@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app import ratelimit
 from app.db import get_session_factory
 from app.models import AuthSession, User
 
@@ -210,7 +211,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             per_s = float(await get_cache().setting("rate_limit_per_s"))
         except Exception:  # noqa: BLE001 — a settings hiccup falls back to the defaults
             burst, per_s = float(RATE_LIMIT_BURST), RATE_LIMIT_REFILL_PER_S
-        if _rate_limited(user["id"], burst, per_s):
+        # M54 (scale-H3): the bucket is `rate_buckets` — one budget across
+        # every replica; a database hiccup falls back to the local bucket
+        # (fail open on availability, never closed)
+        try:
+            allowed = await ratelimit.allow(f"user:{user['id']}", burst, per_s)
+        except Exception as exc:  # noqa: BLE001 — availability over a limit the pool already bounds
+            logger.warning("rate_limit_store_unavailable", error=str(exc)[:200])
+            allowed = not _rate_limited(user["id"], burst, per_s)
+        if not allowed:
             return _harden(JSONResponse({"detail": "rate limit exceeded"}, status_code=429))
         if (
             request.method in {"POST", "PATCH", "PUT", "DELETE"}

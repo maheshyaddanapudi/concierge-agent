@@ -122,13 +122,19 @@ async def _store_embedding(
     if embedded is None:
         return
     key, vec = embedded
+    from app.memory.dims import vector_column
+
+    if vector_column(key) is None:
+        # M54: no typed column for this dimension — lexical-only, said aloud
+        logger.warning("memory_embedding_dims_unsupported", model_key=key, dims=len(vec))
+        return
     existing = await session.get(MemoryEmbedding, (ref_id, table_ref, key))
     if existing is None:
         session.add(
-            MemoryEmbedding(ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec)
+            MemoryEmbedding.build(ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec)
         )
     else:
-        existing.embedding = vec
+        existing.set_embedding(vec)
 
 
 async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) -> None:
@@ -686,7 +692,8 @@ async def _near_duplicate(
             return None
         async with get_session_factory()() as session:
             row = await session.get(MemoryEmbedding, (top.memory.id, "memories", key))
-        if row is not None and cosine(qvec, list(row.embedding)) >= GATE_DUP_COSINE:
+        stored = row.embedding if row is not None else None
+        if stored is not None and cosine(qvec, stored) >= GATE_DUP_COSINE:
             return top.memory.id
     except Exception as exc:  # noqa: BLE001 — the gate stays deterministic-safe
         logger.warning("memory_dup_check_failed", error=str(exc))

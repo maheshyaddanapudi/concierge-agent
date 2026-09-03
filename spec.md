@@ -484,6 +484,7 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M54 | Horizontal scale (PLAN M54 — where the system stops being one process that happens to run behind a load balancer): **a shared control plane** — every process has a `replica_id` and a heartbeat row in `replicas`; `runs.owner_replica` is stamped at creation; cancellation is a persisted intent (`cancel_requested_at`) announced on one LISTEN/NOTIFY control channel that the owner observes at once (its heartbeat is the fallback), so a Stop pressed on any replica stops the run on the one executing it and never writes a status it did not cause; a stream held on a replica that does not own the run resolves from the record when the owner announces the terminal transition; boot reaping is scoped to the booting replica and runs owned by a dead replica are failed truthfully; the consolidation and retention clocks move to `job_clock` so an interval is a cluster property and a restart re-runs nothing; migrations and seeding take a boot lock. **Delivery fan-out**: the leader publishes each in-app delivery on the control channel and every replica re-fans it to its own subscribers, and the pursuit oracle becomes the cluster audience. **The connection budget** is declared (`DB_REPLICAS`, `DB_MAX_CONNECTIONS`), checked at boot, served by `GET /replicas`, and the pooled connections survive a transaction-mode pooler (`DB_STATEMENT_CACHE_SIZE=0`). **A distributed rate limiter** in `rate_buckets` with hourly eviction. **Cache coherency**: generation-guarded reloads, TTLs on every blob, `dirty` on the status. **MCP** ingest idempotent under concurrent boot (`ON CONFLICT` + a per-server lock) and per-replica reconciliation of the subprocess set. **Indexable memory**: typed per-dimension embedding columns, each with a real HNSW index (§16.1). Compose scales with a host-port range, nginx resolves replicas per request, Prometheus discovers each replica as its own target; `docs/operations/scaling.md` rewritten from the evidence | §14q-91..96; three replicas: a run created on A is cancelled from B and actually stops; a delivery reaches subscribers on every replica (two browsers on different replicas); consolidation once per interval cluster-wide; load at N=3 within the declared connection budget; recall latency flat from 10k to 1M embeddings; a concurrent cold boot seeds and ingests once |
 | M53 | Deploy and operate (PLAN M53 — the wave where the system becomes something an operator can deploy, watch and trim): **the SSE wire format survives a reconnect** — every run event carries a monotonic `id:` (a per-run sequence), `Last-Event-ID` (or `?after=`) resumes from it, the heartbeat is a `ping` event every 15 s (inside the tightest balancer default), a run whose events are gone from the process (a deploy, an eviction) resolves for a reconnecting client from its row (`run_status` + `done` with the recorded answer, continuing the client's sequence), and the client folds each sequence at most once — so a deploy never duplicates answer text; **a readiness-first deploy lifecycle**: `SIGUSR1` (the pre-stop hook, `deploy.sh`) flips `GET /ready` to 503 while the port is still open, refuses new runs, and politely closes the streams the process cannot serve (`event: reconnect` + `retry:`) while runs executing here stream on to their end; uvicorn's connection grace is bounded (`--timeout-graceful-shutdown 5`) under a 40 s `stop_grace_period` so the M51 drain always gets its window; the ambient loop is **awaited** on shutdown so the leader lease is released at once; `/ready` also reports the database (`degraded` 503 when it does not answer in 2 s) while `/health` stays pure liveness; compose carries a backend healthcheck, `restart: unless-stopped`, resource limits, and a frontend that waits for a healthy backend; nginx documents the HTTP/2 edge; **retention** for the six unbounded tables, each purge behind its own §3.7.1 gate enforced in-function with its own window, advisory-locked, hourly, previewable and runnable from Settings; **observability that diagnoses**: the §10 labels (`model`, `effort`) on the step metrics, `concierge_llm_calls_total` / `concierge_llm_latency_seconds{provider,model,status}` from one LangChain callback every model leaves `get_model()` with, pool saturation, in-flight and queued runs (the autoscaling signal), backlog depth, loop errors, MCP and listener state, SSE subscribers, spend; **MCP reconnection** with backoff and a circuit breaker behind its own gate, **supervised LISTEN** connections (both channels reconnect with backoff, reload what they missed, and export `concierge_listener_connected`), and **re-ingest that keeps operator intent** (`tools.ingest_state`: only a tool the server dropped is deactivated, only that tool is reactivated on return; a deleted tool stays deleted, with an explicit restore); **a cost model**: per-run cost from the captured usage (each step at its model, the remainder at the presentation model, unknown models reported as unpriced), a provider-reported price feed (OpenRouter) and operator overrides, and **one spend ceiling** across every run kind behind its own gate (429 for chat, held on the event for ambient, batch stop for evals); a **backup/restore drill** with the measured RTO, one runbook per failure class, and an accessibility pass on every control the Settings and Ambient pages added since M40 | §14p-83..90; a rolling deploy with open streams and in-flight runs: zero lost runs, zero duplicated answer text, streams resume; a restore from backup serves the same answers with the RTO in the doc; screenshots of the saturation and LLM dashboards, a stream surviving a deploy, every retention gate in Settings |
 | M52 | Untrusted input and secrets (PLAN M52 — the wave whose failure mode is an attacker steering an autonomous agent that holds tools): **one fence choke point** (`app/untrusted.py`) renders every untrusted-bearing prompt — remote-agent output, fired-event payloads, delivery bodies, candidate answers, member memories, watch requests, the remembered-context block — neutralizing any fence-shaped tag inside the payload and stamping a per-render `token` on the opening AND closing tags, so a payload can neither close the fence early nor forge one; **one egress policy** (`app/egress.py`, `EGRESS_POLICY` public\|allowlist\|open, §13) judges every outbound URL the platform fetches on someone else's say-so — A2A cards and calls, poll sources, HTTP MCP servers, the webhook channel — by literal address and by what the name resolves to, re-checks every redirect hop (≤ 5) in the client's request hook, streams bodies under `EGRESS_MAX_BYTES`, and fails with ONE shape (`egress refused: <kind>`) whatever the cause; feeds are parsed by `defusedxml` **off the event loop** with one refusal message; MCP `env`/`headers` are **write-only** (masked on every read, `***` keeps on write, null removes, `env:VAR` resolves at connect time — the §19.3 credentials pattern, §3.1); **one exception-text sanitizer** (`app/sanitize.py`) redacts known secret values and credential shapes before any error is persisted (run, step, MCP/agent `last_error`, task, routine reason, delivery ledger) or returned, and as a structlog processor on every log line; authored regex filters pass a **static guard** (length, nested repetition, backreferences) at the API and again before every match, which runs in a worker thread under a timeout | §14o-77..82; one adversarial test per untrusted source, each blocked and asserted; no response body or persisted row carries credential material |
 | M51 | Bounded work (PLAN M51 — every unit of work gets a ceiling and a truthful end state): **limits at the provider port** — `LLM_TIMEOUT_S` / `LLM_MAX_RETRIES` applied to every adapter in one place (§13), provider failures **classified** (rate-limited / timeout / unknown-or-retired model / provider error) into a run error that names the model and the setting that resolved it, `ModelInfo.deprecated` refused at validation; **every run has a wall clock** (`run_wall_clock_s`, §3.7) and a heartbeat, the stalled-run reaper covers all runs; **admission control** — `run_max_concurrent` semaphore, `run_queue_max` queue with a visible `queued` status, chat shed with 503 + `Retry-After`, `GET /ready` as the readiness gate; **shutdown drains** (`SHUTDOWN_GRACE_S`) and **restart reaps** (`running`/`queued` → `failed` "orphaned by a restart", steps `cancelled`); the run event bus is bounded and TTL-evicting; **no session spans a provider call** — the ambient drain claims → commits → processes → writes back (abandoned claims reclaimed after 10 min), memory writes, digests, exemplars and compaction embed between sessions, enforced by a per-task session tracker the fake provider checks in strict mode; **delivery dispatches then commits**, external sends carry an attempt counter, backoff and a dead-letter state with a per-tick retry stage; the registry cache **fails open** to Postgres (`concierge_cache_degraded_total`); token totals increment atomically; the contradiction sweep keeps the **newest** fact | §14n-70..76; fault injection (hang → wall clock, 429 → classified, Redis killed → Postgres, restart → zero non-terminal); byte-identical at defaults |
@@ -503,7 +504,7 @@ Each milestone lands with its tests. M1–M4 are API-verifiable via curl before 
 
 ## 13. Environment & Conventions
 
-Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40), plus the M50 connection budget: `DB_POOL_SIZE` (default 5), `DB_MAX_OVERFLOW` (default 10), `DB_POOL_TIMEOUT` (default 30 s) — the pooled ceiling per replica is `DB_POOL_SIZE + DB_MAX_OVERFLOW`; the LangGraph checkpointer pool (10), the LISTEN connection and the ambient leader lease sit outside it, so size Postgres `max_connections` from `replicas × (pool + overflow + 12)` with headroom (`docs/operations/scaling.md`), plus the M51 bounds: `LLM_TIMEOUT_S` (default 120 — the per-call timeout every adapter carries, set once at the provider port), `LLM_MAX_RETRIES` (default 2 — the retry budget the provider SDK may spend on transient failures, 429 backoff included; a run's failure names the classified cause, the model, and the setting that resolved it), `SHUTDOWN_GRACE_S` (default 25 — how long a stopping process drains in-flight runs after readiness goes false before the remainder is cancelled with the shutdown named in each run's error; keep it under the orchestrator's stop timeout — compose sets `stop_grace_period: 30s`), plus the M52 egress policy: `EGRESS_POLICY` (default `public` — refuses loopback, link-local, private, reserved, multicast and unspecified targets by literal address and by resolution, except hosts the operator names in `EGRESS_ALLOW_HOSTS`, which are admitted whatever they resolve to — the way to name an internal MCP server or agent; `allowlist` admits only `EGRESS_ALLOW_HOSTS`; `open` keeps only the caps), `EGRESS_ALLOW_HOSTS` (comma-separated hosts or `.suffixes`), `EGRESS_MAX_BYTES` (default 5 MiB — the streamed body cap on every fetch). Only http(s) ever passes, and the policy applies to A2A cards and calls, poll sources, HTTP MCP servers and the webhook channel alike. M53 adds no variable; it adds the **signals and scripts** of the deploy lifecycle: `SIGUSR1` to the backend process begins a readiness-first drain (`/ready` 503 while the port stays open, new runs refused, streams the process cannot serve closed with a reconnect hint), `SIGTERM` then runs uvicorn's bounded connection grace and the M51 drain — `deploy.sh` sequences them on one host, `backup.sh` / `restore.sh` are the drill in `docs/operations/backup-restore.md`, and the compose file carries the backend healthcheck (liveness, `/health`), `restart: unless-stopped`, resource limits and a 40 s `stop_grace_period`. `/ready` is the readiness probe and also reports the database.
+Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40), plus the M50 connection budget: `DB_POOL_SIZE` (default 5), `DB_MAX_OVERFLOW` (default 10), `DB_POOL_TIMEOUT` (default 30 s) — the pooled ceiling per replica is `DB_POOL_SIZE + DB_MAX_OVERFLOW`; the LangGraph checkpointer pool (10), the LISTEN connection and the ambient leader lease sit outside it, so size Postgres `max_connections` from `replicas × (pool + overflow + 12)` with headroom (`docs/operations/scaling.md`), plus the M51 bounds: `LLM_TIMEOUT_S` (default 120 — the per-call timeout every adapter carries, set once at the provider port), `LLM_MAX_RETRIES` (default 2 — the retry budget the provider SDK may spend on transient failures, 429 backoff included; a run's failure names the classified cause, the model, and the setting that resolved it), `SHUTDOWN_GRACE_S` (default 25 — how long a stopping process drains in-flight runs after readiness goes false before the remainder is cancelled with the shutdown named in each run's error; keep it under the orchestrator's stop timeout — compose sets `stop_grace_period: 30s`), plus the M52 egress policy: `EGRESS_POLICY` (default `public` — refuses loopback, link-local, private, reserved, multicast and unspecified targets by literal address and by resolution, except hosts the operator names in `EGRESS_ALLOW_HOSTS`, which are admitted whatever they resolve to — the way to name an internal MCP server or agent; `allowlist` admits only `EGRESS_ALLOW_HOSTS`; `open` keeps only the caps), `EGRESS_ALLOW_HOSTS` (comma-separated hosts or `.suffixes`), `EGRESS_MAX_BYTES` (default 5 MiB — the streamed body cap on every fetch). Only http(s) ever passes, and the policy applies to A2A cards and calls, poll sources, HTTP MCP servers and the webhook channel alike. M53 adds no variable; it adds the **signals and scripts** of the deploy lifecycle: `SIGUSR1` to the backend process begins a readiness-first drain (`/ready` 503 while the port stays open, new runs refused, streams the process cannot serve closed with a reconnect hint), `SIGTERM` then runs uvicorn's bounded connection grace and the M51 drain — `deploy.sh` sequences them on one host, `backup.sh` / `restore.sh` are the drill in `docs/operations/backup-restore.md`, and the compose file carries the backend healthcheck (liveness, `/health`), `restart: unless-stopped`, resource limits and a 40 s `stop_grace_period`. `/ready` is the readiness probe and also reports the database. M54 (horizontal scale, §18.9): `REPLICA_ID` (this process's identity in `replicas` and on `runs.owner_replica`; defaults to the container hostname), `DB_REPLICAS` (default 1) and `DB_MAX_CONNECTIONS` (default 100) — the declared fleet the connection-budget arithmetic is checked against at boot and on `GET /replicas`, `DB_STATEMENT_CACHE_SIZE` (default 0 — asyncpg's prepared-statement cache on the pooled connections; 0 survives a transaction-mode pooler), `REGISTRY_CACHE_TTL_S` (default 300 — the ceiling on any cache-coherency gap, §7.3), and `BACKEND_PORT_RANGE` (default `8000-8010` — the host ports `--scale backend=N` binds).
 
 Conventions: Python — ruff (lint+format; rule sets `E F I UP B SIM ASYNC BLE S` since M49 — blind excepts and bandit checks are on, every surviving `noqa: BLE001` carries a one-line justification, and `app/` has no runtime `assert`), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
@@ -942,6 +943,43 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     restore shows the same answers as before. The elapsed time is recorded
     in `docs/operations/backup-restore.md`.
 
+#### 14q. Horizontal scale (M54)
+
+91. (M54) **A run created on one replica is stopped from another**: three
+    replicas behind one balancer, a chat run on the live model created on
+    replica A (`owner_replica` says so). `POST /runs/{id}/cancel` served by
+    replica B records the intent; the owner cancels within a heartbeat; the
+    row reads `cancelled` naming the user's stop, the provider is not called
+    again, and the run never resurrects as `completed`. A stream for that
+    run held open on replica C resolves from the record when the owner
+    announces the transition.
+92. (M54) **A delivery reaches subscribers on every replica**: with a
+    subscriber on each replica (three streams pinned to three host ports,
+    and two browsers routed through the balancer to different replicas), a
+    flush on the leader produces the same `delivery` on every stream and a
+    toast in both browsers; the log's `watchers` equals the cluster
+    audience, and pursuit holds the external channel because the toast
+    reached someone — on a replica that is not the leader.
+93. (M54) **Consolidation runs once per interval cluster-wide**: with memory
+    on and three replicas, each job appears once per interval across the
+    three logs together, `job_clock.last_run_at` advances once, restarting a
+    replica re-runs nothing (compaction included), and retention keeps the
+    same clock.
+94. (M54) **N=3 scales within the declared budget**: the M49 load scenarios
+    at N=3 against N=1 — concurrent chat throughput and read-path latency —
+    with `pg_stat_activity` never above the per-replica need × replicas that
+    `GET /replicas` publishes, and the rate limiter (auth on) granting one
+    budget across replicas rather than N.
+95. (M54) **Recall latency is flat across three orders of magnitude**:
+    memory recall p50/p95 at 10k, 100k and 1M embeddings of the active
+    dimension on its typed HNSW column, `EXPLAIN` showing the index scan.
+96. (M54) **Three replicas cold-boot together**: migrations and seeds apply
+    once, every seeded MCP server's tools exist exactly once, every replica
+    reports every server connected; a server registered through one replica
+    is connected by the others within a health interval; a registry write on
+    one replica invalidates the others (`generation` and `dirty` visible on
+    each `GET /cache/status`).
+
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
 Originally deferred; the design below is now implemented as milestone M32,
@@ -993,7 +1031,7 @@ Design rationale, evidence, and alternatives: `docs/research/memory/` (research 
 
 ### 16.1 Storage
 
-Tables (Alembic, one migration): `memories`, `memory_embeddings` (side-table: `memory_id`, `model_key` ('provider:model@dims'), untyped `vector`, one partial expression HNSW index per active model — provider-agnostic dims, zero-downtime model switch), `memory_entities`, `memory_entity_links`, `run_digests`, `conversation_rollups`, `plan_exemplars`, `routing_stats`.
+Tables (Alembic, one migration): `memories`, `memory_embeddings` (side-table keyed by `ref_id` + `table_ref` + `model_key` ('provider:model@dims'); **M54:** the vector lives in one **typed column per supported dimension** — `emb_64`, `emb_256`, `emb_384`, `emb_512`, `emb_768`, `emb_1024`, `emb_1536`, `emb_3072` — each with its own real HNSW cosine index, the column chosen from the key's dims, so several dimensions coexist and each is indexable; a model whose dimension has no column degrades that row to lexical-only with a warning, and adding a dimension is one migration; the untyped column the first schema carried could not be indexed at all — provider-agnostic dims, zero-downtime model switch), `memory_entities`, `memory_entity_links`, `run_digests`, `conversation_rollups`, `plan_exemplars`, `routing_stats`.
 
 `memories`: scope ('global'|'conversation') + `conversation_id`, kind ('fact'|'preference'|'entity'|'relation'|'instruction'), `text`, `payload jsonb` (relation s/p/o, preference k/v), `entity_key`, `importance` (1–10, write-time), `confidence` (0–1), source ('extracted'|'user_stated'|'user_edited'|'hitl_note'|'inferred'), status ('active'|'quarantined'|'superseded'|'expired'|'rejected'), bi-temporal columns (`valid_from`/`valid_to` event time; `recorded_at`/`superseded_at` ingestion time), `supersedes`/`superseded_by` chain, provenance (`run_id`/`step_id`, mandatory on machine writes), `last_accessed_at`/`access_count`, `pinned` (always injected + decay-immune), `half_life_days` (NULL = setting default), generated `fts` tsvector. Invariants: pipelines never hard-delete (supersede/expire only; hard delete is a user/purge action); `status='active'` rows form the current view (partial indexes); supersession is append-only (insert replacement + close old row in one transaction, `WHERE superseded_at IS NULL` guard); memory rows are not registry rows (§4 unchanged).
 
@@ -1495,10 +1533,16 @@ anyone. The oracle is **the SSE subscriber set itself, sampled at
 dispatch**: `_publish` fans out to exactly the subscribers registered in
 this process, so "the broadcast reached zero subscribers" is not an
 estimate of presence — it is the literal audience of the toast just sent.
-This keeps the rule correct with no second source of truth, and it stays
-correct under §18.9 multi-replica: the hub is per-process, so a tick on
-replica A can only ever toast A's subscribers, and A's count is exactly
-what A delivered to. The `ambient_idle_minutes` presence timer (§17.5) is
+This keeps the rule correct with no second source of truth. Under §18.9
+multi-replica it was correct only per process — a tick on replica A could
+only ever toast A's subscribers — which at N>1 meant the toast reached
+1/N of the audience and pursuit escalated against users sitting in front
+of an open tab (scale-B1). **M54:** the flush publishes every in-app
+delivery on the control channel and every replica re-fans it to its own
+subscribers, so the toast reaches the whole audience; the oracle is the
+**cluster audience** — this replica's subscribers plus the fresh
+subscriber counts every other live replica reports in `replicas` — still
+the literal audience of the toast just sent, now summed across the fleet. The `ambient_idle_minutes` presence timer (§17.5) is
 deliberately **not** the oracle — it answers "has the user been clicking",
 not "did the toast land", and would escalate against an open, actively
 watched tab that simply had not been clicked inside the idle window.
@@ -1599,6 +1643,88 @@ another replica takes over within one tick. Registry-cache invalidation
 already rides LISTEN/NOTIFY (M8b). Compose stays three services — scale is
 `docker compose up --scale backend=N` behind any port mapping the operator
 chooses; correctness is proven in-process with two concurrent loops.
+
+**M54 — the run plane, the delivery plane and the clocks become cluster
+properties.** M35 made the ambient *tick* replica-safe; nothing had made
+the run plane, the delivery fan-out or the periodic clocks so, and the
+documented `--scale backend=N` path silently corrupted all three
+(`docs/research/prod_hardening/` arch-C3, scale-B1, scale-B2). Since M54:
+
+- **Replica identity and liveness.** Every process has a `replica_id`
+  (`REPLICA_ID` env, else the container hostname) and upserts its row in
+  `replicas` (`heartbeat_at`, `subscribers`, `runs_in_flight`,
+  `started_at`) every 10 s; a replica whose heartbeat is older than 45 s
+  is dead. `GET /replicas` lists the fleet with the connection-budget
+  arithmetic below.
+- **Run ownership.** `runs.owner_replica` is stamped at creation (the
+  creating process runs the task). Cancellation is a **persisted intent**:
+  `POST /runs/{id}/cancel` on a replica that does not own the run sets
+  `cancel_requested_at`, announces it on the control channel
+  (`concierge_control`, LISTEN/NOTIFY — no broker, §2 intact), and waits
+  briefly for the owner to act; the owner observes the intent from the
+  NOTIFY at once and from its 30 s heartbeat as the fallback. The response
+  reports the row's real status — `cancelled`, or `cancel_requested` when
+  the owner has not yet acted — and a cancel never writes a terminal
+  status it did not cause. Boot-time reaping is scoped to the booting
+  replica's own rows (and rows with no owner); runs whose owner is dead
+  are failed on any replica with `owner replica gone`; the heartbeat
+  reaper is unchanged.
+- **Streams for a run owned elsewhere** resolve: the owner announces every
+  terminal transition on the control channel; a replica holding a stream
+  for a foreign run wakes on it (and re-reads the row at each heartbeat as
+  the fallback) and serves the recorded terminal events (the §14p-83
+  record path). Intermediate events are not fanned across replicas — a
+  token stream is best served by its owner, so session affinity stays
+  *recommended* for chat and is never *required* for correctness.
+- **Delivery fan-out.** The leader's flush publishes each in-app delivery
+  on the control channel, origin-tagged; every replica re-fans it to its
+  own SSE subscribers and ignores its own origin. The pursuit oracle
+  (§18.4) becomes the **cluster audience**: this replica's subscribers plus
+  the fresh `subscribers` count of every other live replica.
+- **Persisted job clock.** The consolidation jobs and the retention job
+  keep `last_run_at` in `job_clock` (one row per job) instead of a
+  per-process monotonic dict, so an interval is a cluster property: a job
+  runs once per interval whichever replica leads it, and a restart no
+  longer re-runs every job — the irreversible compaction included — at
+  boot. Advisory locks still guard concurrency; the clock guards
+  scheduling.
+- **Boot lock.** Migrations and seeding run under a session advisory lock
+  (classid 427019), so N replicas booting together apply the schema once
+  and seed once.
+- **Connection budget.** Per replica: `DB_POOL_SIZE` + `DB_MAX_OVERFLOW`
+  pooled, the checkpointer pool (10), and the session connections that
+  cannot go through a transaction-mode pooler — the two supervised
+  LISTENs, the control listener and the leader lease. `DB_REPLICAS` and
+  `DB_MAX_CONNECTIONS` declare the fleet; the arithmetic is logged at
+  boot, served by `GET /replicas`, and a fleet the declared Postgres
+  cannot seat is a boot warning naming the numbers.
+  `DB_STATEMENT_CACHE_SIZE` (default 0) keeps asyncpg's prepared
+  statements out of the pooled connections so they survive a pooler; the
+  session connections are direct by design.
+- **Distributed rate limiter.** The §18.8 token bucket lives in
+  `rate_buckets` (one upsert per request), so N replicas grant one budget;
+  keys idle for an hour are evicted by the periodic loop — the key space is
+  bounded, and a database hiccup fails open with a log rather than closed.
+- **Cache coherency** (§7.3). A reload discards the dirty flag — and, in
+  redis mode, writes the blob — only if the generation it started from is
+  unchanged; the redis blob carries a TTL (`REGISTRY_CACHE_TTL_S`, default
+  300 s) and memory-mode entries expire on the same clock, so no coherency
+  bug can outlive it; `GET /cache/status` reports `dirty` beside
+  `generation`.
+- **MCP under N replicas.** Ingest is idempotent (`ON CONFLICT` on
+  `(mcp_server_id, tool_name)` under a per-server advisory lock), and each
+  replica reconciles its own subprocess set against the registry on every
+  health tick — a server registered or deleted through another replica is
+  connected or torn down here within one interval. Every replica still
+  holds its own connection to every server: a tool call is served
+  wherever the run executes.
+- **The edge.** `docker compose up --scale backend=N` binds each replica to
+  a host port from `BACKEND_PORT_RANGE`; the frontend's nginx resolves
+  `backend` per request through Docker's DNS, so replicas join and leave
+  without a restart; Prometheus discovers each replica as its own target
+  (`dns_sd_configs`), so counters are never mixed across processes.
+  Compose recreates every replica together on a deploy — a rolling roll at
+  N>1 is an orchestrator's job (`deploy.sh` documents the mapping).
 
 
 ### 18.10 Acceptance ceremony (M36)

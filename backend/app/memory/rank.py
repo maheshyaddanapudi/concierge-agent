@@ -153,20 +153,27 @@ async def recall(
     )
     qvec = await _query_vector(query)
     model_key = await active_model_key() if qvec is not None else None
+    # M54: the typed column (and its cast type) for the active key's dims —
+    # what the HNSW index is built on; an unsupported dimension has no
+    # vector leg (its rows were never embedded)
+    from app.memory.dims import vector_column
+
+    typed = vector_column(model_key) if model_key else None
 
     async with get_session_factory()() as session:
         lex_ids = [r[0] for r in (await session.execute(lexical_sql, params)).all()]
         vec_ids: list[UUID] = []
-        if qvec is not None and model_key is not None:
+        if qvec is not None and model_key is not None and typed is not None:
+            col, vtype = typed
             vector_sql = sql_text(
                 f"""
-                SELECT m.id, 1 - (e.embedding <=> CAST(:qvec AS vector)) AS sim
+                SELECT m.id, 1 - (e.{col} <=> CAST(:qvec AS {vtype})) AS sim
                 FROM memories m
                 JOIN memory_embeddings e
                   ON e.ref_id = m.id AND e.table_ref = 'memories'
                  AND e.model_key = :model_key
                 WHERE {where}
-                ORDER BY e.embedding <=> CAST(:qvec AS vector)
+                ORDER BY e.{col} <=> CAST(:qvec AS {vtype})
                 LIMIT :n
                 """  # noqa: S608 — fragments are code constants; values are bound params
             ).bindparams(bindparam("qvec"), bindparam("model_key"))

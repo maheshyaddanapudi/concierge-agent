@@ -153,7 +153,7 @@ Terminal success marker; the server closes the stream after sending it.
 
 ### `ping`
 
-Heartbeat after 15 s of silence (M53; was 120 s). Data is literal `{}` — no envelope, no `id:`. Ignore it.
+Heartbeat after 15 s of silence (M53; was 120 s). On the chat stream the data is literal `{}` — no envelope, no `id:`. On the ambient stream (`GET /ambient/stream`, M54) the data is `{"replica": "<replica_id>"}` and every `delivery` event also carries `replica`: behind a balancer a subscriber can tell which process serves it (the §14q-92 drill uses exactly this). Ignore it otherwise.
 
 ### `reconnect`
 

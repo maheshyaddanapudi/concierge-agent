@@ -157,38 +157,84 @@ def unsubscribe_stream(sub_id: int) -> None:
 
 
 def stream_subscriber_count() -> int:
-    """The §18.4 pursuit presence oracle: how many subscribers `_publish`
-    would fan out to right now. Not an estimate of presence — it IS the
-    audience of the toast, which is exactly the question pursuit asks.
-    Per-process by construction, and correct that way: under §18.9 a tick
-    on this replica can only ever toast this replica's subscribers."""
+    """This process's share of the §18.4 pursuit oracle: how many
+    subscribers `_publish` fans out to here. Since M54 the toast reaches
+    every replica, so the oracle proper is `audience()` — this count plus
+    the other live replicas' (their heartbeat rows carry it)."""
     return len(_subscribers)
 
 
 _EVENT_SEQ = itertools.count(1)
 
 
-def _publish(mode: str, rows: list[Delivery]) -> None:
+def _fan_local(event: dict[str, Any]) -> None:
+    for queue in list(_subscribers.values()):
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:  # a stalled consumer never blocks the tick
+            continue
+
+
+def _event(mode: str, row: Delivery, now: str) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "mode": mode,
+        "tier": row.tier,
+        "urgency": row.urgency,
+        "category": row.category,
+        "title": row.title,
+        "at": now,
+    }
+
+
+def _publish(mode: str, rows: list[Delivery]) -> list[dict[str, Any]]:
+    """Fan a batch to THIS process's subscribers; returns the events so the
+    caller can announce them to the fleet (M54)."""
+    now = datetime.now(UTC).isoformat()
+    events = [_event(mode, row, now) for row in rows]
+    if _subscribers:
+        for event in events:
+            # M53: a per-process sequence is the stream's `id:` line
+            _fan_local({"seq": next(_EVENT_SEQ), **event})
+    return events
+
+
+async def publish(mode: str, rows: list[Delivery]) -> None:
+    """M54 (spec §18.9, scale-B1): the toast reaches every replica's
+    subscribers — local fan-out, then one control-channel announcement per
+    delivery that every OTHER replica re-fans (`fan_in`), origin-tagged so
+    the announcing replica ignores its own."""
+    from app import control
+
+    for event in _publish(mode, rows):
+        await control.notify("delivery", **event)
+
+
+def fan_in(message: dict[str, Any]) -> None:
+    """A delivery announced by another replica: give it a local sequence
+    and hand it to this process's subscribers."""
     if not _subscribers:
         return
-    now = datetime.now(UTC).isoformat()
-    for row in rows:
-        event = {
-            # M53: a per-process sequence is the stream's `id:` line
-            "seq": next(_EVENT_SEQ),
-            "id": str(row.id),
-            "mode": mode,
-            "tier": row.tier,
-            "urgency": row.urgency,
-            "category": row.category,
-            "title": row.title,
-            "at": now,
-        }
-        for queue in list(_subscribers.values()):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:  # a stalled consumer never blocks the tick
-                continue
+    event = {
+        "seq": next(_EVENT_SEQ),
+        **{k: message.get(k) for k in ("id", "mode", "tier", "urgency", "category", "title", "at")},
+    }
+    _fan_local(event)
+
+
+async def audience() -> int:
+    """The §18.4 pursuit oracle across the fleet (M54): this process's
+    subscribers plus every other live replica's — the literal audience of
+    the toast `publish` just sent. Falls back to the local count if the
+    fleet table cannot be read."""
+    local = stream_subscriber_count()
+    try:
+        from app.replica import cluster_audience
+
+        return await cluster_audience(local)
+    except Exception as exc:  # noqa: BLE001 — the local count is the floor, never less
+        logger.warning("ambient_audience_fallback", error=str(exc)[:200])
+        return local
 
 
 # ── the dispatch hook (called by every flush path) ───────────────────
@@ -290,9 +336,10 @@ async def dispatch_delivered(
     if not rows:
         return {}
     # sample the oracle BEFORE publishing: this count is precisely the
-    # audience `_publish` is about to reach (spec §18.4, M41)
-    watchers = stream_subscriber_count()
-    _publish(mode, rows)
+    # audience `publish` is about to reach (spec §18.4, M41) — since M54
+    # the fleet's audience, because the toast is fanned to every replica
+    watchers = await audience()
+    await publish(mode, rows)
     from app.registry_cache import get_cache
 
     routing = dict(await get_cache().setting("ambient_channels") or {})

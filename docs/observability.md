@@ -52,7 +52,7 @@ Framework-level traces (prompts, completions, tool calls) for every LLM touchpoi
 
 ## Metrics: `/metrics` (Prometheus)
 
-Served by the backend at `GET /metrics` (`main.py`) and also proxied by the frontend nginx (`frontend/nginx.conf` has an explicit `/metrics` location). Series defined in `obs.py`:
+Served by the backend at `GET /metrics` (`main.py`) and also proxied by the frontend nginx (`frontend/nginx.conf` has an explicit `/metrics` location). **Scrape replicas individually** (M54): the registry is per process, so under `--scale backend=N` a scrape through the frontend VIP alternates replicas and every counter shows resets. `docs/observability/prometheus.yml` discovers each replica as its own target through Docker DNS (`dns_sd_configs` on `backend`), so `instance` is the replica; `concierge_replica_info{replica}` names it. Series defined in `obs.py`:
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -83,7 +83,7 @@ Every finding the production reviews rated high used to be invisible on a dashbo
 | `concierge_runs_in_flight` | gauge | `state` = `running`, `queued` | admission's view of this replica — **the autoscaling signal** (queued > 0 for long means add a replica or raise `run_max_concurrent`) |
 | `concierge_run_slots` | gauge | — | `run_max_concurrent` as applied |
 | `concierge_backlog_depth` | gauge | `queue` = `ambient_events`, `deliveries` | pending events (no verdict) and undelivered deliveries, sampled by the leader each tick |
-| `concierge_loop_errors_total` | counter | `loop` = `ambient`, `memory`, `retention`, `mcp_health` | a background loop whose tick raised — before M53 these were log-only |
+| `concierge_loop_errors_total` | counter | `loop` = `ambient`, `memory`, `retention`, `spend`, `mcp_health`, `replica`, `cluster` | a background loop whose tick raised — before M53 these were log-only; `replica` is the M54 heartbeat, `cluster` the dead-owner reaper and limiter eviction |
 | `concierge_mcp_servers` | gauge | `state` = `connected`, `reconnecting`, `circuit_open` | the MCP fleet from this replica's point of view |
 | `concierge_mcp_reconnects_total` | counter | `outcome` = `ok`, `failed`, `circuit_open` | automatic reconnect attempts |
 | `concierge_listener_connected` | gauge | `channel` | 1 while a LISTEN connection is up (`registry_cache_inv`, `ambient_events`); the sessions carry `application_name = concierge-listen:<channel>` in `pg_stat_activity` |
@@ -91,6 +91,7 @@ Every finding the production reviews rated high used to be invisible on a dashbo
 | `concierge_sse_subscribers` | gauge | `stream` = `chat`, `ambient` | open streams |
 | `concierge_retention_deleted_total` | counter | `table` | rows the retention job removed |
 | `concierge_spend_usd_today` | gauge | — | priced spend across every run kind, UTC day — refreshed whenever spend is computed and once per periodic tick, so a fresh process reports the day's spend within a minute whether or not the ceiling gate is on |
+| `concierge_replica_info` | gauge | `replica` | 1 for this process, labelled with its replica id (M54) — join it to any other series to name the replica behind an `instance` |
 | `concierge_spend_ceiling_refusals_total` | counter | `kind` | runs refused at the ceiling, by trigger kind |
 
 ## Token usage tracking

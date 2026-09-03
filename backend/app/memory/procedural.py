@@ -255,21 +255,25 @@ async def recall_exemplars(task: str, *, k: int = 2) -> list[PlanExemplar]:
         vec_ids: list[UUID] = []
         qvec = await _query_vector(task)
         model_key = await active_model_key() if qvec is not None else None
-        if qvec is not None and model_key is not None:
+        from app.memory.dims import vector_column
+
+        typed = vector_column(model_key) if model_key else None  # M54: the typed column
+        if qvec is not None and model_key is not None and typed is not None:
+            col, vtype = typed
             vec_ids = [
                 r[0]
                 for r in (
                     await session.execute(
                         sql_text(
-                            """
+                            f"""
                             SELECT e.id FROM plan_exemplars e
                             JOIN memory_embeddings emb
                               ON emb.ref_id = e.id AND emb.table_ref = 'plan_exemplars'
                              AND emb.model_key = :model_key
                             WHERE e.status = 'active'
-                            ORDER BY emb.embedding <=> CAST(:qvec AS vector)
+                            ORDER BY emb.{col} <=> CAST(:qvec AS {vtype})
                             LIMIT :n
-                            """
+                            """  # noqa: S608 — column and type are code constants; values are bound
                         ),
                         {
                             "q": _or_q(task),
