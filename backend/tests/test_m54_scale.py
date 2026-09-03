@@ -801,3 +801,101 @@ class TestTypedEmbeddings:
             src = inspect.getsource(module)
             assert "e.embedding <=>" not in src and "emb.embedding <=>" not in src, module.__name__
             assert "embedding_column(" in src or "vector_column(" in src, module.__name__
+
+
+# ── §18.9 M54: consolidation at scale is set-based ───────────────────────
+
+
+async def _seed_memories_sql(sql: str) -> None:
+    async with get_session_factory()() as session:
+        await session.execute(text(sql))
+        await session.commit()
+
+
+async def _count(where: str) -> int:
+    async with get_session_factory()() as session:
+        # test-only: the fragments are literals in this file, never input
+        return int(await session.scalar(text(f"SELECT count(*) FROM memories WHERE {where}")) or 0)  # noqa: S608
+
+
+class TestJobsAtScale:
+    """The §14q-95 drill seeded a million memories and the decay sweep
+    loaded every one of them into a 1.5 GB replica, which the kernel then
+    killed in a loop. Consolidation jobs that touch every row run as ONE
+    set-based statement; the table never becomes a list of ORM objects."""
+
+    async def test_decay_sweep_is_one_update_over_twenty_thousand_rows(
+        self, client: AsyncClient
+    ) -> None:
+        from app.memory import lifecycle
+
+        await _set(memory_enabled=True, memory_decay_enabled=True, memory_half_life_days=30.0)
+        # even rows are 400 days stale (decay), odd rows are a day old (stay);
+        # every thousandth even row is pinned (immune); one stale row carries
+        # its own long half-life (stays)
+        await _seed_memories_sql(
+            """
+            INSERT INTO memories (id, scope, kind, text, importance, confidence, source, status,
+                                  valid_from, recorded_at, last_accessed_at, access_count, pinned,
+                                  half_life_days)
+            SELECT gen_random_uuid(), 'global', 'fact', 'm54 decay ' || g, 2, 0.9, 'user_stated', 'active',
+                   now(),
+                   now() - (CASE WHEN g % 2 = 0 THEN interval '400 days' ELSE interval '1 day' END),
+                   now() - (CASE WHEN g % 2 = 0 THEN interval '400 days' ELSE interval '1 day' END),
+                   0, (g % 1000 = 0), NULL
+            FROM generate_series(1, 20000) g
+            """
+        )
+        await _seed_memories_sql(
+            """
+            INSERT INTO memories (id, scope, kind, text, importance, confidence, source, status,
+                                  valid_from, recorded_at, last_accessed_at, access_count, pinned,
+                                  half_life_days)
+            VALUES (gen_random_uuid(), 'global', 'fact', 'm54 decay own-half-life', 2, 0.9, 'user_stated',
+                    'active', now(), now() - interval '400 days', now() - interval '400 days', 0, false, 1000)
+            """
+        )
+        t0 = asyncio.get_running_loop().time()
+        expired = await lifecycle.decay_sweep()
+        took = asyncio.get_running_loop().time() - t0
+        assert expired == 10000 - 20, expired
+        assert await _count("text LIKE 'm54 decay %' AND status = 'expired'") == 9980
+        assert await _count("text LIKE 'm54 decay %' AND status = 'active' AND pinned") == 20
+        assert await _count("text = 'm54 decay own-half-life' AND status = 'active'") == 1
+        assert (
+            await _count("text LIKE 'm54 decay %' AND status = 'expired' AND valid_to IS NULL") == 0
+        )
+        assert took < 10.0, took
+        # the guard the drill asked for: no per-row materialisation
+        src = inspect.getsource(lifecycle.decay_sweep)
+        assert "select(Memory)" not in src and "UPDATE memories" in src
+
+    async def test_contradiction_sweep_is_one_update_over_many_groups(
+        self, client: AsyncClient
+    ) -> None:
+        from app.memory import lifecycle
+
+        await _set(memory_enabled=True, memory_contradiction_enabled=True)
+        # 3000 entity keys × 3 rows: the row with the newest valid_from stays
+        await _seed_memories_sql(
+            """
+            INSERT INTO memories (id, scope, kind, text, importance, confidence, source, status,
+                                  valid_from, recorded_at, last_accessed_at, access_count, pinned, entity_key)
+            SELECT gen_random_uuid(), 'global', 'fact', 'm54 contra ' || k || ' v' || v, 5, 0.9, 'user_stated',
+                   'active', now() - ((3 - v) || ' days')::interval, now() - ((3 - v) || ' days')::interval,
+                   now(), 0, false, 'm54:key:' || k
+            FROM generate_series(1, 3000) k, generate_series(1, 3) v
+            """
+        )
+        quarantined = await lifecycle.contradiction_sweep()
+        assert quarantined == 6000, quarantined
+        assert await _count("text LIKE 'm54 contra %' AND status = 'active'") == 3000
+        assert await _count("text LIKE 'm54 contra % v3' AND status = 'active'") == 3000
+        assert (
+            await _count(
+                "text LIKE 'm54 contra %' AND status = 'quarantined' AND review_note LIKE 'contradiction sweep%'"
+            )
+            == 6000
+        )
+        src = inspect.getsource(lifecycle.contradiction_sweep)
+        assert "select(Memory)" not in src and "UPDATE memories" in src

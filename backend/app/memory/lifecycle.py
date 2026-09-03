@@ -7,13 +7,12 @@ directly awaitable for tests and the experiment harness.
 """
 
 import asyncio
-import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, Field
-from sqlalchemy import select, true
+from sqlalchemy import select, text, true
 
 from app.db import get_session_factory
 from app.models import Memory, MemoryEmbedding, PlanExemplar, RunDigest
@@ -89,29 +88,35 @@ async def decay_sweep() -> int:
     if not await gate_open(JOB_GATES[JOB_DECAY]):
         return 0
     now = datetime.now(UTC)
-    expired = 0
+    # M54 (spec §18.9): one set-based statement — the §14q-95 drill seeded a
+    # million rows and the row-by-row sweep loaded them all into a 1.5 GB
+    # replica. The formula is the same: importance · 2^(−age/half_life),
+    # age from last access (else recording), a row's own half-life first.
     async with get_session_factory()() as session:
         from app.registry_cache import get_cache
 
         default_hl = float(await get_cache().setting("memory_half_life_days"))
-        rows = list(
-            (
-                await session.execute(
-                    select(Memory).where(Memory.status == "active", Memory.pinned.is_(False))
-                )
-            ).scalars()
+        result = await session.execute(
+            text(
+                """
+                UPDATE memories
+                   SET status = 'expired',
+                       valid_to = COALESCE(valid_to, CAST(:now AS timestamptz))
+                 WHERE status = 'active'
+                   AND pinned = false
+                   AND importance * exp(
+                         -ln(2) / COALESCE(NULLIF(half_life_days, 0), CAST(:hl AS float8))
+                         * GREATEST(
+                             EXTRACT(EPOCH FROM (CAST(:now AS timestamptz)
+                                                 - COALESCE(last_accessed_at, recorded_at))) / 86400.0,
+                             0)
+                       ) < CAST(:floor AS float8)
+                """
+            ),
+            {"now": now, "hl": default_hl, "floor": _DECAY_EFFECTIVE_FLOOR},
         )
-        for m in rows:
-            half_life_days = float(m.half_life_days) if m.half_life_days else default_hl
-            anchor = m.last_accessed_at or m.recorded_at
-            age_days = max((now - anchor).total_seconds() / 86400.0, 0.0)
-            effective = m.importance * math.exp(-math.log(2) / half_life_days * age_days)
-            if effective < _DECAY_EFFECTIVE_FLOOR:
-                m.status = "expired"
-                m.valid_to = m.valid_to or now
-                expired += 1
-        if expired:
-            await session.commit()
+        expired = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
     from app import obs
 
     obs.MEMORY_OPS.labels(kind="decay", status="ok").inc()
@@ -211,31 +216,33 @@ async def contradiction_sweep() -> int:
     (M48 §3.7.1)."""
     if not await gate_open(JOB_GATES[JOB_CONTRADICT]):
         return 0
-    quarantined = 0
+    # M54 (spec §18.9): set-based — rank each (scope, entity_key) group by
+    # validity (newest first, NULLs first as before) and quarantine every
+    # row but the first, without materialising the table in the process.
     async with get_session_factory()() as session:
-        rows = list(
-            (
-                await session.execute(
-                    select(Memory)
-                    .where(Memory.status == "active", Memory.entity_key.isnot(None))
-                    .order_by(
-                        Memory.entity_key, Memory.valid_from.desc(), Memory.recorded_at.desc()
-                    )
+        result = await session.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT id,
+                           row_number() OVER (
+                               PARTITION BY scope, entity_key
+                               ORDER BY valid_from DESC, recorded_at DESC
+                           ) AS rn
+                      FROM memories
+                     WHERE status = 'active' AND entity_key IS NOT NULL
                 )
-            ).scalars()
+                UPDATE memories m
+                   SET status = 'quarantined',
+                       review_note = :note
+                  FROM ranked r
+                 WHERE m.id = r.id AND r.rn > 1
+                """
+            ),
+            {"note": "contradiction sweep: older duplicate of an active entity_key"},
         )
-        by_key: dict[tuple[str, str], list[Memory]] = {}
-        for m in rows:
-            if m.entity_key is None:
-                continue  # selected non-null; defensive, never an assert
-            by_key.setdefault((m.scope, m.entity_key), []).append(m)
-        for group in by_key.values():
-            for extra in group[1:]:  # group[0] is the newest-validity row: it stays
-                extra.status = "quarantined"
-                extra.review_note = "contradiction sweep: older duplicate of an active entity_key"
-                quarantined += 1
-        if quarantined:
-            await session.commit()
+        quarantined = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
     from app import obs
 
     obs.MEMORY_OPS.labels(kind="contradict", status="ok").inc()
