@@ -536,6 +536,23 @@ class Harness:
                 have + 1,
                 target,
             )
+        # M54: at scale, inserting into a live HNSW index is the slow path (one
+        # graph insertion per row); drop the typed column's index for a large
+        # delta and rebuild it in bulk afterwards — the same index the
+        # migration declares, so the query plan under test is unchanged
+        missing = int(
+            await self.sql_val(
+                "SELECT count(*) FROM memories m WHERE m.text LIKE $1 AND NOT EXISTS ("
+                "SELECT 1 FROM memory_embeddings e WHERE e.ref_id = m.id AND e.table_ref = 'memories' "
+                "AND e.model_key = $2)",
+                f"{LOADGEN} memory %",
+                FAKE_EMBED_KEY,
+            )
+        )
+        bulk = missing >= 50_000
+        if bulk:
+            log(f"recall seed: {missing} vectors to add — dropping the emb_64 HNSW index for a bulk build")
+            await self.sql_exec("DROP INDEX IF EXISTS memory_embeddings_emb_64_hnsw")
         await self.sql_exec(
             """
             INSERT INTO memory_embeddings (ref_id, table_ref, model_key, emb_64)
@@ -549,6 +566,14 @@ class Harness:
             LOADGEN,
             FAKE_EMBED_KEY,
         )
+        if bulk:
+            t0 = time.monotonic()
+            await self.sql_exec("SET maintenance_work_mem = '2GB'")
+            await self.sql_exec(
+                "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_64_hnsw "
+                "ON memory_embeddings USING hnsw (emb_64 vector_cosine_ops)"
+            )
+            log(f"recall seed: emb_64 HNSW index rebuilt in {time.monotonic() - t0:.1f} s")
         await self.sql_exec("ANALYZE memories; ANALYZE memory_embeddings")
         return int(await self.sql_val("SELECT count(*) FROM memories WHERE text LIKE $1", f"{LOADGEN} memory %"))
 
