@@ -11,6 +11,10 @@
 # to the host; they are ceilings, not reservations.
 services:
   db:
+    # M54: pgvector index builds and parallel queries use POSIX shared memory;
+    # Docker's 64 MB /dev/shm default fails them at scale ("could not resize
+    # shared memory segment") — the §14q-95 drill hit it seeding a million rows
+    shm_size: 1gb
     # pgvector = official postgres image + extension (spec §16.1)
     image: pgvector/pgvector:0.8.6-pg16
     restart: unless-stopped

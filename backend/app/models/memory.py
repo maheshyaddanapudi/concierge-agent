@@ -39,6 +39,10 @@ class Memory(Base):
         ),
         Index("memories_fts_idx", "fts", postgresql_using="gin"),
         Index("memories_conversation_idx", "conversation_id"),
+        # M54: the self-referencing FKs must be indexed or every delete scans
+        # the table for rows that point at the deleted one (§14q-95 found it)
+        Index("memories_supersedes_idx", "supersedes"),
+        Index("memories_superseded_by_idx", "superseded_by"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

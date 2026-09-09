@@ -899,3 +899,20 @@ class TestJobsAtScale:
         )
         src = inspect.getsource(lifecycle.contradiction_sweep)
         assert "select(Memory)" not in src and "UPDATE memories" in src
+
+    async def test_memory_self_references_are_indexed(self, client: AsyncClient) -> None:
+        """Deleting a memory checks `supersedes` / `superseded_by` on every
+        other row; without these two indexes the check is a table scan per
+        deleted row — the 1M cleanup stalled on it."""
+        async with get_session_factory()() as session:
+            names = set(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT indexname FROM pg_indexes WHERE tablename = 'memories' "
+                            "AND indexname IN ('memories_supersedes_idx', 'memories_superseded_by_idx')"
+                        )
+                    )
+                ).scalars()
+            )
+        assert names == {"memories_supersedes_idx", "memories_superseded_by_idx"}

@@ -553,27 +553,31 @@ class Harness:
         if bulk:
             log(f"recall seed: {missing} vectors to add — dropping the emb_64 HNSW index for a bulk build")
             await self.sql_exec("DROP INDEX IF EXISTS memory_embeddings_emb_64_hnsw")
-        await self.sql_exec(
-            """
-            INSERT INTO memory_embeddings (ref_id, table_ref, model_key, emb_64)
-            SELECT m.id, 'memories', $2::text,
-                   (SELECT array_agg(random())::vector(64) FROM generate_series(1, 64) WHERE m.id IS NOT NULL)
-            FROM memories m
-            WHERE m.text LIKE $1::text || ' memory %'
-              AND NOT EXISTS (SELECT 1 FROM memory_embeddings e
-                              WHERE e.ref_id = m.id AND e.table_ref = 'memories' AND e.model_key = $2::text)
-            """,
-            LOADGEN,
-            FAKE_EMBED_KEY,
-        )
-        if bulk:
-            t0 = time.monotonic()
-            await self.sql_exec("SET maintenance_work_mem = '2GB'")
+        try:
             await self.sql_exec(
-                "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_64_hnsw "
-                "ON memory_embeddings USING hnsw (emb_64 vector_cosine_ops)"
+                """
+                INSERT INTO memory_embeddings (ref_id, table_ref, model_key, emb_64)
+                SELECT m.id, 'memories', $2::text,
+                       (SELECT array_agg(random())::vector(64) FROM generate_series(1, 64) WHERE m.id IS NOT NULL)
+                FROM memories m
+                WHERE m.text LIKE $1::text || ' memory %'
+                  AND NOT EXISTS (SELECT 1 FROM memory_embeddings e
+                                  WHERE e.ref_id = m.id AND e.table_ref = 'memories' AND e.model_key = $2::text)
+                """,
+                LOADGEN,
+                FAKE_EMBED_KEY,
             )
-            log(f"recall seed: emb_64 HNSW index rebuilt in {time.monotonic() - t0:.1f} s")
+        finally:
+            if bulk:
+                # the index the migration declares comes back even when the
+                # insert fails — a drill must never leave the live schema short
+                t0 = time.monotonic()
+                await self.sql_exec("SET maintenance_work_mem = '2GB'")
+                await self.sql_exec(
+                    "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_64_hnsw "
+                    "ON memory_embeddings USING hnsw (emb_64 vector_cosine_ops)"
+                )
+                log(f"recall seed: emb_64 HNSW index rebuilt in {time.monotonic() - t0:.1f} s")
         await self.sql_exec("ANALYZE memories; ANALYZE memory_embeddings")
         return int(await self.sql_val("SELECT count(*) FROM memories WHERE text LIKE $1", f"{LOADGEN} memory %"))
 
@@ -589,6 +593,16 @@ class Harness:
         out: dict[str, Any] = {"embedding_key": FAKE_EMBED_KEY, "levels": []}
         n = self.args.recall_requests
         for size in self.args.recall_sizes:
+            try:
+                await self._recall_level(size, queries, n, out)
+            except Exception as exc:  # noqa: BLE001 — keep the levels already measured
+                log(f"recall level {size} failed: {type(exc).__name__}: {exc}")
+                out["levels"].append({"target": size, "error": f"{type(exc).__name__}: {exc}"[:500]})
+                break
+        return out
+
+    async def _recall_level(self, size: int, queries: list[str], n: int, out: dict[str, Any]) -> None:
+        if True:
             seeded = await self._seed_memories(size)
             total = int(await self.sql_val("SELECT count(*) FROM memories WHERE status = 'active'"))
             vectors = int(await self.sql_val("SELECT count(*) FROM memory_embeddings WHERE model_key = $1", FAKE_EMBED_KEY))
@@ -602,6 +616,34 @@ class Harness:
                 )
                 ok = [ms for ms, code, _ in rows if code == 200]
                 level[f"concurrency_{conc}"] = {**summarize(ok), "errors": sum(1 for _, code, _ in rows if code != 200)}
+            # M54: the lexical leg is O(matching rows) — ts_rank_cd must visit
+            # every match to rank it — so its time is reported beside the
+            # vector leg's, which the HNSW index keeps flat
+            t0 = time.perf_counter()
+            lex_plan = await self.sql(
+                """
+                EXPLAIN (ANALYZE, FORMAT JSON) SELECT m.id FROM memories m, to_tsquery('english', $1) tsq
+                WHERE m.status = 'active' AND m.fts @@ tsq
+                ORDER BY ts_rank_cd(m.fts, tsq) DESC LIMIT 40
+                """,
+                "aurora | deploy | latency",
+            )
+            try:
+                lp = json.loads(lex_plan[0][0])[0]
+                stack = [lp["Plan"]]
+                matched = 0
+                while stack:
+                    cur = stack.pop()
+                    if cur.get("Node Type") == "Bitmap Index Scan":
+                        matched = int(cur.get("Actual Rows", 0))
+                    stack.extend(cur.get("Plans", []))
+                level["lexical_leg"] = {
+                    "execution_ms": round(float(lp.get("Execution Time", 0.0)), 1),
+                    "index_matches": matched,
+                    "wall_ms": round((time.perf_counter() - t0) * 1000, 1),
+                }
+            except (KeyError, IndexError, TypeError, ValueError):
+                level["lexical_leg"] = {"error": "plan not parsed"}
             plan = await self.sql(
                 """
                 EXPLAIN (FORMAT JSON) SELECT m.id FROM memories m
@@ -627,10 +669,10 @@ class Harness:
                 level["vector_leg_plan"]["scans"] = scans
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 level["vector_leg_plan"] = {"error": str(exc)}
+            log(f"recall {total} active memories: lexical leg {level.get('lexical_leg')}")
             log(f"recall {total} active memories: c1 p50 {level['concurrency_1'].get('p50_ms')} ms, "
                 f"c5 p95 {level['concurrency_5'].get('p95_ms')} ms, plan {level['vector_leg_plan']}")
             out["levels"].append(level)
-        return out
 
     async def scenario_ambient(self) -> dict[str, Any]:
         n = self.args.ambient_events
