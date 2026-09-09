@@ -861,7 +861,11 @@ class TestMcpReconnect:
             assert (await _server(server_id)).status == "error"
 
             async def opened() -> bool:
-                return manager.reconnect_state(server_id)["circuit_open"]
+                # the breaker trips and the schedule flag clears in the same
+                # task step; under a loaded suite the poll can land between
+                # the two writes, so wait for the settled state
+                state = manager.reconnect_state(server_id)
+                return bool(state["circuit_open"]) and state["scheduled"] is False
 
             await _until(opened)
             state = manager.reconnect_state(server_id)
