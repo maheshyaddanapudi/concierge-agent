@@ -36,7 +36,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `29-ambient-pursuit` | 4 | 3 | 9720be8 2026-08-28 | stage 29-ambient-pursuit | pending |
 | `30-salience` | 14 | 11 | 4fb2b8a 2026-08-29 | stage 30-salience | recaptured (v1, dev images; the regression sample is superseded by the QA pass) |
 | `31-salience-decisions` | 15 | 12 | 5bab618 2026-08-30 | stage 31-salience-decisions | recaptured (v1, dev images; one decision round — Undo leaves no second proposal) |
-| `32-durable-forgetting` | 14 | 10 | 915ced7 2026-08-30 | stage 32-durable-forgetting | pending |
+| `32-durable-forgetting` | 14 | 10 | 915ced7 2026-08-30 | stage 32-durable-forgetting | recaptured (v1, dev images; exact-text leg only — no embeddings provider here) |
 | `(root)` | 4 | 0 | e71305a 2026-09-10 | campaign (root) | pending |
 | `a2a-14d` | 46 | 39 | 5ec9e77 2026-08-28 | spec §14d steps 33–40 on five scripted counterparties | pending |
 | `ambient_channels_m29` | 3 | 2 | ae68c1e 2026-08-25 | campaign ambient_channels_m29 | pending |
