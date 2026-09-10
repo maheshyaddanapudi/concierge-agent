@@ -34,7 +34,7 @@ Every frame was judged against the claim in its name by an adversarial screensho
 
 ## Honest notes
 
-- **The M51 delivery-retry leg did not exercise the backoff ladder on its first pass**: the drill points `AMBIENT_WEBHOOK_URL` at a closed port through the shell environment, but this sandbox's compose override pins the variable to the live webhook sink, so the send succeeded on the first attempt (`attempts still 0`). The leg is re-run with the override removed; see `prod/M51/`.
+- **The M51 delivery-retry leg needed a second pass**: the drill points `AMBIENT_WEBHOOK_URL` at a closed port through the shell environment, but this sandbox's compose override pinned the variable to the live webhook sink, so the first pass succeeded on attempt 1. Re-run without the override, the ladder is the published transcript: attempt 2 on the real 60 s backoff, attempts 3 and 4 after stated clock skips, dead-lettered on the fourth (`delivery_sends_total{status="retry"} 3`, `{status="dead"} 1`). The refusal itself came from the egress policy (loopback is a denied range), which is a failed send like any other.
 
 - **Stage 19 proves conversational continuity, not a provider swap** — only one provider is configured, the same substitution the previous campaign made.
 - **The trials have no distinct "mid-run before the gate" frame**: the stub tools answer in milliseconds, so by the time the sub agent's rail renders, its gate is armed. The frame is named `02-rails-live-run`.
