@@ -153,6 +153,39 @@ export async function click(page, name) {
   await page.getByRole('button', { name }).first().click()
 }
 
+/**
+ * Click a save button and wait for what the registry does with it: the
+ * overlap judge (an LLM call) may raise its dialog, validation may show the
+ * error note, or the drawer closes on success. Returns
+ * {outcome: 'saved'|'error'|'overlap', text}. With `acceptOverlap` the
+ * dialog's "Save anyway" is clicked and the wait continues.
+ */
+export async function submitSave(page, buttonName, { timeoutMs = 30000, acceptOverlap = true, onOverlap } = {}) {
+  await page.getByRole('button', { name: buttonName }).first().click()
+  const t0 = Date.now()
+  let sawOverlap = false
+  while (Date.now() - t0 < timeoutMs) {
+    await page.waitForTimeout(400)
+    const anyway = page.getByRole('button', { name: /Save anyway/ })
+    if (await anyway.count()) {
+      sawOverlap = true
+      log('overlap judge flagged the save — dialog shown')
+      if (onOverlap) await onOverlap()
+      if (!acceptOverlap) return { outcome: 'overlap', text: '' }
+      await anyway.first().click()
+      continue
+    }
+    const note = page.locator('.bg-rose-500\\/10').first()
+    if (await note.count()) {
+      const text = ((await note.textContent()) || '').trim()
+      log(`save refused → ${text.slice(0, 160)}`)
+      return { outcome: 'error', text, sawOverlap }
+    }
+    if (!(await page.getByRole('button', { name: 'close' }).count())) return { outcome: 'saved', text: '', sawOverlap }
+  }
+  return { outcome: 'timeout', text: '', sawOverlap }
+}
+
 /** Close the open Drawer (its ✕ carries aria-label "close"). */
 export async function closeDrawer(page) {
   const btn = page.getByRole('button', { name: 'close' }).first()
