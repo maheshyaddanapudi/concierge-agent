@@ -21,7 +21,8 @@ for (const stage of stages) {
     console.error(`skip ${stage}: no captured dir at ${src}`)
     continue
   }
-  const files = fs.readdirSync(src).filter((f) => (f.endsWith('.png') && f !== 'zz-failure.png') || f === 'transcript.md')
+  // frames, the driver transcript, and any text/csv transcripts a stage writes itself
+  const files = fs.readdirSync(src).filter((f) => (f.endsWith('.png') && f !== 'zz-failure.png') || /\.(md|txt|csv)$/.test(f))
   if (fs.existsSync(path.join(src, 'zz-failure.png'))) {
     console.error(`skip ${stage}: it has a zz-failure.png — the stage did not pass`)
     continue

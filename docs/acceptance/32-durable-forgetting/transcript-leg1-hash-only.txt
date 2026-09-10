@@ -1,0 +1,12 @@
+# §14i-55..57 — durable forgetting, exact-text leg — 2026-09-10T19:53:05.735Z
+
+# forget=true similarity=0.85 embedding_model=(none — exact-text suppression only)
+memory admitted: true ["The invoice S3 bucket is s3://acme-invoices-prod."]
+drawer verbs: Forget / Erase completely
+confirm: Forget this memory? It is removed and will NOT be re-learned — a content-free tombstone suppresses re-admission (undo via the Forgotten list).
+tombstones: fact/global suppressed 0× (content-free: yes)
+re-admission after Forget: suppressed=true | re-admitted rows: 0 | tombstone counts: 1
+tombstones after Unforget: 0
+learner proposal seeded server-side: 72fe9261-5d36-4fcb-800f-28b561e94a67
+proposal after Reject: source=learner_rejected; policies now: {"items":[{"id":"72fe9261-5d36-4fcb-800f-28b561e94a67","category":"build-noise","tier_override":2,"reason":"rejected 2026-09-10T19:55:21.986587+00:00: learner: 
+# semantic legs (paraphrase suppression at 0.88 / 0.85 / hybrid gate): not exercisable — the configured provider has no embeddings API; the exact-text leg above is the whole evidence from this environment

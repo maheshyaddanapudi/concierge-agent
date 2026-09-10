@@ -1,0 +1,14 @@
+# §14g-48..51 — salience judged live (auto) — 2026-09-10T19:48:41.051Z
+
+# mode=auto min_urgency=3 judge=openrouter:qwen/qwen3.8-max
+# browser off the app; waiting 25s for the SSE stream to unregister
+inserted: hot=c131ecbd-3145-489f-a6ef-de7de0aba657 cold=57694806-8d06-415e-a7e7-d2a64dab0ec7
+# nobody is watching the stream — waiting for the tick to flush + judge…
+§14g-48 in_app ledger (hot):  {"in_app":{"at":"2026-09-10T19:49:15.539167+00:00","ok":false,"error":"no subscriber"}}
+§14g-48 in_app ledger (cold): {"in_app":{"at":"2026-09-10T19:49:15.539167+00:00","ok":false,"error":"no subscriber"}}
+§14g-49 salience (hot):  {"at":"2026-09-10T19:49:22.019278+00:00","mode":"auto","prior":{"tier":0,"channel":"interrupt","seen_at":null,"delivered_at":"2026-09-10T19:49:15.530630+00:00"},"reason":"~9% of checkouts (one in eleven) failing for six minutes with no rollback and the on-call never paged is a live, revenue-impacting production failure that nobody is currently handling, so it needs a human now rather than a memory entry.","applied":true,"verdict":"escalate","decision":"applied","confidence":0.9,"decided_at":"2026-09-10T19:49:22.019289+00:00","decided_by":"system","memory_ids":[]}
+§14g-50 salience (cold): {"at":"2026-09-10T19:49:25.168642+00:00","mode":"auto","prior":{"tier":0,"channel":"interrupt","seen_at":null,"delivered_at":"2026-09-10T19:49:15.530630+00:00"},"reason":"A successful cache warm that finished in 41s with explicitly no anomalies and \"nothing to do\" is a self-closing success heartbeat carrying no durable state change or actionable fact.","applied":true,"verdict":"drop","decision":"applied","confidence":0.97,"decided_at":"2026-09-10T19:49:25.168653+00:00","decided_by":"system","memory_ids":[]}
+  tiers after the judge: hot=2 cold=0 (auto applies: escalate leads the digest, drop dismisses)
+unread badge: {"count":12,"attention":11}
+digest preview: 5 payments-api p99 error rate 9.4% and rising | 5 PURSUIT 47a: quiet hours beat pursuit | 5 payments-api p99 error rate 9.4% and rising
+after hovering: unread={"count":5,"attention":5} hot.seen_at=null cold.seen_at=2026-09-10T19:49:30.76454+00:00

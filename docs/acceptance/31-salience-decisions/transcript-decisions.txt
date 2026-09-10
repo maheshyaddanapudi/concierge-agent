@@ -1,0 +1,11 @@
+# §14h-52..54 — salience decisions (propose) — 2026-09-10T19:52:02.982Z
+
+# salience judge=openrouter:qwen/qwen3.8-max extraction=openrouter:qwen/qwen3.8-max mode=propose
+escalate row judged: {"tier":0,"delivered":true,"verdict":"escalate","decision":null,"applied":"false","judge_reward":null}
+decline row judged: {"tier":0,"delivered":true,"verdict":"drop","decision":null,"applied":"false","judge_reward":null}
+why this: A model judged this delivery after it went unseen — verdict escalate, confidence 0.93, mode proposeA 14x error-rate SLO burn with two deploys in the window, no rollback taken, and on-call never paged is an active incident with a broken noti
+after Do it: {"tier":2,"delivered":false,"verdict":"escalate","decision":"applied","applied":"true","judge_reward":"1.0"}
+after Undo: {"tier":0,"delivered":true,"verdict":"escalate","decision":"undone","applied":"false","judge_reward":"-1.0"}
+after Leave it (cold): {"tier":0,"delivered":true,"verdict":"drop","decision":"declined","applied":"false","judge_reward":"-1.0"}
+the escalate row offers no second "Do it" after Undo — the second round is not available in this build (recorded as-is)
+precision rule toggled → false
