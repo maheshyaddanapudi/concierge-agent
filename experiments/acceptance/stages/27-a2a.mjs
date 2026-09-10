@@ -186,11 +186,24 @@ export default async function (ctx) {
   await page.waitForTimeout(300)
   await shot(page, '19-hitl-reply-typed')
   await page.getByRole('button', { name: '✓ Submit answers' }).first().click()
-  const done2 = await waitRun(r2.id, ['completed', 'failed', 'cancelled'], 300)
+  // the counterparty's "ask" script asks on EVERY new task — once the
+  // question is answered, later calls in the same skill loop complete
+  // normally (a real agent asks once); any further gate is still answered
+  await setMode(CP.bearer, null)
+  let done2 = null
+  for (let round = 0; round < 6; round++) {
+    done2 = await waitRun(r2.id, ['completed', 'failed', 'cancelled', 'paused_hitl'], 300)
+    if (done2.status !== 'paused_hitl') break
+    log(`gate armed again (round ${round + 2}) — answering`)
+    await page.getByPlaceholder('type your answer…').first().fill('the 1790s').catch(() => {})
+    await page.getByRole('button', { name: /✓ Submit answers|✓ Approve/ }).first().click()
+    await page.waitForTimeout(3000)
+  }
   await page.waitForTimeout(1500)
   log(`question run → ${done2.status}; answer: ${(done2.final_answer || '').replace(/\s+/g, ' ').slice(0, 160)}`)
   await shot(page, '20-hitl-approved-remote-completed')
 
+  await setMode(CP.bearer, { kind: 'ask', question: 'Which decade should the research focus on?' })
   await newConversation(page)
   await sendChat(page, 'Ask the remote polyglot agent to research the metric system again.')
   await page.waitForTimeout(2000)
@@ -201,7 +214,15 @@ export default async function (ctx) {
   await shot(page, '21-hitl-deny-note-typed')
   const stateBefore = await control(CP.bearer, 'state')
   await page.getByRole('button', { name: /✕ Deny/ }).first().click()
-  const done3 = await waitRun(r3.id, ['completed', 'failed', 'cancelled'], 300)
+  await setMode(CP.bearer, null)
+  let done3 = null
+  for (let round = 0; round < 6; round++) {
+    done3 = await waitRun(r3.id, ['completed', 'failed', 'cancelled', 'paused_hitl'], 300)
+    if (done3.status !== 'paused_hitl') break
+    log(`gate armed again after the deny (round ${round + 2}) — denying again`)
+    await page.getByRole('button', { name: /✕ Deny/ }).first().click()
+    await page.waitForTimeout(3000)
+  }
   await page.waitForTimeout(1500)
   const stateAfter = await control(CP.bearer, 'state')
   log(`deny → ${done3.status}; error: ${String(done3.error || '').slice(0, 120)}; counterparty cancelled tasks ${stateBefore.cancelled_tasks?.length ?? '?'} → ${stateAfter.cancelled_tasks?.length ?? '?'}`)
