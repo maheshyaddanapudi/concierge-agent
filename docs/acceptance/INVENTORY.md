@@ -25,7 +25,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `18-registry-cache-and-retrieval` | 13 | 13 | 5ec9e77 2026-08-28 | stage 18-registry-cache-and-retrieval | recaptured (v1, dev images) |
 | `19-provider-agnostic` | 5 | 5 | 5ec9e77 2026-08-28 | stage 19-provider-agnostic | recaptured as `19-multi-turn-conversations` (one provider configured; continuity proven instead of a provider swap) |
 | `20-heterogeneous-models` | 4 | 4 | 5ec9e77 2026-08-28 | stage 20-heterogeneous-models | recaptured (v1, dev images) |
-| `21-m8-features` | 5 | 5 | 5ec9e77 2026-08-28 | stage 21-m8-features | pending |
+| `21-m8-features` | 5 | 5 | 5ec9e77 2026-08-28 | stage 21-m8-features | recaptured (v1, dev images) |
 | `22-hitl-stale-card-fix` | 6 | 6 | 5ec9e77 2026-08-28 | stage 22-hitl-stale-card-fix | recaptured (v1, dev images) |
 | `23-ops-fixes` | 5 | 5 | c489327 2026-08-28 | stage 23-ops-fixes | recaptured (v1, dev images) |
 | `24-formatter` | 6 | 6 | c489327 2026-08-28 | stage 24-formatter | recaptured (v1, dev images) |
