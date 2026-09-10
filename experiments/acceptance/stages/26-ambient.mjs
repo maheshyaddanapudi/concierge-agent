@@ -102,7 +102,7 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   }
   if (run) {
     const done = await waitRun(run.id, ['completed', 'failed', 'cancelled'], 300)
-    log(`routine run ${run.id} → ${done.status}; trigger=${done.trigger}; steps: ${steps(done)}`)
+    log(`routine run ${run.id} → ${done.status}; trigger=${JSON.stringify(done.trigger)}; steps: ${steps(done)}`)
     log(`proposal: ${(done.final_answer || '').replace(/\s+/g, ' ').slice(0, 200)}`)
   } else {
     log('no run appeared for the fire within 3 minutes (recorded as-is)')
@@ -145,11 +145,12 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   await shot(page, '08-watch-confirmed-active')
   await page.getByRole('button', { name: 'typed filters' }).click()
   await page.getByPlaceholder('what this watch is about (shown in the list)').fill('deploys of the payments repo')
-  await page.getByRole('button', { name: '+ filter' }).click()
   const wf = page.getByTestId('watch-authoring').getByTestId('filter-rows')
-  await wf.getByPlaceholder('field (e.g. sev or payload.repo)').fill('payload.repo')
+  // the typed editor starts with one empty filter row; add one only if none
+  if (!(await wf.getByPlaceholder('field (e.g. sev or payload.repo)').count())) await page.getByRole('button', { name: '+ filter' }).click()
+  await wf.getByPlaceholder('field (e.g. sev or payload.repo)').first().fill('payload.repo')
   await wf.locator('select').first().selectOption('equals')
-  await wf.getByPlaceholder('value').fill('payments')
+  await wf.getByPlaceholder('value').first().fill('payments')
   await page.getByPlaceholder('optional semantic predicate — a yes/no question judged per event').fill('Is this a production deploy?')
   await page.getByRole('button', { name: 'Create proposed watch' }).click()
   await page.getByTestId('watch-proposal').waitFor({ timeout: 30000 })
