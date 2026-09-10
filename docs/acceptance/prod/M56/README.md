@@ -6,7 +6,7 @@ spec-driven guide, `SECURITY.md` with the auth-is-a-fork stance stated
 plainly, issue and pull-request templates (no workflows), `CHANGELOG.md`
 reconstructed from the milestone table for M13–M55 under a `v1.0.0`
 heading, versions at 1.0.0, the README retold as what it is / what it is
-not / run it / extend it, and the tag. What was proven on the release
+not / run it / extend it. No git tag: the repository has no consumer yet, so the version lives in the files and a tag is cut when someone needs to pin one. What was proven on the release
 images: the §14 acceptance script on a fresh `docker compose up`, and the
 M49 load scenarios re-run as the performance record.
 
@@ -16,6 +16,8 @@ M49 load scenarios re-run as the performance record.
 | `ceremony-addendum.md` | steps 8 and 11 on the paths the spec intends: the sub agent invoked directly (§7.5) with a tool-less skill on its recover branch so the DAG's error edge is taken — `sum` fails, `recover` writes "Summary could not be produced because … its MCP server was not connected", the run completes; and a multi-step agentic ask whose todo list streams as three `plan` events (`in_progress` → `completed` across the items) |
 | `perf-v1.md` + `perf-v1.json` | the M49 scenarios (read path, run-table growth 1k→10k, 5/10/25 concurrent chats, 60 SSE streams) on the v1.0.0 image at N=1 through the balancer, fake provider, clean settings — read path p50 33–65 ms; `/runs` flat from 1k to 10k rows (p50 14 → 15 ms at a 51 KB page); 25 concurrent chats all `completed` at e2e p50 6.3 s / p95 7.9 s, 3.1 runs/s, peak 22 connections (the per-process admission gate, `run_max_concurrent`, is the ceiling — N=3 in the M54 record does 11.3 runs/s); 60 open SSE streams with the health probe 3/3 at p50 13 ms on 12 connections |
 | `tests.md` | the full suites on the release tree: backend 1068 passed / 1 skipped, frontend 94, static gates, both images built |
+
+Release commit: `d59b976` on `prod_hardening` (PR #25 → `dev`).
 
 ## Honest notes
 

@@ -2,7 +2,7 @@
 
 All notable changes to the Concierge Agent POC. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are grouped
-by milestone (spec §12) instead of semver releases, newest first. **`v1.0.0`** (2026-09-10) is the first tagged release: milestones M1–M56 complete (spec §12). The project
+by milestone (spec §12) instead of semver releases, newest first. **`1.0.0`** (2026-09-10) is the first release: milestones M1–M56 complete (spec §12). The version lives in `backend/pyproject.toml` and `frontend/package.json`; a git tag is cut when a consumer needs to pin one. The project
 was built spec-first, milestone by milestone, on a single feature branch:
 milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
 earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via

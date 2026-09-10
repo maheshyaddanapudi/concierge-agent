@@ -48,5 +48,5 @@ sanitiser). If you find one anywhere else, that is a vulnerability.
 
 ## Supported versions
 
-The `v1.0.0` line on the default branch. Fixes land on the default branch;
+The 1.0.0 line on the default branch. Fixes land on the default branch;
 there are no backports.
