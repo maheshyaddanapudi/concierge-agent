@@ -197,15 +197,30 @@ export default async function (ctx) {
   // question is answered, later calls in the same skill loop complete
   // normally (a real agent asks once); any further gate is still answered
   await setMode(CP.bearer, null)
-  let done2 = null
-  for (let round = 0; round < 6; round++) {
-    done2 = await waitRun(r2.id, ['completed', 'failed', 'cancelled', 'paused_hitl'], 300)
-    if (done2.status !== 'paused_hitl') break
-    log(`gate armed again (round ${round + 2}) — answering`)
-    await page.getByPlaceholder('type your answer…').first().fill('the 1790s').catch(() => {})
-    await page.getByRole('button', { name: /✓ Submit answers|✓ Approve/ }).first().click()
-    await page.waitForTimeout(3000)
+  // settle the run: the first submit resumes it; if the skill loop calls the
+  // remote tool again a fresh card arms — answer/deny it when its button is
+  // actually live, otherwise keep waiting for a terminal status
+  const settleGates = async (runId, act, label) => {
+    let cur = null
+    let rounds = 1
+    for (let i = 0; i < 150; i++) {
+      await page.waitForTimeout(2000)
+      cur = await ctx.run(runId)
+      if (['completed', 'failed', 'cancelled'].includes(cur?.status)) return cur
+      if (cur?.status === 'paused_hitl') {
+        const btn = page.getByRole('button', { name: act === 'deny' ? /✕ Deny/ : /✓ Submit answers|✓ Approve/ }).first()
+        if ((await btn.count()) && (await btn.isEnabled().catch(() => false))) {
+          rounds += 1
+          log(`gate armed again (round ${rounds}) — ${label}`)
+          if (act !== 'deny') await page.getByPlaceholder('type your answer…').first().fill('the 1790s').catch(() => {})
+          await btn.click().catch(() => {})
+          await page.waitForTimeout(3000)
+        }
+      }
+    }
+    return cur
   }
+  const done2 = await settleGates(r2.id, 'answer', 'answering')
   await page.waitForTimeout(1500)
   log(`question run → ${done2.status}; answer: ${(done2.final_answer || '').replace(/\s+/g, ' ').slice(0, 160)}`)
   await shot(page, '20-hitl-approved-remote-completed')
@@ -222,14 +237,7 @@ export default async function (ctx) {
   const stateBefore = await control(CP.bearer, 'state')
   await page.getByRole('button', { name: /✕ Deny/ }).first().click()
   await setMode(CP.bearer, null)
-  let done3 = null
-  for (let round = 0; round < 6; round++) {
-    done3 = await waitRun(r3.id, ['completed', 'failed', 'cancelled', 'paused_hitl'], 300)
-    if (done3.status !== 'paused_hitl') break
-    log(`gate armed again after the deny (round ${round + 2}) — denying again`)
-    await page.getByRole('button', { name: /✕ Deny/ }).first().click()
-    await page.waitForTimeout(3000)
-  }
+  const done3 = await settleGates(r3.id, 'deny', 'denying again')
   await page.waitForTimeout(1500)
   const stateAfter = await control(CP.bearer, 'state')
   log(`deny → ${done3.status}; error: ${String(done3.error || '').slice(0, 120)}; counterparty cancelled tasks ${stateBefore.cancelled_tasks?.length ?? '?'} → ${stateAfter.cancelled_tasks?.length ?? '?'}`)
