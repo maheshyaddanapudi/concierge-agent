@@ -111,9 +111,15 @@ export default async function (ctx) {
     log(`parked: ${/parked/i.test(parked.final_answer || '')}`)
     await shot(page, '15-poll-throttle-parked-answer')
     await page.waitForTimeout(30000)
-    let t = (await get(`/remote-agents/${agent.id}/tasks`)).json
-    t = Array.isArray(t) ? t : t.items || []
-    log(`after 30s with poll=5s but tick=60s: task states ${t.map((x) => x.state).join(', ')} (effective cadence is max(tick, interval))`)
+    const listTasks = async () => {
+      const raw = (await get(`/remote-agents/${agent.id}/tasks`)).json
+      const all = Array.isArray(raw) ? raw : raw.items || []
+      return all.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+    }
+    // only THIS run's task counts — older tasks from stage 27 are already delivered
+    const mine = (list) => list.filter((x) => x.run_id === parked.id)
+    let t = await listTasks()
+    log(`after 30s with poll=5s but tick=60s: this run's task ${mine(t).map((x) => `${x.state}${x.delivered ? '/delivered' : ''}`).join(', ') || '(not yet listed)'} (effective cadence is max(tick, interval))`)
     await nav(page, 'remote-agents')
     await page.getByText('polyglot-agent', { exact: true }).first().click()
     await page.waitForTimeout(1000)
@@ -123,9 +129,8 @@ export default async function (ctx) {
     await settings({ ambient_tick_interval_s: 15 })
     let delivered = false
     for (let i = 0; i < 40; i++) {
-      t = (await get(`/remote-agents/${agent.id}/tasks`)).json
-      t = Array.isArray(t) ? t : t.items || []
-      if (t.some((x) => x.delivered)) {
+      t = await listTasks()
+      if (mine(t).some((x) => x.delivered)) {
         delivered = true
         break
       }
