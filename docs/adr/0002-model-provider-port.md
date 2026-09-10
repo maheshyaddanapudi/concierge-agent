@@ -70,6 +70,6 @@ Negative:
 
 - spec.md §2.1 (non-negotiable basic design); CLAUDE.md "Hard constraints"
 - /home/user/concierge-agent/backend/app/llm/port.py, registry.py, adapters.py
-- /home/user/concierge-agent/docs/acceptance/19-provider-agnostic/,
+- /home/user/concierge-agent/docs/acceptance/19-multi-turn-conversations/,
   20-heterogeneous-models/
 - Related: ADR-0006 (embeddings on the port), ADR-0007 (Responses API routing)

@@ -135,5 +135,5 @@ it (`reverted by user`). In `propose`, the same three-dismissal signal
 produced a queued `learner_proposal` that left the live tier untouched
 until `POST /ambient/policies/{id}/approve` applied it — the proposal
 visible in the Ambient Ledger tab with its Approve control
-(`docs/acceptance/ambient_m25/`). Both modes are fully implemented; auto is
+(`docs/acceptance/26-ambient/`). Both modes are fully implemented; auto is
 not gated behind propose.

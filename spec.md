@@ -1760,7 +1760,7 @@ provider. Scope, in order: the original §14 ten-step script; §14c steps
 one live chat run through the `custom` provider pointed at a real
 OpenAI-compatible endpoint); and the §11 byte-identity suites with
 `ambient_enabled=false`, `memory_enabled=false`, `auth_enabled=false`.
-Evidence lands in `docs/acceptance/ceremony_m36/` (curl transcripts + UI
+Evidence lands in `docs/acceptance/prod/M56/` (curl transcripts + UI
 frames), and a closing report updates the README status line. The ceremony
 re-earns the definition of done end-to-end; nothing ships from this wave
 without it.

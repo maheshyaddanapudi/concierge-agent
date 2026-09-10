@@ -1,8 +1,8 @@
 {
   "meta": {
     "label": "v1",
-    "captured_at": "2026-09-10T22:32:02+00:00",
-    "git_sha": "770593c",
+    "captured_at": "2026-09-10T22:37:17+00:00",
+    "git_sha": "8c093f8",
     "base_url": "http://localhost:5174",
     "model": "fake:scripted",
     "scenarios": [
@@ -52,7 +52,7 @@
       "default_model": "openrouter:qwen/qwen3.8-max",
       "embedding_model": null,
       "memory_enabled": false,
-      "ambient_enabled": false,
+      "ambient_enabled": true,
       "ambient_routine_events_per_hour": 20,
       "ambient_runs_per_day": 50
     }
@@ -64,152 +64,502 @@
       "endpoints": {
         "GET /runs": {
           "n": 100,
-          "p50_ms": 58.22,
-          "p95_ms": 191.13,
-          "p99_ms": 212.41,
-          "max_ms": 215.53,
-          "mean_ms": 72.44,
+          "p50_ms": 64.47,
+          "p95_ms": 224.64,
+          "p99_ms": 229.5,
+          "max_ms": 229.91,
+          "mean_ms": 84.57,
           "errors": {},
-          "bytes": 21707
+          "bytes": 25062
         },
         "GET /conversations": {
           "n": 100,
-          "p50_ms": 42.2,
-          "p95_ms": 164.44,
-          "p99_ms": 203.48,
-          "max_ms": 204.14,
-          "mean_ms": 59.61,
+          "p50_ms": 39.03,
+          "p95_ms": 218.19,
+          "p99_ms": 226.47,
+          "max_ms": 332.35,
+          "mean_ms": 68.34,
           "errors": {},
-          "bytes": 2352
+          "bytes": 3206
         },
         "GET /skills": {
           "n": 100,
-          "p50_ms": 62.36,
-          "p95_ms": 154.8,
-          "p99_ms": 167.4,
-          "max_ms": 167.51,
-          "mean_ms": 70.68,
+          "p50_ms": 53.14,
+          "p95_ms": 176.17,
+          "p99_ms": 179.92,
+          "max_ms": 188.63,
+          "mean_ms": 68.26,
           "errors": {},
-          "bytes": 13502
+          "bytes": 24701
         },
         "GET /tools": {
           "n": 100,
-          "p50_ms": 40.69,
-          "p95_ms": 150.42,
-          "p99_ms": 161.12,
-          "max_ms": 162.48,
-          "mean_ms": 64.28,
+          "p50_ms": 55.87,
+          "p95_ms": 149.18,
+          "p99_ms": 162.33,
+          "max_ms": 162.59,
+          "mean_ms": 61.67,
           "errors": {},
           "bytes": 27891
         },
         "GET /settings": {
           "n": 100,
-          "p50_ms": 27.66,
-          "p95_ms": 144.13,
-          "p99_ms": 155.05,
-          "max_ms": 155.86,
-          "mean_ms": 44.21,
+          "p50_ms": 27.72,
+          "p95_ms": 147.42,
+          "p99_ms": 152.4,
+          "max_ms": 166.45,
+          "mean_ms": 44.05,
           "errors": {},
-          "bytes": 3345
+          "bytes": 3329
         },
         "GET /memories/recall": {
           "n": 100,
-          "p50_ms": 37.38,
-          "p95_ms": 173.67,
-          "p99_ms": 179.05,
-          "max_ms": 183.34,
-          "mean_ms": 69.05,
+          "p50_ms": 61.49,
+          "p95_ms": 163.37,
+          "p99_ms": 172.29,
+          "max_ms": 179.53,
+          "mean_ms": 78.62,
           "errors": {},
           "bytes": 2
         }
       },
       "connections": {
-        "peak_connections": 17,
+        "peak_connections": 21,
         "peak_active": 5,
-        "samples": 20
+        "samples": 21
       },
-      "elapsed_s": 3.9
+      "elapsed_s": 4.1
     },
     "runs-scale": {
       "levels": [
         {
           "loadgen_runs": 1000,
-          "total_runs": 1012,
+          "total_runs": 1017,
           "GET /runs": {
             "n": 15,
-            "p50_ms": 12.49,
-            "p95_ms": 15.87,
-            "p99_ms": 16.44,
-            "max_ms": 16.58,
-            "mean_ms": 12.63,
-            "bytes": 51636,
+            "p50_ms": 12.08,
+            "p95_ms": 14.58,
+            "p99_ms": 15.35,
+            "max_ms": 15.55,
+            "mean_ms": 12.57,
+            "bytes": 50415,
             "errors": 0
           },
           "GET /conversations": {
             "n": 15,
-            "p50_ms": 7.6,
-            "p95_ms": 8.34,
-            "p99_ms": 8.92,
-            "max_ms": 9.06,
-            "mean_ms": 7.69,
+            "p50_ms": 8.26,
+            "p95_ms": 9.37,
+            "p99_ms": 9.58,
+            "max_ms": 9.63,
+            "mean_ms": 8.31,
             "bytes": 9542,
             "errors": 0
           }
         },
         {
           "loadgen_runs": 10000,
-          "total_runs": 10012,
+          "total_runs": 10017,
           "GET /runs": {
             "n": 15,
-            "p50_ms": 13.34,
-            "p95_ms": 17.71,
-            "p99_ms": 18.5,
-            "max_ms": 18.7,
-            "mean_ms": 13.96,
-            "bytes": 51636,
+            "p50_ms": 12.7,
+            "p95_ms": 16.22,
+            "p99_ms": 16.34,
+            "max_ms": 16.37,
+            "mean_ms": 13.2,
+            "bytes": 50415,
             "errors": 0
           },
           "GET /conversations": {
             "n": 15,
-            "p50_ms": 9.44,
-            "p95_ms": 10.63,
-            "p99_ms": 10.81,
-            "max_ms": 10.85,
-            "mean_ms": 9.55,
+            "p50_ms": 9.29,
+            "p95_ms": 10.11,
+            "p99_ms": 10.24,
+            "max_ms": 10.27,
+            "mean_ms": 9.4,
             "bytes": 9592,
             "errors": 0
           }
         }
       ],
-      "elapsed_s": 1.5
+      "elapsed_s": 1.6
     },
     "chat": {
-      "error": "RuntimeError: PATCH settings {'default_model': 'fake:scripted'} -> 422 {\"detail\":\"default_model: provider 'fake' is not configured (API key env var missing)\"}",
-      "elapsed_s": 0.0
+      "model": "fake:scripted",
+      "levels": [
+        {
+          "concurrency": 5,
+          "wall_s": 0.89,
+          "statuses": {
+            "completed": 5
+          },
+          "submit": {
+            "n": 5,
+            "p50_ms": 37.88,
+            "p95_ms": 47.82,
+            "p99_ms": 49.61,
+            "max_ms": 50.05,
+            "mean_ms": 39.93
+          },
+          "end_to_end_completed": {
+            "n": 5,
+            "p50_ms": 887.65,
+            "p95_ms": 888.47,
+            "p99_ms": 888.56,
+            "max_ms": 888.59,
+            "mean_ms": 882.11
+          },
+          "throughput_runs_per_s": 5.62,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 19,
+            "peak_active": 3,
+            "samples": 5
+          }
+        },
+        {
+          "concurrency": 10,
+          "wall_s": 2.18,
+          "statuses": {
+            "completed": 10
+          },
+          "submit": {
+            "n": 10,
+            "p50_ms": 421.4,
+            "p95_ms": 435.57,
+            "p99_ms": 438.08,
+            "max_ms": 438.71,
+            "mean_ms": 393.95
+          },
+          "end_to_end_completed": {
+            "n": 10,
+            "p50_ms": 1914.08,
+            "p95_ms": 2172.1,
+            "p99_ms": 2174.75,
+            "max_ms": 2175.41,
+            "mean_ms": 1984.68
+          },
+          "throughput_runs_per_s": 4.59,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 23,
+            "peak_active": 3,
+            "samples": 11
+          }
+        },
+        {
+          "concurrency": 25,
+          "wall_s": 5.65,
+          "statuses": {
+            "completed": 25
+          },
+          "submit": {
+            "n": 25,
+            "p50_ms": 446.07,
+            "p95_ms": 561.2,
+            "p99_ms": 669.48,
+            "max_ms": 700.06,
+            "mean_ms": 450.73
+          },
+          "end_to_end_completed": {
+            "n": 25,
+            "p50_ms": 4391.86,
+            "p95_ms": 5633.25,
+            "p99_ms": 5644.83,
+            "max_ms": 5645.07,
+            "mean_ms": 4286.65
+          },
+          "throughput_runs_per_s": 4.43,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 24,
+            "peak_active": 7,
+            "samples": 28
+          }
+        }
+      ],
+      "elapsed_s": 14.7
     },
     "sse": {
-      "error": "RuntimeError: PATCH settings {'default_model': 'fake:scripted'} -> 422 {\"detail\":\"default_model: provider 'fake' is not configured (API key env var missing)\"}",
-      "elapsed_s": 0.0
+      "paused_run": {
+        "run_id": "fbaed875-39f8-4a85-aa1d-25945b3976e3",
+        "status": "paused_hitl",
+        "error": null
+      },
+      "chat_stream": {
+        "path": "/api/v1/chat/stream/fbaed875-39f8-4a85-aa1d-25945b3976e3",
+        "step": 5,
+        "max_attempted": 60,
+        "levels": [
+          {
+            "streams_attempted": 5,
+            "streams_open": 5,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.72,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 10,
+            "streams_open": 10,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 13.75,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 15,
+            "streams_open": 15,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.11,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 20,
+            "streams_open": 20,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.61,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 25,
+            "streams_open": 25,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.79,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 30,
+            "streams_open": 30,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.15,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 35,
+            "streams_open": 35,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.28,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 40,
+            "streams_open": 40,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 9.92,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 45,
+            "streams_open": 45,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.29,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 50,
+            "streams_open": 50,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.67,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 55,
+            "streams_open": 55,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.37,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 60,
+            "streams_open": 60,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 15.46,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 60,
+        "first_failure_at_streams": null,
+        "recovery_after_close_ms": 45.7
+      },
+      "ambient_stream": {
+        "path": "/api/v1/ambient/stream",
+        "step": 20,
+        "max_attempted": 120,
+        "levels": [
+          {
+            "streams_attempted": 20,
+            "streams_open": 3,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 46.04,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 12,
+              "idle": 12
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 3,
+        "first_failure_at_streams": 20,
+        "recovery_after_close_ms": 138.9
+      },
+      "elapsed_s": 16.8
     }
   },
   "at_rest": {
     "connections": {
-      "total": 11,
-      "idle": 11
+      "total": 14,
+      "idle": 14
     },
     "max_connections": 100
   },
   "cleanup": {
     "memory_embeddings": "DELETE 0",
     "memories": "DELETE 0",
-    "run_steps": "DELETE 30000",
-    "runs": "DELETE 10000",
-    "conversations": "DELETE 100"
+    "run_steps": "DELETE 30044",
+    "runs": "DELETE 10041",
+    "conversations": "DELETE 141"
   },
   "at_rest_after": {
     "connections": {
-      "total": 11,
-      "idle": 11
+      "total": 14,
+      "idle": 14
     },
     "max_connections": 100
   }
