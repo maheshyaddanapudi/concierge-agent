@@ -43,7 +43,8 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   await page.getByPlaceholder('dataset name (optional)').fill('quiz-3')
   await page.getByRole('button', { name: 'Upload' }).click()
   await page.waitForTimeout(2000)
-  const datasets = (await get('/evals/datasets')).json
+  const listed = (await get('/evals/datasets')).json
+  const datasets = Array.isArray(listed) ? listed : listed.items || []
   const ds = datasets.find((d) => d.name === 'quiz-3') || datasets[0]
   log(`dataset: ${ds?.name} level=${ds?.level} cases=${ds?.case_count ?? ds?.cases?.length ?? '?'}`)
   await page.getByText('cases', { exact: true }).first().scrollIntoViewIfNeeded().catch(() => {})

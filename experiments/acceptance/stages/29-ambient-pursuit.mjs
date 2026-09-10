@@ -41,6 +41,16 @@ export default async function ({ page, nav, shot, settings, get, log }) {
   })
   const s0 = (await get('/settings')).json
   say(`# channels=${JSON.stringify(s0.ambient_channels)} budget=${s0.ambient_notification_budget_per_day} tick=${s0.ambient_tick_interval_s}s`)
+  // preflight: the tick must be flushing (a silent tick stall would make
+  // every scenario below read as a held delivery) — one tier-0 probe row
+  const probe = psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, 'preflight: tick alive', 'probe', now()) returning id) select id from ins`)
+  let alive = false
+  for (let i = 0; i < 20 && !alive; i++) {
+    await new Promise((res) => setTimeout(res, 3000))
+    alive = JSON.parse(psql(`select json_build_object('d', delivered_at is not null) from deliveries where id='${probe}'`)).d
+  }
+  say(`# preflight: tier-0 probe ${alive ? 'flushed by the tick' : 'NOT flushed within 60s — the ambient tick is stalled; the matrix below cannot be read'}`)
+  if (!alive) throw new Error('ambient tick stalled (preflight probe never delivered)')
 
   const seed = (title) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title}', 'pursuit matrix', now()) returning id) select id from ins`)
   const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered_at', delivered_at, 'channel', channel, 'external', external) from deliveries where id='${id}'`))
