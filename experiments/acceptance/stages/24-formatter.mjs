@@ -3,7 +3,11 @@
 // toggle; off hides the options and produces no artifact and no toggle; and
 // history is immutable — a run rendered under one presentation keeps it
 // after the setting flips back.
-const ASK = 'Use the sitefiles add tool to add 21 and 21, then present the result as a short report: a heading, one stat, and one sentence.'
+// (no tool named in the asks — naming one sends the planner down the rung-1
+// direct route to the one exposed tool; the two asks differ so the two
+// conversations can be told apart in the sidebar)
+const ASK = 'Add 21 and 21 and present the result as a short report: a heading, one stat, and one sentence.'
+const ASK_OFF = 'Add 30 and 12 and present the result as a short report: a heading, one stat, and one sentence.'
 
 async function formatterSection(page) {
   await page.getByText('Formatter (structured answers)', { exact: true }).first().scrollIntoViewIfNeeded()
@@ -48,7 +52,7 @@ export default async function ({ page, nav, shot, settings, get, log, newConvers
   await shot(page, '03-settings-off-options-hidden')
   await nav(page, '')
   await newConversation(page)
-  const offRun = await askAndSettle(page, ASK)
+  const offRun = await askAndSettle(page, ASK_OFF)
   const toggles = await page.getByRole('button', { name: /view raw response|show structured summary/ }).count()
   log(`formatter off: answer_ui=${offRun.answer_ui ? 'present' : 'null'}; toggles on the page: ${toggles}`)
   await shot(page, '04-off-raw-only-no-toggle')
