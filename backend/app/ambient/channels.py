@@ -184,6 +184,9 @@ def _event(mode: str, row: Delivery, now: str) -> dict[str, Any]:
         "category": row.category,
         "title": row.title,
         "at": now,
+        # M55 (spec §20): the owner rides the event so a subscriber's stream
+        # can ask the port whether this principal may see it
+        "user_id": str(row.user_id) if getattr(row, "user_id", None) else None,
     }
 
 

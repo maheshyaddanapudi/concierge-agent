@@ -301,11 +301,25 @@ async def ambient_event_stream() -> Any:
     stream ends by itself when ambient goes dark."""
     import asyncio
     import json
+    from types import SimpleNamespace
+    from uuid import UUID as _UUID
 
     from app import obs
     from app.ambient import channels
+    from app.auth import current_principal
+    from app.auth.registry import get_auth_provider
     from app.registry_cache import get_cache
     from app.replica import replica_id
+
+    # M55 (spec §20): the subscriber's principal is fixed at subscription;
+    # every event is checked against the port before it is sent
+    principal = current_principal()
+    provider = get_auth_provider()
+
+    def _visible(event: dict[str, Any]) -> bool:
+        raw = event.get("user_id")
+        owner = _UUID(str(raw)) if raw else None
+        return bool(provider.may_see(SimpleNamespace(user_id=owner), principal))
 
     sub_id, queue = channels.subscribe_stream()
     obs.SSE_SUBSCRIBERS.labels(stream="ambient").inc()
@@ -322,6 +336,8 @@ async def ambient_event_stream() -> Any:
                 if not bool(await get_cache().setting("ambient_enabled")):
                     return
                 yield {"event": "ping", "data": ping}
+                continue
+            if not _visible(event):
                 continue
             yield {
                 "id": str(event.get("seq", "")),

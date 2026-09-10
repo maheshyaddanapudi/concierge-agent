@@ -49,6 +49,10 @@ class MyCorpAuth:
   express once reaches every list and detail endpoint.
 - Every memory read goes through `visibility_sql`, which appends your
   `memory_visibility` fragment and binds its parameters.
+- Every SSE surface asks the same rule: the run stream checks `owns_row`
+  before it opens, and the ambient delivery stream checks `may_see` on
+  every event against the subscriber's principal (the delivery's owner
+  rides the event).
 - Every new work row is stamped with `owner_id(principal)`; run tasks
   re-bind the principal from the run's owner, so ambient fires, evals and
   memory extraction scope their writes to the owner even off-request.

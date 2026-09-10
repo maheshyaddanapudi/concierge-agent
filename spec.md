@@ -987,7 +987,7 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     `AUTH_PROVIDER=stub`, the reference stub — a single file that imports
     only the port and the registry — makes rows visible to everyone in the
     principal's tenant and invisible across tenants (conversations, runs,
-    memory recall), refuses registry and settings writes to anyone but an
+    the run stream, the ambient delivery stream, memory recall), refuses registry and settings writes to anyone but an
     `editor` with its own reason, answers 401 to a request without an
     identity and keeps the exempt paths open; the builtin's login route is
     not offered while another provider is active.

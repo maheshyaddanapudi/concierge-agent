@@ -16,7 +16,9 @@ Three layers of proof:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -276,6 +278,73 @@ class TestStubEndToEnd:
         assert bob.status_code == 200
         carol = await client.get(f"/api/v1/runs/{run_id}", headers=_as("carol", "globex"))
         assert carol.status_code == 404
+
+    async def test_streams_ask_the_port_too(self, client: AsyncClient, stub_auth: Any) -> None:
+        """The live drill found the run stream serving the whole record to a
+        stranger: every SSE surface asks the port like the REST ones."""
+        created = await client.post(
+            "/api/v1/chat", json={"message": "stream me"}, headers=_as("alice", "acme")
+        )
+        run_id = created.json()["run_id"]
+        await asyncio.sleep(0.5)
+        async with client.stream(
+            "GET", f"/api/v1/chat/stream/{run_id}", headers=_as("bob", "acme")
+        ) as bob:
+            assert bob.status_code == 200
+        async with client.stream(
+            "GET", f"/api/v1/chat/stream/{run_id}", headers=_as("carol", "globex")
+        ) as carol:
+            assert carol.status_code == 404
+
+    async def test_ambient_stream_delivers_only_what_the_port_admits(
+        self, client: AsyncClient, stub_auth: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.ambient import channels
+        from app.api import ambient as ambient_api
+        from app.models import Delivery
+
+        monkeypatch.setattr(channels, "STREAM_KEEPALIVE_S", 0.1)
+        # carol@globex subscribes; alice@acme's interrupt and an unowned one are published
+        await client.get("/api/v1/settings", headers=_as("carol", "globex"))  # registers carol
+        await client.get("/api/v1/settings", headers=_as("alice", "acme"))
+        carol = port.Principal(id=auth_stub.user_id_for("carol"), username="carol", tenant="globex")
+        auth.set_current_user(carol)
+        try:
+            gen = ambient_api.ambient_event_stream()
+            got: list[dict[str, Any]] = []
+
+            async def collect() -> None:
+                async for event in gen:
+                    got.append(event)
+                    if len([e for e in got if e["event"] == "delivery"]) >= 1:
+                        return
+
+            task = asyncio.create_task(collect())
+            await asyncio.sleep(0.05)
+            channels._publish(
+                "interrupt",
+                [
+                    Delivery(
+                        title="acme only",
+                        tier=0,
+                        urgency=5,
+                        category="ops",
+                        user_id=auth_stub.user_id_for("alice"),
+                    ),
+                    Delivery(
+                        title="globex too",
+                        tier=0,
+                        urgency=5,
+                        category="ops",
+                        user_id=auth_stub.user_id_for("carol"),
+                    ),
+                ],
+            )
+            await asyncio.wait_for(task, timeout=3)
+            titles = [json.loads(e["data"])["title"] for e in got if e["event"] == "delivery"]
+            assert titles == ["globex too"], titles
+        finally:
+            auth.set_current_user(None)
 
 
 # ── 4. the seam is real (§14r-98) ──────────────────────────────────────

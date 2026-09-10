@@ -389,7 +389,7 @@ async def chat_stream(
     `after` query for clients that cannot set headers."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
-        if run is None:
+        if run is None or not owns_row(run):  # M55 (spec §20): the stream asks the port
             raise HTTPException(status_code=404, detail="run not found")
     last = request.headers.get("last-event-id", "")
     start = after if isinstance(after, int) else (int(last) if last.isdigit() else 0)
