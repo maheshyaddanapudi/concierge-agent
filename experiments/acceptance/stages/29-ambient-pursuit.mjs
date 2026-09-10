@@ -52,7 +52,7 @@ export default async function ({ page, nav, shot, settings, get, log }) {
   say(`# preflight: tier-0 probe ${alive ? 'flushed by the tick' : 'NOT flushed within 60s — the ambient tick is stalled; the matrix below cannot be read'}`)
   if (!alive) throw new Error('ambient tick stalled (preflight probe never delivered)')
 
-  const seed = (title) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title}', 'pursuit matrix', now()) returning id) select id from ins`)
+  const seed = (title) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title.replace(/'/g, "''")}', 'pursuit matrix', now()) returning id) select id from ins`)
   const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered_at', delivered_at, 'channel', channel, 'external', external) from deliveries where id='${id}'`))
   const settle = async (id, s) => {
     for (let i = 0; i < 40; i++) {
