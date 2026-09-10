@@ -153,8 +153,16 @@ export async function click(page, name) {
   await page.getByRole('button', { name }).first().click()
 }
 
+/** Close the open Drawer (its ✕ carries aria-label "close"). */
+export async function closeDrawer(page) {
+  const btn = page.getByRole('button', { name: 'close' }).first()
+  if (await btn.count()) await btn.click()
+  await page.waitForTimeout(400)
+}
+
+/** The theme is a client preference (localStorage `concierge-theme`). */
 export async function setTheme(page, theme) {
-  await settings({ theme })
+  await page.evaluate((t) => localStorage.setItem('concierge-theme', t), theme)
   await page.reload()
   await page.waitForTimeout(1200)
 }
