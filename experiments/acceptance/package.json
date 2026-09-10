@@ -1,0 +1,13 @@
+{
+  "name": "concierge-acceptance",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Acceptance drivers for spec §14 — click-driven Playwright stages against a running stack",
+  "scripts": {
+    "stage": "node run.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.54.0"
+  }
+}
