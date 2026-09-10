@@ -48,7 +48,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `ceremony_m36` | 68 | 66 | a404e64 2026-08-26 | the M36 full acceptance ceremony (spec §18.10) | recaptured as `prod/M56` (the ceremony re-run on the dev images; removed; git history keeps it) |
 | `coordination_m35` | 1 | 0 | d0ab4c0 2026-08-26 | campaign coordination_m35 | kept as `prod/M54` (the fleet drills captured on the merged code the same day) |
 | `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |
-| `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | pending |
+| `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | re-run on the dev images: M34 (new), M49, M50, M51, M52, M53, M54 recall, M55, M56 ceremony + addendum + perf record; the M54 fleet legs kept from the same day's capture on the merged code; the per-milestone tests.md pages replaced by one `prod/tests.md` |
 
 Totals: 879 assets, 775 frames, 133 MB.
 
