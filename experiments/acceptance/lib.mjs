@@ -50,7 +50,12 @@ export function stageEnd() {
 export async function api(method, route, body, headers = {}) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: {
+      'content-type': 'application/json',
+      // an auth-enabled backend (stage 34): the drill passes the session token
+      ...(process.env.ACC_BEARER ? { authorization: `Bearer ${process.env.ACC_BEARER}` } : {}),
+      ...headers,
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const text = await res.text()
