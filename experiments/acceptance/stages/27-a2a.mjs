@@ -65,7 +65,8 @@ export default async function (ctx) {
   await rows.getByPlaceholder(/secret, "user:pass" for basic/).fill('stub-bearer-token')
   await page.waitForTimeout(300)
   await shot(page, '03-register-form-filled')
-  await click(page, 'Register')
+  // the drawer's own button — the page header's "+ Register agent" also matches by substring
+  await page.locator('.fixed.inset-0').last().getByRole('button', { name: 'Register', exact: true }).click()
   await page.waitForTimeout(3000)
   const agents = (await get('/remote-agents')).json
   const agent = agents.find((a) => a.name === 'polyglot-agent')
