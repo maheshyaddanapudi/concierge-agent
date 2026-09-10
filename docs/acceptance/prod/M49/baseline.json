@@ -1,30 +1,26 @@
 {
   "meta": {
     "label": "baseline",
-    "captured_at": "2026-09-01T22:30:03+00:00",
-    "git_sha": "68eafb7",
+    "captured_at": "2026-09-10T21:29:28+00:00",
+    "git_sha": "d47015c",
     "base_url": "http://localhost:8000",
     "model": "fake:scripted",
     "scenarios": [
       "api",
       "runs-scale",
       "chat",
-      "sse",
-      "recall",
-      "ambient"
+      "sse"
     ],
     "args": {
       "base_url": "http://localhost:8000",
       "model": "fake:scripted",
       "label": "baseline",
-      "out": "../docs/acceptance/prod/M49/baseline.json",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M49/baseline.json",
       "scenarios": [
         "api",
         "runs-scale",
         "chat",
-        "sse",
-        "recall",
-        "ambient"
+        "sse"
       ],
       "api_requests": 100,
       "api_concurrency": 10,
@@ -55,9 +51,9 @@
     },
     "settings_before": {
       "default_model": "openrouter:qwen/qwen3.8-max",
-      "embedding_model": "openai:text-embedding-3-small",
-      "memory_enabled": true,
-      "ambient_enabled": false,
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": true,
       "ambient_routine_events_per_hour": 20,
       "ambient_runs_per_day": 50
     }
@@ -69,259 +65,262 @@
       "endpoints": {
         "GET /runs": {
           "n": 100,
-          "p50_ms": 30.33,
-          "p95_ms": 191.31,
-          "p99_ms": 264.25,
-          "max_ms": 265.0,
-          "mean_ms": 56.97,
+          "p50_ms": 104.31,
+          "p95_ms": 431.19,
+          "p99_ms": 485.61,
+          "max_ms": 526.23,
+          "mean_ms": 170.35,
           "errors": {},
-          "bytes": 1077
+          "bytes": 102034
         },
         "GET /conversations": {
           "n": 100,
-          "p50_ms": 38.28,
-          "p95_ms": 179.34,
-          "p99_ms": 193.41,
-          "max_ms": 194.19,
-          "mean_ms": 67.51,
+          "p50_ms": 57.8,
+          "p95_ms": 209.71,
+          "p99_ms": 214.4,
+          "max_ms": 220.6,
+          "mean_ms": 83.75,
           "errors": {},
-          "bytes": 223
+          "bytes": 10305
         },
         "GET /skills": {
           "n": 100,
-          "p50_ms": 38.69,
-          "p95_ms": 181.24,
-          "p99_ms": 196.83,
-          "max_ms": 202.27,
-          "mean_ms": 52.98,
+          "p50_ms": 48.89,
+          "p95_ms": 173.19,
+          "p99_ms": 176.52,
+          "max_ms": 177.86,
+          "mean_ms": 64.64,
           "errors": {},
-          "bytes": 21992
+          "bytes": 28285
         },
         "GET /tools": {
           "n": 100,
-          "p50_ms": 41.03,
-          "p95_ms": 180.86,
-          "p99_ms": 194.28,
-          "max_ms": 195.11,
-          "mean_ms": 61.82,
+          "p50_ms": 40.47,
+          "p95_ms": 147.4,
+          "p99_ms": 160.88,
+          "max_ms": 161.44,
+          "mean_ms": 57.65,
           "errors": {},
-          "bytes": 25026
+          "bytes": 37159
         },
         "GET /settings": {
           "n": 100,
-          "p50_ms": 23.84,
-          "p95_ms": 176.96,
-          "p99_ms": 213.76,
-          "max_ms": 249.33,
-          "mean_ms": 49.7,
+          "p50_ms": 48.48,
+          "p95_ms": 140.12,
+          "p99_ms": 150.52,
+          "max_ms": 150.59,
+          "mean_ms": 56.87,
           "errors": {},
-          "bytes": 2689
+          "bytes": 3366
         },
         "GET /memories/recall": {
           "n": 100,
-          "p50_ms": 337.37,
-          "p95_ms": 1284.48,
-          "p99_ms": 1474.07,
-          "max_ms": 2209.68,
-          "mean_ms": 483.52,
+          "p50_ms": 60.69,
+          "p95_ms": 201.88,
+          "p99_ms": 205.02,
+          "max_ms": 213.68,
+          "mean_ms": 96.05,
           "errors": {},
-          "bytes": 1980
+          "bytes": 2258
         }
       },
       "connections": {
-        "peak_connections": 20,
-        "peak_active": 3,
-        "samples": 48
+        "peak_connections": 24,
+        "peak_active": 6,
+        "samples": 27
       },
-      "elapsed_s": 9.6
+      "elapsed_s": 5.4
     },
     "runs-scale": {
       "levels": [
         {
           "loadgen_runs": 1000,
-          "total_runs": 1001,
+          "total_runs": 1131,
           "GET /runs": {
             "n": 15,
-            "p50_ms": 348.28,
-            "p95_ms": 406.12,
-            "p99_ms": 428.42,
-            "max_ms": 434.0,
-            "mean_ms": 259.78,
-            "bytes": 945863,
+            "p50_ms": 12.46,
+            "p95_ms": 15.2,
+            "p99_ms": 16.04,
+            "max_ms": 16.25,
+            "mean_ms": 12.78,
+            "bytes": 51838,
             "errors": 0
           },
           "GET /conversations": {
             "n": 15,
-            "p50_ms": 343.98,
-            "p95_ms": 371.7,
-            "p99_ms": 379.69,
-            "max_ms": 381.68,
-            "mean_ms": 275.06,
-            "bytes": 19315,
+            "p50_ms": 7.37,
+            "p95_ms": 8.83,
+            "p99_ms": 8.89,
+            "max_ms": 8.9,
+            "mean_ms": 7.56,
+            "bytes": 9542,
             "errors": 0
           }
         },
         {
           "loadgen_runs": 10000,
-          "total_runs": 10001,
+          "total_runs": 10131,
           "GET /runs": {
             "n": 15,
-            "p50_ms": 2190.61,
-            "p95_ms": 2563.07,
-            "p99_ms": 2563.15,
-            "max_ms": 2563.17,
-            "mean_ms": 2240.35,
-            "bytes": 9468865,
+            "p50_ms": 14.29,
+            "p95_ms": 17.69,
+            "p99_ms": 19.01,
+            "max_ms": 19.33,
+            "mean_ms": 14.32,
+            "bytes": 51838,
             "errors": 0
           },
           "GET /conversations": {
             "n": 15,
-            "p50_ms": 2392.78,
-            "p95_ms": 2657.4,
-            "p99_ms": 2667.74,
-            "max_ms": 2670.32,
-            "mean_ms": 2425.87,
-            "bytes": 19415,
+            "p50_ms": 10.18,
+            "p95_ms": 13.46,
+            "p99_ms": 14.9,
+            "max_ms": 15.26,
+            "mean_ms": 10.72,
+            "bytes": 9592,
             "errors": 0
           }
         }
       ],
-      "elapsed_s": 78.9
+      "elapsed_s": 1.7
     },
     "chat": {
       "model": "fake:scripted",
       "levels": [
         {
           "concurrency": 5,
-          "wall_s": 2.01,
+          "wall_s": 0.92,
           "statuses": {
             "completed": 5
           },
           "submit": {
             "n": 5,
-            "p50_ms": 45.82,
-            "p95_ms": 79.23,
-            "p99_ms": 84.89,
-            "max_ms": 86.31,
-            "mean_ms": 52.71
+            "p50_ms": 39.63,
+            "p95_ms": 49.28,
+            "p99_ms": 50.96,
+            "max_ms": 51.38,
+            "mean_ms": 41.75
           },
           "end_to_end_completed": {
             "n": 5,
-            "p50_ms": 1926.29,
-            "p95_ms": 2006.73,
-            "p99_ms": 2012.37,
-            "max_ms": 2013.78,
-            "mean_ms": 1929.63
+            "p50_ms": 916.84,
+            "p95_ms": 921.15,
+            "p99_ms": 921.29,
+            "max_ms": 921.32,
+            "mean_ms": 915.91
           },
-          "throughput_runs_per_s": 2.48,
+          "throughput_runs_per_s": 5.43,
           "sample_errors": [],
           "connections": {
-            "peak_connections": 15,
-            "peak_active": 2,
-            "samples": 10
+            "peak_connections": 19,
+            "peak_active": 4,
+            "samples": 5
           }
         },
         {
           "concurrency": 10,
-          "wall_s": 4.35,
+          "wall_s": 2.19,
           "statuses": {
             "completed": 10
           },
           "submit": {
             "n": 10,
-            "p50_ms": 299.6,
-            "p95_ms": 368.18,
-            "p99_ms": 377.21,
-            "max_ms": 379.47,
-            "mean_ms": 301.79
+            "p50_ms": 294.88,
+            "p95_ms": 370.03,
+            "p99_ms": 372.15,
+            "max_ms": 372.68,
+            "mean_ms": 286.26
           },
           "end_to_end_completed": {
             "n": 10,
-            "p50_ms": 4091.47,
-            "p95_ms": 4349.01,
-            "p99_ms": 4349.23,
-            "max_ms": 4349.29,
-            "mean_ms": 4171.3
+            "p50_ms": 1932.06,
+            "p95_ms": 2189.8,
+            "p99_ms": 2190.27,
+            "max_ms": 2190.39,
+            "mean_ms": 2027.44
           },
-          "throughput_runs_per_s": 2.3,
+          "throughput_runs_per_s": 4.56,
           "sample_errors": [],
           "connections": {
-            "peak_connections": 21,
+            "peak_connections": 24,
             "peak_active": 5,
-            "samples": 22
+            "samples": 11
           }
         },
         {
           "concurrency": 25,
-          "wall_s": 10.2,
+          "wall_s": 5.92,
           "statuses": {
             "completed": 25
           },
           "submit": {
             "n": 25,
-            "p50_ms": 555.06,
-            "p95_ms": 1067.22,
-            "p99_ms": 1295.81,
-            "max_ms": 1357.42,
-            "mean_ms": 632.66
+            "p50_ms": 618.0,
+            "p95_ms": 800.77,
+            "p99_ms": 856.4,
+            "max_ms": 871.35,
+            "mean_ms": 644.17
           },
           "end_to_end_completed": {
             "n": 25,
-            "p50_ms": 9591.65,
-            "p95_ms": 9987.49,
-            "p99_ms": 10147.48,
-            "max_ms": 10197.9,
-            "mean_ms": 9006.8
+            "p50_ms": 4727.55,
+            "p95_ms": 5910.16,
+            "p99_ms": 5910.66,
+            "max_ms": 5910.73,
+            "mean_ms": 4458.64
           },
-          "throughput_runs_per_s": 2.45,
+          "throughput_runs_per_s": 4.22,
           "sample_errors": [],
           "connections": {
-            "peak_connections": 21,
-            "peak_active": 5,
-            "samples": 51
+            "peak_connections": 24,
+            "peak_active": 7,
+            "samples": 30
           }
         },
         {
           "concurrency": 50,
-          "wall_s": 19.11,
+          "wall_s": 14.71,
           "statuses": {
-            "completed": 50
+            "completed": 49,
+            "http_503": 1
           },
           "submit": {
             "n": 50,
-            "p50_ms": 777.7,
-            "p95_ms": 2120.24,
-            "p99_ms": 2386.06,
-            "max_ms": 2465.34,
-            "mean_ms": 996.8
+            "p50_ms": 804.42,
+            "p95_ms": 1531.01,
+            "p99_ms": 1570.4,
+            "max_ms": 1582.02,
+            "mean_ms": 907.51
           },
           "end_to_end_completed": {
-            "n": 50,
-            "p50_ms": 17642.41,
-            "p95_ms": 18821.68,
-            "p99_ms": 19016.74,
-            "max_ms": 19096.71,
-            "mean_ms": 16969.04
+            "n": 49,
+            "p50_ms": 10254.95,
+            "p95_ms": 14636.28,
+            "p99_ms": 14688.1,
+            "max_ms": 14689.19,
+            "mean_ms": 9805.89
           },
-          "throughput_runs_per_s": 2.62,
-          "sample_errors": [],
+          "throughput_runs_per_s": 3.33,
+          "sample_errors": [
+            "{\"detail\":\"server at capacity: 8 running, 33 queued (run_max_concurrent=8, run_queue_max=32) \u2014 retry later\"}"
+          ],
           "connections": {
-            "peak_connections": 21,
-            "peak_active": 3,
-            "samples": 95
+            "peak_connections": 24,
+            "peak_active": 11,
+            "samples": 73
           }
         }
       ],
-      "elapsed_s": 43.7
+      "elapsed_s": 31.8
     },
     "sse": {
       "paused_run": {
-        "run_id": "96f7627d-3716-4b6f-b10e-94c5e06ef1f0",
+        "run_id": "15c41479-c1e0-4d0b-91e8-0cfba2411ee3",
         "status": "paused_hitl",
         "error": null
       },
       "chat_stream": {
-        "path": "/api/v1/chat/stream/96f7627d-3716-4b6f-b10e-94c5e06ef1f0",
+        "path": "/api/v1/chat/stream/15c41479-c1e0-4d0b-91e8-0cfba2411ee3",
         "step": 5,
         "max_attempted": 60,
         "levels": [
@@ -331,7 +330,7 @@
             "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 8.44,
+              "p50_ms": 15.13,
               "codes": [
                 200,
                 200,
@@ -339,9 +338,8 @@
               ]
             },
             "connections": {
-              "total": 12,
-              "idle": 7,
-              "idle_in_transaction": 5
+              "total": 14,
+              "idle": 14
             }
           },
           {
@@ -350,7 +348,7 @@
             "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 8.84,
+              "p50_ms": 12.4,
               "codes": [
                 200,
                 200,
@@ -358,47 +356,17 @@
               ]
             },
             "connections": {
-              "total": 17,
-              "idle": 7,
-              "idle_in_transaction": 10
+              "total": 14,
+              "idle": 14
             }
           },
           {
             "streams_attempted": 15,
             "streams_open": 15,
             "probe": {
-              "ok": 0,
-              "failed": 3,
-              "p50_ms": null,
-              "codes": [
-                -1,
-                -1,
-                -1
-              ]
-            },
-            "connections": {
-              "total": 21,
-              "idle": 6,
-              "idle_in_transaction": 15
-            }
-          }
-        ],
-        "max_streams_with_healthy_probe": 10,
-        "first_failure_at_streams": 15,
-        "recovery_after_close_ms": 42.3
-      },
-      "ambient_stream": {
-        "path": "/api/v1/ambient/stream",
-        "step": 20,
-        "max_attempted": 120,
-        "levels": [
-          {
-            "streams_attempted": 20,
-            "streams_open": 20,
-            "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 6.75,
+              "p50_ms": 10.48,
               "codes": [
                 200,
                 200,
@@ -406,8 +374,80 @@
               ]
             },
             "connections": {
-              "total": 11,
-              "idle": 11
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 20,
+            "streams_open": 20,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.57,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 25,
+            "streams_open": 25,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.17,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 30,
+            "streams_open": 30,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.94,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 35,
+            "streams_open": 35,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 14.81,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
             }
           },
           {
@@ -416,7 +456,7 @@
             "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 7.7,
+              "p50_ms": 14.68,
               "codes": [
                 200,
                 200,
@@ -424,17 +464,17 @@
               ]
             },
             "connections": {
-              "total": 11,
-              "idle": 11
+              "total": 14,
+              "idle": 14
             }
           },
           {
-            "streams_attempted": 60,
-            "streams_open": 60,
+            "streams_attempted": 45,
+            "streams_open": 45,
             "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 11.71,
+              "p50_ms": 10.24,
               "codes": [
                 200,
                 200,
@@ -442,31 +482,13 @@
               ]
             },
             "connections": {
-              "total": 11,
-              "idle": 11
+              "total": 14,
+              "idle": 14
             }
           },
           {
-            "streams_attempted": 80,
-            "streams_open": 80,
-            "probe": {
-              "ok": 3,
-              "failed": 0,
-              "p50_ms": 9.49,
-              "codes": [
-                200,
-                200,
-                200
-              ]
-            },
-            "connections": {
-              "total": 11,
-              "idle": 11
-            }
-          },
-          {
-            "streams_attempted": 100,
-            "streams_open": 100,
+            "streams_attempted": 50,
+            "streams_open": 50,
             "probe": {
               "ok": 3,
               "failed": 0,
@@ -478,17 +500,17 @@
               ]
             },
             "connections": {
-              "total": 11,
-              "idle": 11
+              "total": 14,
+              "idle": 14
             }
           },
           {
-            "streams_attempted": 120,
-            "streams_open": 120,
+            "streams_attempted": 55,
+            "streams_open": 55,
             "probe": {
               "ok": 3,
               "failed": 0,
-              "p50_ms": 9.37,
+              "p50_ms": 10.66,
               "codes": [
                 200,
                 200,
@@ -496,175 +518,82 @@
               ]
             },
             "connections": {
-              "total": 11,
-              "idle": 11
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 60,
+            "streams_open": 60,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 14.23,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
             }
           }
         ],
-        "max_streams_with_healthy_probe": 120,
+        "max_streams_with_healthy_probe": 60,
         "first_failure_at_streams": null,
-        "recovery_after_close_ms": 46.6
+        "recovery_after_close_ms": 43.3
       },
-      "elapsed_s": 48.8
-    },
-    "recall": {
-      "embedding_key": "fake:scripted@64",
-      "levels": [
-        {
-          "loadgen_memories": 1000,
-          "active_memories": 1003,
-          "fake_vectors": 1002,
-          "concurrency_1": {
-            "n": 40,
-            "p50_ms": 18.08,
-            "p95_ms": 33.53,
-            "p99_ms": 36.97,
-            "max_ms": 37.67,
-            "mean_ms": 19.8,
-            "errors": 0
-          },
-          "concurrency_5": {
-            "n": 40,
-            "p50_ms": 44.68,
-            "p95_ms": 56.81,
-            "p99_ms": 60.47,
-            "max_ms": 60.69,
-            "mean_ms": 46.68,
-            "errors": 0
-          },
-          "vector_leg_plan": {
-            "node": "Limit",
-            "total_cost": 182.84,
-            "scans": [
-              "Seq Scan on memories",
-              "Seq Scan on memory_embeddings",
-              "Seq Scan on memory_embeddings"
-            ]
+      "ambient_stream": {
+        "path": "/api/v1/ambient/stream",
+        "step": 20,
+        "max_attempted": 120,
+        "levels": [
+          {
+            "streams_attempted": 20,
+            "streams_open": 0,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 47.79,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 13,
+              "idle": 13
+            }
           }
-        },
-        {
-          "loadgen_memories": 10000,
-          "active_memories": 10003,
-          "fake_vectors": 10002,
-          "concurrency_1": {
-            "n": 40,
-            "p50_ms": 42.53,
-            "p95_ms": 76.46,
-            "p99_ms": 79.34,
-            "max_ms": 80.99,
-            "mean_ms": 48.36,
-            "errors": 0
-          },
-          "concurrency_5": {
-            "n": 40,
-            "p50_ms": 65.4,
-            "p95_ms": 105.84,
-            "p99_ms": 112.5,
-            "max_ms": 113.3,
-            "mean_ms": 69.32,
-            "errors": 0
-          },
-          "vector_leg_plan": {
-            "node": "Limit",
-            "total_cost": 1652.97,
-            "scans": [
-              "Seq Scan on memories",
-              "Seq Scan on memory_embeddings",
-              "Seq Scan on memory_embeddings"
-            ]
-          }
-        },
-        {
-          "loadgen_memories": 100000,
-          "active_memories": 100003,
-          "fake_vectors": 100002,
-          "concurrency_1": {
-            "n": 40,
-            "p50_ms": 123.11,
-            "p95_ms": 511.87,
-            "p99_ms": 516.61,
-            "max_ms": 519.52,
-            "mean_ms": 173.36,
-            "errors": 0
-          },
-          "concurrency_5": {
-            "n": 40,
-            "p50_ms": 327.01,
-            "p95_ms": 811.32,
-            "p99_ms": 928.68,
-            "max_ms": 956.72,
-            "mean_ms": 401.39,
-            "errors": 0
-          },
-          "vector_leg_plan": {
-            "node": "Limit",
-            "total_cost": 12919.38,
-            "scans": [
-              "Seq Scan on memories",
-              "Seq Scan on memory_embeddings",
-              "Seq Scan on memory_embeddings"
-            ]
-          }
-        }
-      ],
-      "elapsed_s": 21.6
-    },
-    "ambient": {
-      "routine": "loadgen-routine-2c0139",
-      "events_fired": 40,
-      "fire": {
-        "n": 40,
-        "p50_ms": 113.78,
-        "p95_ms": 456.83,
-        "p99_ms": 472.01,
-        "max_ms": 475.41,
-        "mean_ms": 186.94,
-        "codes": {
-          "202": 40
-        }
+        ],
+        "max_streams_with_healthy_probe": 0,
+        "first_failure_at_streams": 20,
+        "recovery_after_close_ms": 74.9
       },
-      "drain": {
-        "accepted": 40,
-        "drain_seconds": 62.97,
-        "events_per_second": 0.64,
-        "timed_out": false
-      },
-      "verdicts": {
-        "fired": 40
-      },
-      "runs": {
-        "statuses": {
-          "completed": 40
-        },
-        "all_terminal_after_s": 79.24
-      },
-      "connections": {
-        "peak_connections": 29,
-        "peak_active": 22,
-        "samples": 391
-      },
-      "routine_deleted": true,
-      "elapsed_s": 79.3
+      "elapsed_s": 16.8
     }
   },
   "at_rest": {
     "connections": {
-      "total": 11,
-      "idle": 11
+      "total": 14,
+      "idle": 14
     },
     "max_connections": 100
   },
   "cleanup": {
-    "memory_embeddings": "DELETE 100040",
-    "memories": "DELETE 100000",
-    "run_steps": "DELETE 30134",
-    "runs": "DELETE 10131",
-    "conversations": "DELETE 231"
+    "memory_embeddings": "DELETE 0",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 30093",
+    "runs": "DELETE 10090",
+    "conversations": "DELETE 191"
   },
   "at_rest_after": {
     "connections": {
-      "total": 12,
-      "idle": 12
+      "total": 14,
+      "idle": 14
     },
     "max_connections": 100
   }

@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "label": "ambient-burst",
+    "captured_at": "2026-09-10T21:30:41+00:00",
+    "git_sha": "8d5424c",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "ambient"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "ambient-burst",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M49/ambient-burst.json",
+      "scenarios": [
+        "ambient"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": true,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "ambient": {
+      "routine": "loadgen-routine-00c758",
+      "events_fired": 40,
+      "fire": {
+        "n": 40,
+        "p50_ms": 211.21,
+        "p95_ms": 409.07,
+        "p99_ms": 418.72,
+        "max_ms": 423.94,
+        "mean_ms": 229.98,
+        "codes": {
+          "202": 40
+        }
+      },
+      "drain": {
+        "accepted": 40,
+        "drain_seconds": 63.11,
+        "events_per_second": 0.63,
+        "timed_out": false
+      },
+      "verdicts": {
+        "fired": 40
+      },
+      "runs": {
+        "statuses": {
+          "completed": 40
+        },
+        "all_terminal_after_s": 66.12
+      },
+      "connections": {
+        "peak_connections": 24,
+        "peak_active": 7,
+        "samples": 327
+      },
+      "routine_deleted": true,
+      "elapsed_s": 66.2
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 0",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 40",
+    "runs": "DELETE 40",
+    "conversations": "DELETE 40"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  }
+}
