@@ -20,6 +20,29 @@ from app.llm.registry import model_provider
 
 _SCRIPT: deque[AIMessage | BaseException] = deque()
 _SEEN_TOOLS: list[list[str]] = []
+# M51: when strict, a provider call made with a DB session open in the
+# current task raises — the test-time enforcement of "claim → commit →
+# call → write back" (spec §16.2, PLAN M51)
+_STRICT_SESSIONS = False
+
+
+def set_strict_sessions(value: bool) -> None:
+    global _STRICT_SESSIONS
+    _STRICT_SESSIONS = value
+
+
+def _assert_no_open_session(where: str) -> None:
+    if not _STRICT_SESSIONS:
+        return
+    from app.db import open_sessions
+
+    n = open_sessions()
+    if n:
+        raise RuntimeError(
+            f"provider call ({where}) made with {n} DB session(s) open in this task — "
+            "compute the model/embedding result BEFORE opening the write transaction"
+        )
+
 
 _DEFAULT_USAGE = UsageMetadata(input_tokens=7, output_tokens=11, total_tokens=18)
 
@@ -77,6 +100,9 @@ class ScriptedChatModel(BaseChatModel):
     effort: str | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
+    # M51 port limits (the contract suite asserts every adapter carries them)
+    timeout: float | None = None
+    max_retries: int | None = None
 
     @property
     def _llm_type(self) -> str:
@@ -101,6 +127,7 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        _assert_no_open_session("chat")
         bound_tools = kwargs.get("tools") or []
         _SEEN_TOOLS.append(
             [t.get("function", {}).get("name", t.get("name", "?")) for t in bound_tools]
@@ -185,11 +212,16 @@ class FakeProvider:
     def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:
         if not self.is_configured():
             raise ProviderNotConfiguredError("fake: FAKE_LLM_ENABLED not set")
+        from app.llm.adapters import port_limits
+
+        limits = port_limits()
         return ScriptedChatModel(
             model_name=model,
             effort=params.effort if params else None,
             temperature=params.temperature if params else None,
             max_output_tokens=params.max_output_tokens if params else None,
+            timeout=limits["timeout"],
+            max_retries=limits["max_retries"],
         )
 
     def supports_embeddings(self) -> bool:
@@ -200,6 +232,7 @@ class FakeProvider:
         cosine similarity, so ranking tests exercise genuine vector math."""
         if not self.is_configured():
             raise ProviderNotConfiguredError("fake: FAKE_LLM_ENABLED not set")
+        _assert_no_open_session("embeddings")
         dims = 64
         out: list[list[float]] = []
         for text in texts:

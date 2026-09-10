@@ -15,10 +15,10 @@ delivery behavior stays byte-identical to M23–M25.
 """
 
 import asyncio
-import json
+import itertools
 import smtplib
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from typing import Any
 
@@ -47,7 +47,11 @@ def set_http_client_factory(fn: Callable[[], httpx.AsyncClient] | None) -> None:
 def _client() -> httpx.AsyncClient:
     if _http_client_factory is not None:
         return _http_client_factory()
-    return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+    from app import egress
+
+    # M52: the operator's sink is still an outbound fetch — same policy,
+    # and a POST never follows a redirect (it would resend the envelope)
+    return egress.client(timeout=15.0, follow_redirects=False)
 
 
 def register_channel_adapter(name: str, fn: ChannelAdapter | None) -> None:
@@ -153,37 +157,87 @@ def unsubscribe_stream(sub_id: int) -> None:
 
 
 def stream_subscriber_count() -> int:
-    """The §18.4 pursuit presence oracle: how many subscribers `_publish`
-    would fan out to right now. Not an estimate of presence — it IS the
-    audience of the toast, which is exactly the question pursuit asks.
-    Per-process by construction, and correct that way: under §18.9 a tick
-    on this replica can only ever toast this replica's subscribers."""
+    """This process's share of the §18.4 pursuit oracle: how many
+    subscribers `_publish` fans out to here. Since M54 the toast reaches
+    every replica, so the oracle proper is `audience()` — this count plus
+    the other live replicas' (their heartbeat rows carry it)."""
     return len(_subscribers)
 
 
-def _publish(mode: str, rows: list[Delivery]) -> None:
+_EVENT_SEQ = itertools.count(1)
+
+
+def _fan_local(event: dict[str, Any]) -> None:
+    for queue in list(_subscribers.values()):
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:  # a stalled consumer never blocks the tick
+            continue
+
+
+def _event(mode: str, row: Delivery, now: str) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "mode": mode,
+        "tier": row.tier,
+        "urgency": row.urgency,
+        "category": row.category,
+        "title": row.title,
+        "at": now,
+        # M55 (spec §20): the owner rides the event so a subscriber's stream
+        # can ask the port whether this principal may see it
+        "user_id": str(row.user_id) if getattr(row, "user_id", None) else None,
+    }
+
+
+def _publish(mode: str, rows: list[Delivery]) -> list[dict[str, Any]]:
+    """Fan a batch to THIS process's subscribers; returns the events so the
+    caller can announce them to the fleet (M54)."""
+    now = datetime.now(UTC).isoformat()
+    events = [_event(mode, row, now) for row in rows]
+    if _subscribers:
+        for event in events:
+            # M53: a per-process sequence is the stream's `id:` line
+            _fan_local({"seq": next(_EVENT_SEQ), **event})
+    return events
+
+
+async def publish(mode: str, rows: list[Delivery]) -> None:
+    """M54 (spec §18.9, scale-B1): the toast reaches every replica's
+    subscribers — local fan-out, then one control-channel announcement per
+    delivery that every OTHER replica re-fans (`fan_in`), origin-tagged so
+    the announcing replica ignores its own."""
+    from app import control
+
+    for event in _publish(mode, rows):
+        await control.notify("delivery", **event)
+
+
+def fan_in(message: dict[str, Any]) -> None:
+    """A delivery announced by another replica: give it a local sequence
+    and hand it to this process's subscribers."""
     if not _subscribers:
         return
-    now = datetime.now(UTC).isoformat()
-    for row in rows:
-        event = {
-            "id": str(row.id),
-            "mode": mode,
-            "tier": row.tier,
-            "urgency": row.urgency,
-            "category": row.category,
-            "title": row.title,
-            "at": now,
-        }
-        for queue in list(_subscribers.values()):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:  # a stalled consumer never blocks the tick
-                continue
+    event = {
+        "seq": next(_EVENT_SEQ),
+        **{k: message.get(k) for k in ("id", "mode", "tier", "urgency", "category", "title", "at")},
+    }
+    _fan_local(event)
 
 
-def sse_line(event: dict[str, Any]) -> str:
-    return f"data: {json.dumps(event)}\n\n"
+async def audience() -> int:
+    """The §18.4 pursuit oracle across the fleet (M54): this process's
+    subscribers plus every other live replica's — the literal audience of
+    the toast `publish` just sent. Falls back to the local count if the
+    fleet table cannot be read."""
+    local = stream_subscriber_count()
+    try:
+        from app.replica import cluster_audience
+
+        return await cluster_audience(local)
+    except Exception as exc:  # noqa: BLE001 — the local count is the floor, never less
+        logger.warning("ambient_audience_fallback", error=str(exc)[:200])
+        return local
 
 
 # ── the dispatch hook (called by every flush path) ───────────────────
@@ -205,27 +259,15 @@ async def _record_send(rows: list[Delivery], channel: str, entry: dict[str, Any]
 _REALTIME_MODES = {"interrupt", "notify"}
 
 
-async def _record_in_app_outcome(mode: str, rows: list[Delivery], watchers: int) -> None:
-    """M42: record the truth when the in-app broadcast reached nobody.
+def _in_app_outcome(mode: str, watchers: int) -> dict[str, Any] | None:
+    """M42: the truth when the in-app broadcast reached nobody.
 
-    Written ONLY on the lossy path — the happy path leaves `external` null,
-    so byte-identity at defaults is preserved (spec §18.4)."""
+    Recorded ONLY on the lossy path — the happy path leaves `external` null,
+    so byte-identity at defaults is preserved (spec §18.4). This is an
+    outcome record, never a send to retry (M51)."""
     if mode not in _REALTIME_MODES or watchers > 0:
-        return
-    entry = {
-        "ok": False,
-        "error": "no subscriber",
-        "at": datetime.now(UTC).isoformat(),
-    }
-    await _record_send(rows, "in_app", entry)
-    logger.info(
-        "ambient_delivered_unseen",
-        tier="ambient",
-        kind="deliver",
-        mode=mode,
-        count=len(rows),
-        delivery_ids=[str(r.id) for r in rows],
-    )
+        return None
+    return {"ok": False, "error": "no subscriber", "at": datetime.now(UTC).isoformat()}
 
 
 def _pursue(pursuit: str, watchers: int) -> bool:
@@ -243,23 +285,84 @@ def _pursue(pursuit: str, watchers: int) -> bool:
     return True  # 'always', and any unknown value fails safe to it
 
 
-async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
+MAX_SEND_ATTEMPTS = 4  # M51: then the channel entry is dead-lettered
+_SEND_BACKOFF_S = (60, 300, 1800)  # after attempt 1, 2, 3+
+_RETRY_BATCH = 20
+_RETRY_WINDOW_DAYS = 7
+
+
+def _send_entry(
+    prior: dict[str, Any] | None, ok: bool, error: str | None, now: datetime
+) -> dict[str, Any]:
+    """One channel's ledger entry: attempt counter, next attempt with
+    backoff, dead-letter flag (M51). `ok` resets the retry state."""
+    from app.sanitize import sanitize_error
+
+    attempts = int((prior or {}).get("attempts") or 0) + 1
+    entry: dict[str, Any] = {
+        "ok": ok,
+        "error": None if ok else (sanitize_error(error) or "unknown error")[:500],
+        "at": now.isoformat(),
+        "attempts": attempts,
+        "next_attempt_at": None,
+        "dead": False,
+    }
+    if not ok:
+        if attempts >= MAX_SEND_ATTEMPTS:
+            entry["dead"] = True
+        else:
+            backoff = _SEND_BACKOFF_S[min(attempts - 1, len(_SEND_BACKOFF_S) - 1)]
+            entry["next_attempt_at"] = (now + timedelta(seconds=backoff)).isoformat()
+    return entry
+
+
+async def _send_one(name: str, mode: str, rows: list[Delivery]) -> tuple[bool, str | None]:
+    adapter = _ADAPTERS.get(name)
+    if adapter is None:
+        return False, f"channel {name!r} is not registered"
+    try:
+        await adapter(mode, rows)
+    except Exception as exc:  # noqa: BLE001 — never blocks the outbox
+        return False, str(exc)[:500]
+    return True, None
+
+
+async def dispatch_delivered(
+    mode: str, rows: list[Delivery], *, record: bool = True
+) -> dict[str, dict[str, Any]]:
     """Fan a just-delivered batch out: SSE stream always, external channels
     per the `ambient_channels` routing. Failures are ledgered, logged, and
-    never raised — the in-app outbox is already the source of truth."""
+    never raised — the in-app outbox is already the source of truth.
+    M51: returns the per-channel ledger entries (attempt counter, next
+    attempt, dead flag); with `record=False` the caller writes them in its
+    own transaction (dispatch-then-commit in the flush)."""
     if not rows:
-        return
+        return {}
     # sample the oracle BEFORE publishing: this count is precisely the
-    # audience `_publish` is about to reach (spec §18.4, M41)
-    watchers = stream_subscriber_count()
-    _publish(mode, rows)
+    # audience `publish` is about to reach (spec §18.4, M41) — since M54
+    # the fleet's audience, because the toast is fanned to every replica
+    watchers = await audience()
+    await publish(mode, rows)
     from app.registry_cache import get_cache
 
     routing = dict(await get_cache().setting("ambient_channels") or {})
     names = [str(n) for n in (routing.get(mode) or []) if n != "in_app"]
+    entries: dict[str, dict[str, Any]] = {}
     # §17.5 pursuit: a routing modifier over the EXTERNAL half only — the
     # in-app outbox row and its toast above are already decided and sent
-    await _record_in_app_outcome(mode, rows, watchers)
+    in_app = _in_app_outcome(mode, watchers)
+    if in_app is not None:
+        entries["in_app"] = in_app
+        logger.info(
+            "ambient_delivered_unseen",
+            tier="ambient",
+            kind="deliver",
+            mode=mode,
+            count=len(rows),
+            delivery_ids=[str(r.id) for r in rows],
+        )
+        if record:
+            await _record_send(rows, "in_app", in_app)
     pursuit = str(await get_cache().setting("ambient_pursuit") or "always")
     if names and not _pursue(pursuit, watchers):
         logger.info(
@@ -271,29 +374,83 @@ async def dispatch_delivered(mode: str, rows: list[Delivery]) -> None:
             watchers=watchers,
             channels=names,
         )
-        return
+        return entries
+    from app import obs
+
     for name in names:
-        adapter = _ADAPTERS.get(name)
-        entry: dict[str, Any] = {"at": datetime.now(UTC).isoformat()}
-        if adapter is None:
-            entry.update(ok=False, error=f"channel {name!r} is not registered")
-        else:
-            try:
-                await adapter(mode, rows)
-                entry.update(ok=True, error=None)
-            except Exception as exc:  # noqa: BLE001 — never blocks the outbox
-                entry.update(ok=False, error=str(exc)[:500])
-        if not entry["ok"]:
+        ok, error = await _send_one(name, mode, rows)
+        entry = _send_entry(None, ok, error, datetime.now(UTC))
+        if not ok:
             logger.warning(
                 "ambient_channel_failed",
                 tier="ambient",
                 kind="deliver",
                 channel=name,
                 error=entry.get("error"),
+                attempts=entry["attempts"],
+                next_attempt_at=entry["next_attempt_at"],
             )
-        await _record_send(rows, name, entry)
-        from app import obs
+        entries[name] = entry
+        if record:
+            await _record_send(rows, name, entry)
+        obs.AMBIENT_OPS.labels(kind="channel", status=f"{name}_{'ok' if ok else 'error'}").inc()
+        obs.DELIVERY_SENDS.labels(channel=name, status="ok" if ok else "retry").inc()
+    return entries
 
-        obs.AMBIENT_OPS.labels(
-            kind="channel", status=f"{name}_{'ok' if entry['ok'] else 'error'}"
-        ).inc()
+
+async def retry_external_sends(now: datetime | None = None, batch: int = _RETRY_BATCH) -> int:
+    """M51: re-send failed external channel entries whose backoff has
+    elapsed, at most `batch` sends per tick; an entry that has exhausted
+    MAX_SEND_ATTEMPTS is dead-lettered and never retried. Returns sends
+    attempted."""
+    now = now or datetime.now(UTC)
+    from sqlalchemy import select
+
+    from app import obs
+
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(Delivery)
+                    .where(
+                        Delivery.external.isnot(None),
+                        Delivery.delivered_at.isnot(None),
+                        Delivery.delivered_at >= now - timedelta(days=_RETRY_WINDOW_DAYS),
+                    )
+                    .order_by(Delivery.delivered_at.desc())
+                    .limit(500)
+                )
+            ).scalars()
+        )
+    attempted = 0
+    for row in rows:
+        if attempted >= batch:
+            break
+        for name, prior in dict(row.external or {}).items():
+            if name == "in_app" or not isinstance(prior, dict):
+                continue
+            if prior.get("ok") or prior.get("dead"):
+                continue
+            due = prior.get("next_attempt_at")
+            if not due or datetime.fromisoformat(str(due)) > now:
+                continue
+            ok, error = await _send_one(name, str(row.channel or "notify"), [row])
+            entry = _send_entry(prior, ok, error, now)
+            await _record_send([row], name, entry)
+            attempted += 1
+            obs.DELIVERY_SENDS.labels(
+                channel=name, status="ok" if ok else ("dead" if entry["dead"] else "retry")
+            ).inc()
+            logger.info(
+                "ambient_channel_retry",
+                tier="ambient",
+                kind="deliver",
+                channel=name,
+                ok=ok,
+                attempts=entry["attempts"],
+                dead=entry["dead"],
+            )
+            if attempted >= batch:
+                break
+    return attempted

@@ -1,0 +1,144 @@
+{
+  "meta": {
+    "label": "live-sample",
+    "captured_at": "2026-09-01T22:52:09+00:00",
+    "git_sha": "d687689",
+    "base_url": "http://localhost:8000",
+    "model": "openrouter:qwen/qwen3.8-max",
+    "scenarios": [
+      "chat"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "openrouter:qwen/qwen3.8-max",
+      "label": "live-sample",
+      "out": "../docs/acceptance/prod/M49/live-sample.json",
+      "scenarios": [
+        "chat"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        3,
+        6
+      ],
+      "chat_deadline": 240.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": "openai:text-embedding-3-small",
+      "memory_enabled": true,
+      "ambient_enabled": false,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "chat": {
+      "model": "openrouter:qwen/qwen3.8-max",
+      "levels": [
+        {
+          "concurrency": 3,
+          "wall_s": 10.37,
+          "statuses": {
+            "completed": 3
+          },
+          "submit": {
+            "n": 3,
+            "p50_ms": 35.63,
+            "p95_ms": 35.73,
+            "p99_ms": 35.73,
+            "max_ms": 35.74,
+            "mean_ms": 34.7
+          },
+          "end_to_end_completed": {
+            "n": 3,
+            "p50_ms": 8273.94,
+            "p95_ms": 10157.4,
+            "p99_ms": 10324.81,
+            "max_ms": 10366.67,
+            "mean_ms": 8971.27
+          },
+          "throughput_runs_per_s": 0.29,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 13,
+            "peak_active": 1,
+            "samples": 52
+          }
+        },
+        {
+          "concurrency": 6,
+          "wall_s": 14.71,
+          "statuses": {
+            "completed": 6
+          },
+          "submit": {
+            "n": 6,
+            "p50_ms": 250.22,
+            "p95_ms": 314.83,
+            "p99_ms": 315.27,
+            "max_ms": 315.38,
+            "mean_ms": 264.53
+          },
+          "end_to_end_completed": {
+            "n": 6,
+            "p50_ms": 11416.12,
+            "p95_ms": 14121.16,
+            "p99_ms": 14589.74,
+            "max_ms": 14706.88,
+            "mean_ms": 11525.17
+          },
+          "throughput_runs_per_s": 0.41,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 20,
+            "peak_active": 1,
+            "samples": 73
+          }
+        }
+      ],
+      "elapsed_s": 29.1
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 13,
+      "active": 1,
+      "idle": 12
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 2",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 9",
+    "runs": "DELETE 9",
+    "conversations": "DELETE 9"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 12,
+      "idle": 11,
+      "idle_in_transaction": 1
+    },
+    "max_connections": 100
+  }
+}

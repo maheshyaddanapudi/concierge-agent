@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { Children, cloneElement, isValidElement, useId, useState } from 'react'
 import type { Source, Status } from '../api/types'
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -47,6 +47,8 @@ export function StatusPill({ status, title }: { status: Status | string; title?:
     inactive: 'bg-slate-500/15 text-slate-400 ring-slate-500/30',
     error: 'bg-rose-500/15 text-rose-400 ring-rose-500/30',
     running: 'bg-sky-500/15 text-sky-400 ring-sky-500/30 animate-pulse',
+    queued: 'bg-violet-500/15 text-violet-400 ring-violet-500/30',
+    stalled: 'bg-rose-500/15 text-rose-400 ring-rose-500/30',
     paused_hitl: 'bg-amber-500/15 text-amber-400 ring-amber-500/30',
     completed: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/30',
     failed: 'bg-rose-500/15 text-rose-400 ring-rose-500/30',
@@ -104,6 +106,10 @@ export function Button({
   disabled,
   type = 'button',
   title,
+  role,
+  'aria-label': ariaLabel,
+  'aria-selected': ariaSelected,
+  'aria-pressed': ariaPressed,
 }: {
   children: ReactNode
   onClick?: () => void
@@ -111,6 +117,12 @@ export function Button({
   disabled?: boolean
   type?: 'button' | 'submit'
   title?: string
+  // M53 accessibility: icon-only buttons name themselves, tab bars carry
+  // tab semantics, toggling buttons expose their pressed state
+  role?: string
+  'aria-label'?: string
+  'aria-selected'?: boolean
+  'aria-pressed'?: boolean
 }) {
   const variants = {
     primary: 'bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-900',
@@ -123,10 +135,14 @@ export function Button({
     <button
       type={type}
       title={title}
+      role={role}
+      aria-label={ariaLabel}
+      aria-selected={ariaSelected}
+      aria-pressed={ariaPressed}
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed',
+        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400',
         variants[variant],
       )}
     >
@@ -140,18 +156,31 @@ export function Toggle({
   onChange,
   disabled,
   label,
+  id,
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
 }: {
   checked: boolean
   onChange: (next: boolean) => void
   disabled?: boolean
   label?: string
+  // M53 accessibility: a Field wires its label to the switch through these
+  id?: string
+  'aria-label'?: string
+  'aria-labelledby'?: string
+  'aria-describedby'?: string
 }) {
   return (
     <label className={cx('inline-flex items-center gap-2', disabled && 'opacity-50')}>
       <button
         type="button"
         role="switch"
+        id={id}
         aria-checked={checked}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cx(
@@ -174,22 +203,61 @@ export function Toggle({
   )
 }
 
+const CONTROL_TAGS = new Set(['input', 'select', 'textarea', 'button'])
+
+/** A labelled control. M53 accessibility: the label is a real `<label>`
+ * bound to the control — when the single child is a control (native or one
+ * of ours: TextInput, Select, TextArea, Toggle) it receives the label's
+ * id through `aria-labelledby` (and the hint through `aria-describedby`),
+ * so screen readers announce the field name and `getByLabelText` finds
+ * it. A wrapper child (a div of several controls) is left alone; label
+ * its controls individually. `after` renders below the hint, outside the
+ * label association (error notes, secondary actions). */
 export function Field({
   label,
   children,
   hint,
+  after,
 }: {
   label: string
   children: ReactNode
   hint?: string
+  after?: ReactNode
 }) {
+  const id = useId()
+  const labelId = `${id}-label`
+  const hintId = `${id}-hint`
+  const single = Children.count(children) === 1 ? Children.only(children) : null
+  let wired: ReactNode = children
+  let controlId: string | undefined
+  if (isValidElement(single)) {
+    const props = single.props as Record<string, unknown>
+    const isControl = typeof single.type === 'string' ? CONTROL_TAGS.has(single.type) : true
+    if (isControl) {
+      controlId = typeof props.id === 'string' ? props.id : id
+      wired = cloneElement(single as React.ReactElement<Record<string, unknown>>, {
+        id: controlId,
+        'aria-labelledby': (props['aria-labelledby'] as string | undefined) ?? labelId,
+        ...(hint && !props['aria-describedby'] ? { 'aria-describedby': hintId } : {}),
+      })
+    }
+  }
   return (
     <div className="space-y-1">
-      <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+      <label
+        id={labelId}
+        htmlFor={controlId}
+        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500"
+      >
         {label}
       </label>
-      {children}
-      {hint && <p className="text-[11px] text-slate-500">{hint}</p>}
+      {wired}
+      {hint && (
+        <p id={hintId} className="text-[11px] text-slate-500">
+          {hint}
+        </p>
+      )}
+      {after}
     </div>
   )
 }
@@ -236,7 +304,12 @@ export function Drawer({
       >
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-slate-950/95 px-5 py-3 backdrop-blur">
           <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200">
+          <button
+            type="button"
+            aria-label="close"
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200"
+          >
             ✕
           </button>
         </div>

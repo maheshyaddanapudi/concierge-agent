@@ -100,5 +100,6 @@ def parse_eval_file(filename: str, data: bytes) -> dict[str, Any]:
                 "grader": grader,
             }
         )
-    assert level is not None and target_id is not None
+    if level is None or target_id is None:
+        raise EvalParseError("the file has no data rows")
     return {"level": level, "target_id": target_id, "cases": cases}

@@ -1,0 +1,17 @@
+# Golden set for aggregator.md (spec §7.1 graph mode): merge step outputs
+# into one answer without leaking plan mechanics or drawing text charts.
+consumer: app/orchestrator/graph_mode.py
+render: format
+cases:
+  - name: merge_two_steps
+    vars:
+      task: "Compare Q1 and Q2 revenue"
+      outputs: "s1: Q1 revenue 10\ns2: Q2 revenue 12"
+    must_contain:
+      - "Merge the outputs of the dispatched capabilities into one clear, direct answer"
+      - "Do not mention the internal plan, capability names, or step mechanics"
+      - "If some steps failed, state plainly what could not be completed and why"
+      - "never draw an ASCII/text chart of the same data"
+      - "never with positional words"
+      - "Compare Q1 and Q2 revenue"
+      - "s2: Q2 revenue 12"

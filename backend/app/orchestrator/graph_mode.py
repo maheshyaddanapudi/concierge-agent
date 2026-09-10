@@ -312,7 +312,7 @@ async def fallback_node(state: OrchestratorState) -> dict[str, Any]:
             emit_dispatch=True,
         )
         return {"outputs": {"fallback": {"status": "ok", "output": text}}}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — any fallback failure becomes a RunFailed carrying the cause
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         raise RunFailed(f"full-catalog fallback failed: {exc}") from exc
 

@@ -16,6 +16,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy import and_, func, or_, select
 
+from app.cost import SpendCeilingReached
 from app.db import get_session_factory
 from app.models import (
     AmbientEvent,
@@ -44,17 +45,44 @@ def _first_line(text: str, limit: int = 200) -> str:
     return line[:limit]
 
 
+_PAYLOAD_MAX_CHARS = 4000
+
+
+def render_fire_prompt(kind: str, **vars: Any) -> str:
+    """The trusted prompt for a fired event with its UNTRUSTED payload
+    rendered through the one fence choke point (M52): `event_payload` is
+    neutralized and the fence tags carry a per-render token."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    prompt = load_prompt("ambient_run") if kind == "routine" else load_prompt("ambient_intent_run")
+    return untrusted.render(
+        prompt,
+        mode="format",
+        body_var="event_payload",
+        body=str(vars.pop("event_payload", "")),
+        max_chars=_PAYLOAD_MAX_CHARS,
+        **vars,
+    )
+
+
 async def prepare_run(event: AmbientEvent) -> Run | None:
     """Build the run for a fired event: fresh conversation, trusted prompt +
     untrusted-fenced payload + abstain instruction, trigger provenance set
     BEFORE the task starts (the runner reads it for the projection)."""
     from app.orchestrator.runner import create_run
-    from app.prompts import load_prompt
 
     decision = event.decision or {}
-    payload_json = json.dumps(event.payload or {}, default=str)[:4000]
+    payload_json = json.dumps(event.payload or {}, default=str)[:_PAYLOAD_MAX_CHARS]
     routine: Routine | None = None
     intent: StandingIntent | None = None
+
+    # M53: the shared spend ceiling is checked BEFORE the conversation row is
+    # written (create_run enforces it again — one choke point for every kind)
+    from app.cost import enforce_spend_ceiling
+    from app.orchestrator.graph_mode import load_settings_snapshot
+
+    await enforce_spend_ceiling(await load_settings_snapshot(), "ambient")
 
     if event.routine_id is not None and decision.get("fired_for") == "routine":
         async with get_session_factory()() as session:
@@ -68,7 +96,8 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
             )
             return None
         name = routine.name
-        prompt = load_prompt("ambient_run").format(
+        prompt = render_fire_prompt(
+            "routine",
             routine_name=routine.name,
             routine_prompt=routine.prompt,
             autonomy=routine.autonomy,
@@ -83,7 +112,8 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
         if intent is None or intent.status != "active":
             return None
         name = f"watch: {intent.text[:50]}"
-        prompt = load_prompt("ambient_intent_run").format(
+        prompt = render_fire_prompt(
+            "intent",
             intent_text=intent.text,
             event_kind=event.kind,
             event_source=event.source,
@@ -123,7 +153,11 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
     # §18.8: a routine fires runs AS ITS OWNER; intent fires as the watch owner
     owner_id = (routine.user_id if routine else None) or (intent.user_id if intent else None)
     run = await create_run(
-        conversation_id, prompt, include_memories=include_memories, user_id=owner_id
+        conversation_id,
+        prompt,
+        include_memories=include_memories,
+        user_id=owner_id,
+        trigger_kind="ambient",
     )
     async with get_session_factory()() as session:
         row = await session.get(Run, run.id)
@@ -355,7 +389,19 @@ async def execute_fired_event(event_id: UUID, poll_s: float = 15.0) -> UUID | No
             event = await session.get(AmbientEvent, event_id)
         if event is None or event.verdict != "fired":
             return None
-        run = await prepare_run(event)
+        try:
+            run = await prepare_run(event)
+        except SpendCeilingReached as exc:
+            # M53: a fire past the ceiling is HELD on the ledger with the
+            # reason — visible, never spent, never a crash
+            async with get_session_factory()() as session:
+                row = await session.get(AmbientEvent, event_id)
+                if row is not None:
+                    row.verdict = "held"
+                    row.verdict_reason = f"spend ceiling: {exc.detail}"
+                    await session.commit()
+            logger.warning("ambient_fire_held_spend_ceiling", event_id=str(event_id))
+            return None
         if run is None:
             return None
         budgets = dict(DEFAULT_BUDGETS)
@@ -385,10 +431,12 @@ async def execute_fired_event(event_id: UUID, poll_s: float = 15.0) -> UUID | No
 
 
 async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | None = None) -> int:
-    """H3 reaper: ambient runs whose heartbeat went silent are marked
-    stalled, their task (if any) cancelled, and the owning routine paused
-    with a visible reason (spec §17.4). Returns runs reaped. The window is
-    the live `run_stall_after_s` setting (M40) unless a test passes one."""
+    """H3 reaper: runs whose heartbeat went silent are marked stalled, their
+    task (if any) cancelled, and — for ambient runs — the owning routine
+    paused with a visible reason (spec §17.4). M51: covers EVERY run kind;
+    every run heartbeats since M51, so a chat run left running by a dead
+    task is reaped the same way. Returns runs reaped. The window is the
+    live `run_stall_after_s` setting (M40) unless a test passes one."""
     from app.orchestrator.runner import RUNNING_TASKS
 
     if stall_after_s is None:
@@ -402,7 +450,6 @@ async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | No
             (
                 await session.execute(
                     select(Run).where(
-                        Run.trigger.isnot(None),
                         Run.status == "running",
                         or_(
                             Run.last_heartbeat_at <= cutoff,

@@ -121,9 +121,7 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
         .map((s) => agents.find((a) => a.id === s.sub_agent_id)?.name ?? 'ephemeral'),
     ),
   ]
-  const pausedStep = (run.steps ?? []).find(
-    (s) => s.step_type === 'hitl' && s.status === 'running',
-  )
+  const pausedStep = (run.steps ?? []).find((s) => s.step_type === 'hitl' && s.status === 'running')
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -132,6 +130,13 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
         <span className="text-[11px] text-slate-500">
           {run.total_input_tokens}→{run.total_output_tokens} tokens ·{' '}
           {duration(run.started_at, run.finished_at)} · {timeAgo(run.started_at)}
+          {run.cost_usd != null
+            ? ` · $${run.cost_usd.toFixed(4)}${run.cost_priced ? '' : ' (partly unpriced)'}`
+            : run.cost_priced === false
+              ? ' · unpriced'
+              : ''}
+          {run.owner_replica ? ` · on ${run.owner_replica}` : ''}
+          {run.cancel_requested_at && run.status === 'running' ? ' · cancel requested' : ''}
         </span>
       </div>
       <Field label="Message">
@@ -229,8 +234,13 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
   )
 }
 
+const PAGE = 100
+
 export function RunsPage() {
-  const { data: runs = [], isLoading } = useRuns()
+  // M50: the list is paged (newest first) and polls with backoff — the
+  // M49 baseline measured the unpaged list at 9.5 MB for 10k runs
+  const [limit, setLimit] = useState(PAGE)
+  const { data: runs = [], isLoading } = useRuns(limit)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   return (
     <div className="p-6">
@@ -264,7 +274,9 @@ export function RunsPage() {
           {
             header: 'Duration',
             render: (r) => (
-              <span className="text-xs text-slate-500">{duration(r.started_at, r.finished_at)}</span>
+              <span className="text-xs text-slate-500">
+                {duration(r.started_at, r.finished_at)}
+              </span>
             ),
           },
           {
@@ -275,14 +287,37 @@ export function RunsPage() {
               </span>
             ),
           },
+          {
+            header: 'Cost',
+            render: (r) => (
+              <span
+                className="font-mono text-xs text-slate-500"
+                title={
+                  r.cost_priced === false
+                    ? 'a model in play has no price — see Settings → Cost'
+                    : undefined
+                }
+              >
+                {r.cost_usd != null
+                  ? `$${r.cost_usd.toFixed(4)}`
+                  : r.cost_priced === false
+                    ? '—'
+                    : ''}
+                {r.cost_usd != null && r.cost_priced === false ? '+' : ''}
+              </span>
+            ),
+          },
         ]}
       />
-      <Drawer
-        open={selectedId !== null}
-        onClose={() => setSelectedId(null)}
-        title="Run trace"
-        wide
-      >
+      {runs.length >= limit && (
+        <div className="mt-3 flex items-center gap-3 text-xs text-slate-500">
+          <span>Showing the newest {runs.length} runs.</span>
+          <Button onClick={() => setLimit(Math.min(limit + PAGE, 500))} disabled={limit >= 500}>
+            Show more
+          </Button>
+        </div>
+      )}
+      <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)} title="Run trace" wide>
         {selectedId && <RunDetail runId={selectedId} onClose={() => setSelectedId(null)} />}
       </Drawer>
     </div>

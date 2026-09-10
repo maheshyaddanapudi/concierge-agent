@@ -38,7 +38,43 @@ class AppConfig(BaseSettings):
     custom_gateway_models: str | None = None
     # §18.8 auth & tenancy — dark by default: off ⇒ byte-identical
     auth_enabled: bool = False
+    # M55 (spec §20): the active AuthProvider and the fork module that registers it
+    auth_provider: str = "builtin"
+    auth_provider_module: str | None = None
     frontend_origin: str | None = None  # CORS pin when auth is on
+    # M50 (PLAN M50, arch-C1): the connection budget is explicit. Per replica
+    # the pooled ceiling is pool_size + max_overflow; the checkpointer pool,
+    # the LISTEN connection and the leader lease sit outside it.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
+    # M54 (spec §18.9): the declared fleet the connection budget is checked
+    # against at boot and on GET /replicas; the pooled connections keep no
+    # prepared-statement cache so they survive a transaction-mode pooler
+    db_replicas: int = 1
+    db_max_connections: int = 100
+    db_statement_cache_size: int = 0
+    replica_id: str | None = None
+    # M54 (§7.3): the ceiling on any cache-coherency gap — every blob expires
+    registry_cache_ttl_s: int = 300
+    # M51: every provider call carries a timeout and a bounded retry budget,
+    # set ONCE at the port (spec §2.1 — the port is unbreached, so this is
+    # the one place a hang or a retry storm can be bounded)
+    llm_timeout_s: int = 120
+    llm_max_retries: int = 2
+    # M51: how long a draining replica lets in-flight runs finish before
+    # cancelling them with a truthful terminal status
+    shutdown_grace_s: int = 25
+    # M52: one egress policy for every outbound fetch the platform makes on
+    # someone else's say-so (A2A cards and calls, poll sources, HTTP MCP
+    # servers, the webhook channel). `public` denies loopback, link-local,
+    # private and metadata ranges except the hosts named in
+    # `egress_allow_hosts` (suffix match — an internal MCP server or agent);
+    # `allowlist` admits only those hosts; `open` keeps only the size/time
+    # caps (lab use).
+    egress_policy: str = "public"
+    egress_allow_hosts: str = ""
+    egress_max_bytes: int = 5 * 1024 * 1024
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"

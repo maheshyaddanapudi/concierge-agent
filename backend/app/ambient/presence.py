@@ -24,9 +24,9 @@ _OFFLINE_BEAT_S = 30 * 60
 def _presence_key() -> tuple[str, "object | None"]:
     """§18.8: per-user presence rows when auth is on ("user:{uuid}");
     the single-user regime keeps the one "default" row."""
-    from app.auth import auth_enabled, current_user_id
+    from app.auth import current_user_id
 
-    uid = current_user_id() if auth_enabled() else None
+    uid = current_user_id()  # the provider's owner stamp; None when dark
     return (f"user:{uid}", uid) if uid is not None else ("default", None)
 
 

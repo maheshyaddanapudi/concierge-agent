@@ -7,13 +7,12 @@ directly awaitable for tests and the experiment harness.
 """
 
 import asyncio
-import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, Field
-from sqlalchemy import select, true
+from sqlalchemy import select, text, true
 
 from app.db import get_session_factory
 from app.models import Memory, MemoryEmbedding, PlanExemplar, RunDigest
@@ -89,29 +88,35 @@ async def decay_sweep() -> int:
     if not await gate_open(JOB_GATES[JOB_DECAY]):
         return 0
     now = datetime.now(UTC)
-    expired = 0
+    # M54 (spec §18.9): one set-based statement — the §14q-95 drill seeded a
+    # million rows and the row-by-row sweep loaded them all into a 1.5 GB
+    # replica. The formula is the same: importance · 2^(−age/half_life),
+    # age from last access (else recording), a row's own half-life first.
     async with get_session_factory()() as session:
         from app.registry_cache import get_cache
 
         default_hl = float(await get_cache().setting("memory_half_life_days"))
-        rows = list(
-            (
-                await session.execute(
-                    select(Memory).where(Memory.status == "active", Memory.pinned.is_(False))
-                )
-            ).scalars()
+        result = await session.execute(
+            text(
+                """
+                UPDATE memories
+                   SET status = 'expired',
+                       valid_to = COALESCE(valid_to, CAST(:now AS timestamptz))
+                 WHERE status = 'active'
+                   AND pinned = false
+                   AND importance * exp(
+                         -ln(2) / COALESCE(NULLIF(half_life_days, 0), CAST(:hl AS float8))
+                         * GREATEST(
+                             EXTRACT(EPOCH FROM (CAST(:now AS timestamptz)
+                                                 - COALESCE(last_accessed_at, recorded_at))) / 86400.0,
+                             0)
+                       ) < CAST(:floor AS float8)
+                """
+            ),
+            {"now": now, "hl": default_hl, "floor": _DECAY_EFFECTIVE_FLOOR},
         )
-        for m in rows:
-            half_life_days = float(m.half_life_days) if m.half_life_days else default_hl
-            anchor = m.last_accessed_at or m.recorded_at
-            age_days = max((now - anchor).total_seconds() / 86400.0, 0.0)
-            effective = m.importance * math.exp(-math.log(2) / half_life_days * age_days)
-            if effective < _DECAY_EFFECTIVE_FLOOR:
-                m.status = "expired"
-                m.valid_to = m.valid_to or now
-                expired += 1
-        if expired:
-            await session.commit()
+        expired = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
     from app import obs
 
     obs.MEMORY_OPS.labels(kind="decay", status="ok").inc()
@@ -170,7 +175,8 @@ async def reflection() -> int:
         structured = model.with_structured_output(ReflectionOutput)  # type: ignore[attr-defined]
         listing = "\n".join(f"{i + 1}. [{m.kind}] {m.text}" for i, m in enumerate(fresh))
         out = await structured.ainvoke(load_prompt("memory_reflect").format(memories=listing))
-        assert isinstance(out, ReflectionOutput)
+        if not isinstance(out, ReflectionOutput):
+            raise TypeError(f"expected ReflectionOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — reflection is optional cognition
         logger.info("memory_reflection_failed", error=str(exc))
         return 0
@@ -192,7 +198,7 @@ async def reflection() -> int:
                 run_id=fresh[0].run_id,  # provenance: newest evidence run
             )
             written += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — one insight's write failure never loses the others
             logger.warning("memory_reflection_write_failed", error=str(exc))
     from app import obs
 
@@ -203,33 +209,40 @@ async def reflection() -> int:
 
 async def contradiction_sweep() -> int:
     """Deterministic drift catcher: two ACTIVE rows sharing an entity_key
-    should not coexist (supersession handles the normal path) — quarantine
-    the newer of each pair for human review. Returns rows quarantined.
-    Gated in-function (M48 §3.7.1)."""
+    should not coexist (supersession handles the normal path) — the NEWEST
+    valid row stays active and the older ones are quarantined for review
+    (M51: the sweep used to keep the oldest, so a corrected fact drifted
+    back to its stale value). Returns rows quarantined. Gated in-function
+    (M48 §3.7.1)."""
     if not await gate_open(JOB_GATES[JOB_CONTRADICT]):
         return 0
-    quarantined = 0
+    # M54 (spec §18.9): set-based — rank each (scope, entity_key) group by
+    # validity (newest first, NULLs first as before) and quarantine every
+    # row but the first, without materialising the table in the process.
     async with get_session_factory()() as session:
-        rows = list(
-            (
-                await session.execute(
-                    select(Memory)
-                    .where(Memory.status == "active", Memory.entity_key.isnot(None))
-                    .order_by(Memory.entity_key, Memory.valid_from)
+        result = await session.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT id,
+                           row_number() OVER (
+                               PARTITION BY scope, entity_key
+                               ORDER BY valid_from DESC, recorded_at DESC
+                           ) AS rn
+                      FROM memories
+                     WHERE status = 'active' AND entity_key IS NOT NULL
                 )
-            ).scalars()
+                UPDATE memories m
+                   SET status = 'quarantined',
+                       review_note = :note
+                  FROM ranked r
+                 WHERE m.id = r.id AND r.rn > 1
+                """
+            ),
+            {"note": "contradiction sweep: older duplicate of an active entity_key"},
         )
-        by_key: dict[tuple[str, str], list[Memory]] = {}
-        for m in rows:
-            assert m.entity_key is not None
-            by_key.setdefault((m.scope, m.entity_key), []).append(m)
-        for group in by_key.values():
-            for extra in group[1:]:  # keep the oldest-validity row active
-                extra.status = "quarantined"
-                extra.review_note = "contradiction sweep: duplicate active entity_key"
-                quarantined += 1
-        if quarantined:
-            await session.commit()
+        quarantined = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
     from app import obs
 
     obs.MEMORY_OPS.labels(kind="contradict", status="ok").inc()
@@ -261,6 +274,11 @@ async def embedding_backfill(limit: int = 500) -> int:
     if key is None:
         return 0
     model = str(await get_cache().setting("embedding_model"))
+    from app.memory.dims import vector_column
+
+    if vector_column(key) is None:
+        logger.warning("memory_backfill_dims_unsupported", model_key=key)
+        return 0
     surfaces: list[tuple[str, Any, Any, Any]] = [
         ("memories", Memory, Memory.text, Memory.status.in_(("active", "quarantined"))),
         ("run_digests", RunDigest, RunDigest.text, true()),
@@ -295,7 +313,7 @@ async def embedding_backfill(limit: int = 500) -> int:
                     # a concurrent write-through may have landed the same PK
                     if await session.get(MemoryEmbedding, (ref_id, table_ref, key)) is None:
                         session.add(
-                            MemoryEmbedding(
+                            MemoryEmbedding.build(
                                 ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec
                             )
                         )
@@ -323,11 +341,25 @@ async def _extraction_tuner_moves() -> int:
     return out["kind_routes"] + out["floor_moves"]
 
 
-async def _due(job_id: int, now: float) -> bool:
-    last = _LAST_RUN.get(job_id)
-    if last is None:
-        return True  # never ran (or clock reset) ⇒ due now
-    return (now - last) >= _INTERVALS_S[job_id]
+_JOB_NAMES: dict[int, str] = {
+    JOB_DECAY: "memory:decay",
+    JOB_REFLECT: "memory:reflect",
+    JOB_CONTRADICT: "memory:contradict",
+    JOB_MINE: "memory:mine",
+    JOB_COMPACT: "memory:compact",
+    JOB_COMMUNITIES: "memory:communities",
+    JOB_BACKFILL: "memory:backfill",
+    JOB_EXTRACT_TUNE: "memory:extract_tune",
+}
+
+
+async def _due(job_id: int, now: Any = None) -> bool:
+    """M54: the clock is `job_clock` in the database (spec §18.9) — an
+    interval is a cluster property, so a job runs once per interval on
+    whichever replica leads it and a restart re-runs nothing."""
+    from app.jobclock import job_due
+
+    return await job_due(_JOB_NAMES[job_id], _INTERVALS_S[job_id], now=now)
 
 
 async def run_due_jobs() -> dict[str, int]:
@@ -339,7 +371,11 @@ async def run_due_jobs() -> dict[str, int]:
     if not await get_cache().setting("memory_enabled"):
         return {}
     results: dict[str, int] = {}
-    now = asyncio.get_event_loop().time()
+    from datetime import UTC, datetime
+
+    from app.jobclock import job_ran
+
+    now = datetime.now(UTC)
     from app.memory.communities import rebuild_communities
     from app.memory.episodic import compact_digests
 
@@ -369,7 +405,7 @@ async def run_due_jobs() -> dict[str, int]:
                 continue
             try:
                 results[name] = await fn()
-                _LAST_RUN[job_id] = now
+                await job_ran(_JOB_NAMES[job_id], now=now)
             except Exception as exc:  # noqa: BLE001 — jobs never crash the loop
                 logger.warning("memory_job_failed", job=name, error=str(exc))
             finally:
@@ -379,8 +415,8 @@ async def run_due_jobs() -> dict[str, int]:
             if await acquire_job_lock(session, JOB_MINE):
                 try:
                     results["mine"] = len(await mine_fallback_skills())
-                    _LAST_RUN[JOB_MINE] = now
-                except Exception as exc:  # noqa: BLE001
+                    await job_ran(_JOB_NAMES[JOB_MINE], now=now)
+                except Exception as exc:  # noqa: BLE001 — jobs are independent
                     logger.warning("memory_job_failed", job="mine", error=str(exc))
                 finally:
                     await release_job_lock(session, JOB_MINE)
@@ -388,12 +424,51 @@ async def run_due_jobs() -> dict[str, int]:
 
 
 async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
-    """Lifespan-owned loop (spec §16.2): ticks are cheap when memory is off."""
+    """Lifespan-owned loop (spec §16.2): ticks are cheap when memory is off.
+    M53: the same loop ticks retention (its own gates, its own lock) and
+    refreshes provider price feeds hourly; every failure is counted in
+    `concierge_loop_errors_total{loop}` — a wedged loop is a visible one."""
+    from app import obs
+    from app.cost import refresh_spend_gauge
+    from app.llm.pricing import refresh_provider_prices
+    from app.retention import maybe_run_retention
+
+    prices_refreshed_at: float | None = None
     while not stop.is_set():
         try:
             await run_due_jobs()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
+            obs.LOOP_ERRORS.labels(loop="memory").inc()
             logger.warning("memory_periodic_tick_failed", error=str(exc))
+        try:
+            await maybe_run_retention()
+        except Exception as exc:  # noqa: BLE001 — retention must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="retention").inc()
+            logger.warning("retention_tick_failed", error=str(exc))
+        now = asyncio.get_event_loop().time()
+        if prices_refreshed_at is None or now - prices_refreshed_at >= 3600:
+            prices_refreshed_at = now
+            await refresh_provider_prices()  # never raises
+        try:
+            await refresh_spend_gauge()
+        except Exception as exc:  # noqa: BLE001 — a gauge refresh must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="spend").inc()
+            logger.warning("spend_gauge_refresh_failed", error=str(exc))
+        # M54: runs whose owning replica stopped heartbeating are failed
+        # truthfully on any replica; the limiter's idle keys are evicted
+        # hourly so its key space stays bounded (scale-H3)
+        try:
+            from app.jobclock import job_due, job_ran
+            from app.orchestrator.runner import reap_dead_owner_runs
+            from app.ratelimit import IDLE_EVICT_S, evict_idle
+
+            await reap_dead_owner_runs()
+            if await job_due("ratelimit:evict", IDLE_EVICT_S):
+                await evict_idle()
+                await job_ran("ratelimit:evict")
+        except Exception as exc:  # noqa: BLE001 — cluster housekeeping must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="cluster").inc()
+            logger.warning("cluster_housekeeping_failed", error=str(exc))
         try:
             await asyncio.wait_for(stop.wait(), timeout=tick_s)
         except TimeoutError:
@@ -401,5 +476,7 @@ async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
 
 
 def reset_job_clock() -> None:
-    """Testing hook: make every job due immediately."""
+    """Testing hook, kept for the suites that call it: since M54 the clock
+    is the `job_clock` table (truncated between tests), so there is no
+    process-local state to clear — the name documents the intent."""
     _LAST_RUN.clear()

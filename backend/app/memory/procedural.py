@@ -136,8 +136,10 @@ def _positive_signal(run: Run, steps: list[RunStep]) -> bool:
 
 
 async def harvest_exemplar(run_id: UUID) -> PlanExemplar | None:
-    """Store a positively-signaled run's routing shape, keyed by task text."""
-    from app.memory.store import _embed_ref
+    """Store a positively-signaled run's routing shape, keyed by task text.
+    M51 (arch-H15): the embedding is computed between the read and the
+    write session, never inside one."""
+    from app.memory.store import _embed_text, _store_embedding
 
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
@@ -166,17 +168,26 @@ async def harvest_exemplar(run_id: UUID) -> PlanExemplar | None:
         trace: dict[str, Any] = {"routes": routes}
         if run.orchestrator_mode == "graph" and run.plan:
             trace["plan_entries"] = (run.plan or {}).get("entries", [])
+        task_text = " ".join((run.chat_message or "").split())[:1000]
+        mode = run.orchestrator_mode
+    embedded = await _embed_text(task_text)
+    async with get_session_factory()() as session:
+        existing = (
+            await session.execute(select(PlanExemplar).where(PlanExemplar.run_id == run_id))
+        ).scalar_one_or_none()
+        if existing is not None:  # harvested concurrently meanwhile
+            return existing
         exemplar = PlanExemplar(
             run_id=run_id,
-            task_text=" ".join((run.chat_message or "").split())[:1000],
-            mode=run.orchestrator_mode,
+            task_text=task_text,
+            mode=mode,
             trace=trace,
             votes=1,
             status="active",
         )
         session.add(exemplar)
         await session.flush()
-        await _embed_ref(session, exemplar.id, "plan_exemplars", exemplar.task_text)
+        await _store_embedding(session, exemplar.id, "plan_exemplars", embedded)
         await session.commit()
         await session.refresh(exemplar)
     logger.info(
@@ -244,21 +255,25 @@ async def recall_exemplars(task: str, *, k: int = 2) -> list[PlanExemplar]:
         vec_ids: list[UUID] = []
         qvec = await _query_vector(task)
         model_key = await active_model_key() if qvec is not None else None
-        if qvec is not None and model_key is not None:
+        from app.memory.dims import vector_column
+
+        typed = vector_column(model_key) if model_key else None  # M54: the typed column
+        if qvec is not None and model_key is not None and typed is not None:
+            col, vtype = typed
             vec_ids = [
                 r[0]
                 for r in (
                     await session.execute(
                         sql_text(
-                            """
+                            f"""
                             SELECT e.id FROM plan_exemplars e
                             JOIN memory_embeddings emb
                               ON emb.ref_id = e.id AND emb.table_ref = 'plan_exemplars'
                              AND emb.model_key = :model_key
                             WHERE e.status = 'active'
-                            ORDER BY emb.embedding <=> CAST(:qvec AS vector)
+                            ORDER BY emb.{col} <=> CAST(:qvec AS {vtype})
                             LIMIT :n
-                            """
+                            """  # noqa: S608 — column and type are code constants; values are bound
                         ),
                         {
                             "q": _or_q(task),

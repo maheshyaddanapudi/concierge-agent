@@ -32,6 +32,9 @@ class ModelInfo:
     supports_effort: bool = True
     supports_temperature: bool = True
     supports_max_output_tokens: bool = True
+    # M51: a retired model stays listed so a saved reference is refused with
+    # a message naming it, instead of failing mid-run as a provider 404
+    deprecated: bool = False
 
     def unsupported_params(self, params: ModelParams | None) -> list[str]:
         """Names of params set in `params` that this model does not support."""
@@ -58,6 +61,38 @@ class EmbeddingsNotSupportedError(RuntimeError):
 
 class UnsupportedParamsError(ValueError):
     """Raised when params include options the selected model does not support."""
+
+
+ProviderErrorKind = Literal["rate_limited", "timeout", "unknown_model", "provider_error"]
+
+
+def classify_provider_error(exc: BaseException) -> ProviderErrorKind:
+    """Name the failure class of a provider exception WITHOUT importing any
+    provider SDK (spec §2.1): SDK errors expose `status_code` / `response`
+    and carry telling class names. M51: a 429 is reported as rate-limiting
+    (the port's retry budget already backed off), a timeout as a timeout
+    (LLM_TIMEOUT_S), a 404 / "does not exist" / "deprecated" as a model
+    that is no longer served — each names its cause in the run's error."""
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status == 429 or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
+        return "rate_limited"
+    if isinstance(exc, TimeoutError) or "timeout" in name or "timed out" in text:
+        return "timeout"
+    if (
+        status == 404
+        or "notfound" in name
+        or any(
+            marker in text
+            for marker in ("does not exist", "not found", "deprecated", "retired", "no longer")
+        )
+    ):
+        return "unknown_model"
+    return "provider_error"
 
 
 @runtime_checkable

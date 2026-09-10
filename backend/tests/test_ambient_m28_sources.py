@@ -148,10 +148,15 @@ async def test_http_json_source_error_propagates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
+    from app.egress import EgressError
+
     set_http_client_factory(_stub_client(handler))
     try:
-        with pytest.raises(httpx.HTTPStatusError):
+        # M52: every fetch failure takes the one egress shape — the upstream
+        # status is the kind, never the body
+        with pytest.raises(EgressError) as ei:
             await http_json_source(None, {"url": "https://feed.example/down"})
+        assert ei.value.kind == "status" and str(ei.value) == "egress refused: status"
     finally:
         set_http_client_factory(None)
 

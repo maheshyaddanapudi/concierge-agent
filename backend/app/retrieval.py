@@ -316,8 +316,7 @@ async def backfill_embeddings() -> dict[str, int]:
     out: dict[str, int] = {}
     kinds: tuple[Any, ...] = ("tools", "skills", "sub_agents")
     for kind in kinds:
-        rows = await cache._ensure(kind)
-        assert isinstance(rows, list)
+        rows = await cache._rows(kind)
         updated = 0
         for record in rows:
             if await refresh_record_embedding(kind, record["id"]):

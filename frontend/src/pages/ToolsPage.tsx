@@ -77,13 +77,34 @@ function ToolDetail({ tool }: { tool: Tool }) {
     }
   }
 
+  const restore = async () => {
+    setError(null)
+    try {
+      await api.post(`/tools/${tool.id}/restore`)
+      invalidate('tools')
+    } catch (e) {
+      setError(e)
+    }
+  }
+
   return (
     <div className="space-y-4">
       {isStatic && <StaticNotice />}
+      {tool.deleted_at && (
+        // M53: a re-ingest no longer resurrects a deleted MCP tool, so
+        // bringing it back is an explicit act
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+          <span>Deleted — the server may still offer it; re-ingest keeps your deletion.</span>
+          <Button variant="secondary" onClick={() => void restore()}>
+            Restore
+          </Button>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <KindBadge kind={tool.kind} />
         <SourceBadge source={tool.source} />
         <StatusPill status={tool.status} />
+        {tool.ingest_state === 'missing' && <Chip tone="muted">server dropped it</Chip>}
       </div>
       <Field label="Tool key">
         <code className="text-xs text-indigo-300">{tool.tool_key}</code>
@@ -107,10 +128,7 @@ function ToolDetail({ tool }: { tool: Tool }) {
         />
       </Field>
       <Field label="Expose to orchestrator" hint="rung-1 direct tool call, no skill persona">
-        <Toggle
-          checked={tool.direct_exposure}
-          onChange={(v) => patch({ direct_exposure: v })}
-        />
+        <Toggle checked={tool.direct_exposure} onChange={(v) => patch({ direct_exposure: v })} />
       </Field>
       <Field label="Status">
         <Toggle
@@ -131,7 +149,8 @@ function ToolDetail({ tool }: { tool: Tool }) {
 }
 
 export function ToolsPage() {
-  const { data: tools = [], isLoading } = useTools()
+  const [showDeleted, setShowDeleted] = useState(false)
+  const { data: tools = [], isLoading } = useTools(showDeleted ? '?include_deleted=true' : '')
   const { data: servers = [] } = useServers()
   const [selected, setSelected] = useState<Tool | null>(null)
   const serverName = (id: string | null) => servers.find((s) => s.id === id)?.name ?? '—'
@@ -150,9 +169,7 @@ export function ToolsPage() {
         kinds={['mcp', 'native', 'a2a']}
         onRowClick={setSelected}
         filterRow={(t, q, source, kind) =>
-          (!q ||
-            t.tool_key.toLowerCase().includes(q) ||
-            t.description.toLowerCase().includes(q)) &&
+          (!q || t.tool_key.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)) &&
           (!source || t.source === source) &&
           (!kind || t.kind === kind)
         }
@@ -165,6 +182,7 @@ export function ToolsPage() {
                 <KindBadge kind={t.kind} />
                 <SourceBadge source={t.source} />
                 {t.direct_exposure && <Chip tone="direct">direct</Chip>}
+                {t.deleted_at && <Chip tone="muted">deleted</Chip>}
               </div>
             ),
           },
@@ -189,10 +207,16 @@ export function ToolsPage() {
       <Drawer open={current !== null} onClose={() => setSelected(null)} title={current?.tool_key}>
         {current && <ToolDetail tool={current} />}
       </Drawer>
-      <div className="mt-2">
+      <div className="mt-2 flex items-center gap-3">
         <Button variant="ghost" onClick={() => window.location.reload()}>
           ↻ refresh
         </Button>
+        <Toggle
+          checked={showDeleted}
+          onChange={setShowDeleted}
+          label="show deleted"
+          aria-label="show deleted tools"
+        />
       </div>
     </div>
   )

@@ -23,3 +23,4 @@ class ToolOut(RegistryOut):
     tool_key: str
     direct_exposure: bool
     input_schema: dict[str, Any] | None
+    ingest_state: str | None = None

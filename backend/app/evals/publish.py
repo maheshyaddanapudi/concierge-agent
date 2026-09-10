@@ -30,9 +30,11 @@ async def publish_eval_run(eval_run_id: UUID) -> str | None:
 
     async with get_session_factory()() as session:
         eval_run = await session.get(EvalRun, eval_run_id)
-        assert eval_run is not None
+        if eval_run is None:
+            raise RuntimeError("eval_run vanished mid-operation")
         dataset = await session.get(EvalDataset, eval_run.dataset_id)
-        assert dataset is not None
+        if dataset is None:
+            raise RuntimeError("dataset vanished mid-operation")
         results = list(
             (
                 await session.execute(

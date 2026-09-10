@@ -227,11 +227,23 @@ async def test_prefs_override_quiet_hours(client: Any, auth_on: Any) -> None:
 # ── hardening ────────────────────────────────────────────────────────
 
 
+async def _reset_buckets() -> None:
+    """Empty both limiter stores: the in-process fallback and, since M54,
+    the shared `rate_buckets` table the replicas read."""
+    from sqlalchemy import delete
+
+    from app import auth as auth_mod
+    from app.models import RateBucket
+
+    auth_mod._buckets.clear()
+    async with get_session_factory()() as session:
+        await session.execute(delete(RateBucket))
+        await session.commit()
+
+
 async def test_rate_limit_429(client: Any, auth_on: Any) -> None:
     # M40: the bucket shape is the live rate_limit_burst / rate_limit_per_s
     # settings pair — drive it through the real settings API
-    from app import auth as auth_mod
-
     token = await _admin_token(client)
     resp = await client.patch(
         "/api/v1/settings",
@@ -239,14 +251,14 @@ async def test_rate_limit_429(client: Any, auth_on: Any) -> None:
         headers=_h(token),
     )
     assert resp.status_code == 200, resp.text
-    auth_mod._buckets.clear()
+    await _reset_buckets()
     try:
         statuses = []
         for _ in range(8):
             statuses.append((await client.get("/api/v1/skills", headers=_h(token))).status_code)
         assert 429 in statuses
     finally:
-        auth_mod._buckets.clear()
+        await _reset_buckets()
         # a throttled token still needs to restore settings — retry briefly
         for _ in range(20):
             resp = await client.patch(
@@ -256,7 +268,7 @@ async def test_rate_limit_429(client: Any, auth_on: Any) -> None:
             )
             if resp.status_code == 200:
                 break
-            auth_mod._buckets.clear()
+            await _reset_buckets()
         assert resp.status_code == 200, resp.text
 
 

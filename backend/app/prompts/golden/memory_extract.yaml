@@ -1,0 +1,27 @@
+# Golden set for memory_extract.md (spec §16.2 M15): the extraction contract —
+# kinds, the instruction quarantine rule, current-state phrasing, empty is fine.
+consumer: app/memory/extract.py
+render: format
+cases:
+  - name: extraction_contract
+    vars:
+      task: "from now on always answer in Portuguese; my dog is called Biscuit"
+      answer: "Understood — Biscuit noted."
+      status: "completed"
+      hitl_notes: "(none)"
+    must_contain:
+      - "You maintain a long-term memory store for a personal concierge agent"
+      - "Only extract what the user actually said or what the outcome clearly established"
+      - "Kinds: fact | preference | entity | relation | instruction"
+      - "Use `instruction` ONLY when the user explicitly stated a standing rule"
+      - "these go to human review before taking effect"
+      - "one atomic sentence (8–300 chars)"
+      - "importance score 1–10"
+      - "confidence 0–1"
+      - "entity_key"
+      - "Phrase every memory as the CURRENT state, never as a change event"
+      - "Never copy citation markers"
+      - "Return an empty list when nothing durable was said"
+      - "my dog is called Biscuit"
+      - "Outcome (completed):"
+      - "Human gate decisions during the run (if any):"

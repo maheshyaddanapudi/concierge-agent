@@ -1,0 +1,131 @@
+{
+  "meta": {
+    "label": "m50-after-runs",
+    "captured_at": "2026-09-01T23:14:30+00:00",
+    "git_sha": "b93e05b",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "runs-scale"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "m50-after-runs",
+      "out": "../docs/acceptance/prod/M50/after-runs.json",
+      "scenarios": [
+        "runs-scale"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": "openai:text-embedding-3-small",
+      "memory_enabled": true,
+      "ambient_enabled": true,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "runs-scale": {
+      "levels": [
+        {
+          "loadgen_runs": 1000,
+          "total_runs": 1002,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 6.95,
+            "p95_ms": 9.01,
+            "p99_ms": 10.21,
+            "max_ms": 10.51,
+            "mean_ms": 7.24,
+            "bytes": 47133,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 6.01,
+            "p95_ms": 7.47,
+            "p99_ms": 7.98,
+            "max_ms": 8.1,
+            "mean_ms": 6.19,
+            "bytes": 9542,
+            "errors": 0
+          }
+        },
+        {
+          "loadgen_runs": 10000,
+          "total_runs": 10002,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 8.08,
+            "p95_ms": 10.03,
+            "p99_ms": 11.27,
+            "max_ms": 11.58,
+            "mean_ms": 8.32,
+            "bytes": 47133,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 8.3,
+            "p95_ms": 11.23,
+            "p99_ms": 11.41,
+            "max_ms": 11.46,
+            "mean_ms": 8.83,
+            "bytes": 9592,
+            "errors": 0
+          }
+        }
+      ],
+      "elapsed_s": 1.4
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 13,
+      "idle": 13
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 0",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 30000",
+    "runs": "DELETE 10000",
+    "conversations": "DELETE 100"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 13,
+      "idle": 13
+    },
+    "max_connections": 100
+  }
+}

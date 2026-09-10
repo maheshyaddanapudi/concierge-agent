@@ -3,10 +3,21 @@
 # One command: docker compose up. A fourth service, redis, is profile-gated
 # (spec §7.3): opt in with `docker compose --profile redis up` + REDIS_URL;
 # the registry cache only uses it when the registry_cache_mode setting says so.
+#
+# M53 deploy and operate: every service restarts unless stopped, the backend
+# carries a container healthcheck on /health (liveness — /ready is the
+# readiness probe a balancer should use), memory/CPU limits bound each
+# container, and the frontend waits for a HEALTHY backend. Adjust the limits
+# to the host; they are ceilings, not reservations.
 services:
   db:
+    # M54: pgvector index builds and parallel queries use POSIX shared memory;
+    # Docker's 64 MB /dev/shm default fails them at scale ("could not resize
+    # shared memory segment") — the §14q-95 drill hit it seeding a million rows
+    shm_size: 1gb
     # pgvector = official postgres image + extension (spec §16.1)
     image: pgvector/pgvector:0.8.6-pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-concierge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concierge}
@@ -18,9 +29,38 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
 
   backend:
     build: ./backend
+    restart: unless-stopped
+    # M51/M53: SIGTERM starts a drain (readiness 503, in-flight runs get
+    # SHUTDOWN_GRACE_S, default 25 s) after uvicorn's 5 s connection grace;
+    # keep the kill deadline above both. deploy.sh sends SIGUSR1 first so
+    # readiness flips while the port is still open.
+    stop_grace_period: 40s
+    healthcheck:
+      # liveness only — the image has python, not curl
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1536M
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://concierge:concierge@db:5432/concierge}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -44,11 +84,38 @@ services:
       CUSTOM_GATEWAY_API_KEY: ${CUSTOM_GATEWAY_API_KEY:-}
       CUSTOM_GATEWAY_MODELS: ${CUSTOM_GATEWAY_MODELS:-}
       AUTH_ENABLED: ${AUTH_ENABLED:-}
+      # M55: the active AuthProvider and the fork module that registers it (spec §20)
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-}
+      AUTH_PROVIDER_MODULE: ${AUTH_PROVIDER_MODULE:-}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
+      # M50: the per-replica connection budget (pool + overflow); see
+      # docs/operations/scaling.md for sizing Postgres max_connections
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-}
+      # M51: provider-port limits and the shutdown drain window
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-}
+      SHUTDOWN_GRACE_S: ${SHUTDOWN_GRACE_S:-}
+      # M52: the egress policy for every outbound fetch (see .env.example)
+      EGRESS_POLICY: ${EGRESS_POLICY:-}
+      EGRESS_ALLOW_HOSTS: ${EGRESS_ALLOW_HOSTS:-}
+      EGRESS_MAX_BYTES: ${EGRESS_MAX_BYTES:-}
+      # M54: the declared fleet (spec §18.9) — the connection budget is
+      # checked against it at boot and published on GET /replicas; the
+      # replica id defaults to the container hostname
+      REPLICA_ID: ${REPLICA_ID:-}
+      DB_REPLICAS: ${DB_REPLICAS:-}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-}
+      DB_STATEMENT_CACHE_SIZE: ${DB_STATEMENT_CACHE_SIZE:-}
+      REGISTRY_CACHE_TTL_S: ${REGISTRY_CACHE_TTL_S:-}
     volumes:
       - workspace:/workspace
+    # M54: a host-port RANGE, so `docker compose up --scale backend=N` binds
+    # each replica to its own port (8000, 8001, …) — pin a replica with it,
+    # scrape it, curl its /replicas; the frontend balances across all of them
     ports:
-      - '${BACKEND_PORT:-8000}:8000'
+      - '${BACKEND_PORT_RANGE:-8000-8010}:8000'
     depends_on:
       db:
         condition: service_healthy
@@ -58,16 +125,28 @@ services:
   # and set REDIS_URL=redis://redis:6379/0; the default stack never runs it
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     profiles: [redis]
     ports:
       - '127.0.0.1:6379:6379'
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
       - '${FRONTEND_PORT:-5173}:80'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   pgdata:

@@ -305,7 +305,7 @@ async def run_inline_skill(
         if step_id is not None:
             await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
         return {"status": "error", "error": msg}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — any step failure is recorded as the step's error, never a crash
         if step_id is not None:
             await ctx.recorder.finish_step(
                 step_id, status="failed", error=str(exc), emit_dispatch=True
@@ -382,7 +382,7 @@ async def run_direct_tool(
         )
         await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
         return {"status": "error", "error": msg}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — any step failure is recorded as the step's error, never a crash
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
