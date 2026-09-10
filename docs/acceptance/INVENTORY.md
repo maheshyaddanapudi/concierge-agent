@@ -4,31 +4,31 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 
 | directory | assets | frames | captured | proves | disposition |
 |---|---|---|---|---|---|
-| `00-fresh-slate` | 6 | 6 | 5ec9e77 2026-08-28 | stage 00-fresh-slate | pending |
-| `01-settings-models` | 3 | 3 | c489327 2026-08-28 | stage 01-settings-models | pending |
-| `02-mcp-servers` | 7 | 7 | 5ec9e77 2026-08-28 | stage 02-mcp-servers | pending |
-| `03-tools` | 7 | 7 | 5ec9e77 2026-08-28 | stage 03-tools | pending |
-| `04-skills` | 7 | 7 | 5ec9e77 2026-08-28 | stage 04-skills | pending |
-| `05-sub-agents` | 8 | 8 | 5ec9e77 2026-08-28 | stage 05-sub-agents | pending |
-| `06-trial-graph-thinking-on` | 10 | 10 | 5ec9e77 2026-08-28 | stage 06-trial-graph-thinking-on | pending |
-| `07-trial-graph-thinking-off` | 9 | 9 | 5ec9e77 2026-08-28 | stage 07-trial-graph-thinking-off | pending |
-| `08-trial-agentic-thinking-on` | 9 | 9 | 5ec9e77 2026-08-28 | stage 08-trial-agentic-thinking-on | pending |
-| `09-trial-agentic-thinking-off` | 8 | 8 | 5ec9e77 2026-08-28 | stage 09-trial-agentic-thinking-off | pending |
-| `10-fallback-uncovered-ask` | 3 | 3 | 5ec9e77 2026-08-28 | stage 10-fallback-uncovered-ask | pending |
-| `11-hitl-deny-and-queue` | 6 | 6 | 5ec9e77 2026-08-28 | stage 11-hitl-deny-and-queue | pending |
-| `12-stop-and-queued-message` | 3 | 3 | 5ec9e77 2026-08-28 | stage 12-stop-and-queued-message | pending |
-| `13-failure-retry-cancel` | 8 | 8 | 5ec9e77 2026-08-28 | stage 13-failure-retry-cancel | pending |
-| `14-runs-and-ops` | 7 | 7 | 5ec9e77 2026-08-28 | stage 14-runs-and-ops | pending |
-| `15-static-guards` | 3 | 3 | 5ec9e77 2026-08-28 | stage 15-static-guards | pending |
-| `16-theme-gallery` | 9 | 9 | 5ec9e77 2026-08-28 | stage 16-theme-gallery | pending |
-| `17-data-purge` | 5 | 5 | c489327 2026-08-28 | stage 17-data-purge | pending |
-| `18-registry-cache-and-retrieval` | 13 | 13 | 5ec9e77 2026-08-28 | stage 18-registry-cache-and-retrieval | pending |
-| `19-provider-agnostic` | 5 | 5 | 5ec9e77 2026-08-28 | stage 19-provider-agnostic | pending |
-| `20-heterogeneous-models` | 4 | 4 | 5ec9e77 2026-08-28 | stage 20-heterogeneous-models | pending |
+| `00-fresh-slate` | 6 | 6 | 5ec9e77 2026-08-28 | stage 00-fresh-slate | recaptured (v1, dev images) |
+| `01-settings-models` | 3 | 3 | c489327 2026-08-28 | stage 01-settings-models | recaptured (v1, dev images) |
+| `02-mcp-servers` | 7 | 7 | 5ec9e77 2026-08-28 | stage 02-mcp-servers | recaptured (v1, dev images) |
+| `03-tools` | 7 | 7 | 5ec9e77 2026-08-28 | stage 03-tools | recaptured (v1, dev images) |
+| `04-skills` | 7 | 7 | 5ec9e77 2026-08-28 | stage 04-skills | recaptured (v1, dev images) |
+| `05-sub-agents` | 8 | 8 | 5ec9e77 2026-08-28 | stage 05-sub-agents | recaptured (v1, dev images) |
+| `06-trial-graph-thinking-on` | 10 | 10 | 5ec9e77 2026-08-28 | stage 06-trial-graph-thinking-on | recaptured (v1, dev images) |
+| `07-trial-graph-thinking-off` | 9 | 9 | 5ec9e77 2026-08-28 | stage 07-trial-graph-thinking-off | recaptured (v1, dev images) |
+| `08-trial-agentic-thinking-on` | 9 | 9 | 5ec9e77 2026-08-28 | stage 08-trial-agentic-thinking-on | recaptured (v1, dev images) |
+| `09-trial-agentic-thinking-off` | 8 | 8 | 5ec9e77 2026-08-28 | stage 09-trial-agentic-thinking-off | recaptured (v1, dev images) |
+| `10-fallback-uncovered-ask` | 3 | 3 | 5ec9e77 2026-08-28 | stage 10-fallback-uncovered-ask | recaptured (v1, dev images) |
+| `11-hitl-deny-and-queue` | 6 | 6 | 5ec9e77 2026-08-28 | stage 11-hitl-deny-and-queue | recaptured (v1, dev images) |
+| `12-stop-and-queued-message` | 3 | 3 | 5ec9e77 2026-08-28 | stage 12-stop-and-queued-message | recaptured (v1, dev images) |
+| `13-failure-retry-cancel` | 8 | 8 | 5ec9e77 2026-08-28 | stage 13-failure-retry-cancel | recaptured (v1, dev images) |
+| `14-runs-and-ops` | 7 | 7 | 5ec9e77 2026-08-28 | stage 14-runs-and-ops | recaptured (v1, dev images) |
+| `15-static-guards` | 3 | 3 | 5ec9e77 2026-08-28 | stage 15-static-guards | recaptured (v1, dev images) |
+| `16-theme-gallery` | 9 | 9 | 5ec9e77 2026-08-28 | stage 16-theme-gallery | recaptured (v1, dev images) |
+| `17-data-purge` | 5 | 5 | c489327 2026-08-28 | stage 17-data-purge | recaptured (v1, dev images) |
+| `18-registry-cache-and-retrieval` | 13 | 13 | 5ec9e77 2026-08-28 | stage 18-registry-cache-and-retrieval | recaptured (v1, dev images) |
+| `19-provider-agnostic` | 5 | 5 | 5ec9e77 2026-08-28 | stage 19-provider-agnostic | recaptured as `19-multi-turn-conversations` (one provider configured; continuity proven instead of a provider swap) |
+| `20-heterogeneous-models` | 4 | 4 | 5ec9e77 2026-08-28 | stage 20-heterogeneous-models | recaptured (v1, dev images) |
 | `21-m8-features` | 5 | 5 | 5ec9e77 2026-08-28 | stage 21-m8-features | pending |
-| `22-hitl-stale-card-fix` | 6 | 6 | 5ec9e77 2026-08-28 | stage 22-hitl-stale-card-fix | pending |
-| `23-ops-fixes` | 5 | 5 | c489327 2026-08-28 | stage 23-ops-fixes | pending |
-| `24-formatter` | 6 | 6 | c489327 2026-08-28 | stage 24-formatter | pending |
+| `22-hitl-stale-card-fix` | 6 | 6 | 5ec9e77 2026-08-28 | stage 22-hitl-stale-card-fix | recaptured (v1, dev images) |
+| `23-ops-fixes` | 5 | 5 | c489327 2026-08-28 | stage 23-ops-fixes | recaptured (v1, dev images) |
+| `24-formatter` | 6 | 6 | c489327 2026-08-28 | stage 24-formatter | recaptured (v1, dev images) |
 | `25-memory` | 12 | 12 | c489327 2026-08-28 | stage 25-memory | pending |
 | `26-ambient` | 13 | 13 | c489327 2026-08-28 | stage 26-ambient | pending |
 | `27-a2a` | 40 | 40 | 5ec9e77 2026-08-28 | stage 27-a2a | pending |
