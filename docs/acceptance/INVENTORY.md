@@ -50,6 +50,6 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |
 | `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | re-run on the dev images: M34 (new), M49, M50, M51, M52, M53, M54 recall, M55, M56 ceremony + addendum + perf record; the M54 fleet legs kept from the same day's capture on the merged code; the per-milestone tests.md pages replaced by one `prod/tests.md` |
 
-Totals: 879 assets, 775 frames, 133 MB.
+Totals at the start: 879 assets, 775 frames, 133 MB. At the end: 377 files, 303 frames (283 in the 35 stage directories, 20 under `prod/`), 55 MB — one tree, every directory captured in this campaign except the six M54 fleet transcripts kept from the same day's capture on the merged code.
 
-The unreferenced-frame count (frames no markdown names) was 729 of 775 at the start: the old campaigns referenced frames by directory listing, not by name. The consolidated index references every frame it keeps by name, so this number ends at zero.
+The unreferenced-frame count (frames no markdown names) was 729 of 775 at the start: the old campaigns referenced frames by directory listing, not by name. Every frame in the consolidated tree is named by the transcript of the stage or drill that took it: the count ends at zero.
