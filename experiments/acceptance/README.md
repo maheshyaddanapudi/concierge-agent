@@ -41,7 +41,9 @@ docker bridge gateway (`172.18.0.1` on a default compose network):
 - `27`, `28`: the repo's scripted A2A counterparty —
   `cd backend && .venv/bin/python -m tests.a2a_counterparty --port 8027 --name polyglot-agent --auth bearer`
   (and `8028 keyed-agent apikey-header`, `8029 mtls-agent mtls-only`, `8030 oauth-agent oauth2`);
-  the keyed agent's credential is `env:A2A_STUB_API_KEY`, so the backend needs `A2A_STUB_API_KEY=stub-api-key`.
+  the keyed agent's credential is `env:A2A_STUB_API_KEY`, so the backend needs `A2A_STUB_API_KEY=stub-api-key`;
+  and because the counterparties sit on a private address, the backend's egress policy must name that host
+  (`EGRESS_ALLOW_HOSTS=172.18.0.1`) — otherwise registration is refused, which is the M52 guard doing its job.
 - `29`: `python3 sinks.py --http 9099 --smtp 8025 --log sinks.log` and a backend with
   `AMBIENT_WEBHOOK_URL=http://172.18.0.1:9099/push SMTP_HOST=172.18.0.1 SMTP_PORT=8025 SMTP_FROM=… SMTP_TO=…`;
   point `ACC_SINK_LOG` at the log.
