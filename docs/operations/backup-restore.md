@@ -35,7 +35,7 @@ the restore.
 
 ## The drill (M53) — measured
 
-Recorded in `docs/acceptance/prod/M53/restore-drill.md` with the full
+Recorded in `docs/acceptance/prod/M53/ops.md` with the full
 transcript. Summary:
 
 | Step | Measured |
