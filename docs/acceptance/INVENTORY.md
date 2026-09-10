@@ -30,7 +30,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `23-ops-fixes` | 5 | 5 | c489327 2026-08-28 | stage 23-ops-fixes | recaptured (v1, dev images) |
 | `24-formatter` | 6 | 6 | c489327 2026-08-28 | stage 24-formatter | recaptured (v1, dev images) |
 | `25-memory` | 12 | 12 | c489327 2026-08-28 | stage 25-memory | recaptured (v1, dev images) |
-| `26-ambient` | 13 | 13 | c489327 2026-08-28 | stage 26-ambient | pending |
+| `26-ambient` | 13 | 13 | c489327 2026-08-28 | stage 26-ambient | recaptured (v1, dev images) |
 | `27-a2a` | 40 | 40 | 5ec9e77 2026-08-28 | stage 27-a2a | pending |
 | `28-config-hardening` | 25 | 24 | 783643e 2026-08-28 | stage 28-config-hardening | pending |
 | `29-ambient-pursuit` | 4 | 3 | 9720be8 2026-08-28 | stage 29-ambient-pursuit | pending |
