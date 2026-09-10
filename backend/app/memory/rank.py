@@ -80,10 +80,7 @@ def _filters_sql(scopes: list[str] | None, kinds: list[str] | None) -> str:
     parts.append("(m.scope != 'project' OR m.project_key = CAST(:project_key AS text))")
     # §18.8 tenancy: another user's memories are invisible; unowned
     # (pre-auth / system) rows stay visible to everyone
-    from app.auth import auth_enabled
 
-    if auth_enabled():
-        parts.append("(m.user_id = CAST(:auth_user_id AS uuid) OR m.user_id IS NULL)")
     return (" AND " + " AND ".join(parts)) if parts else ""
 
 
@@ -110,6 +107,14 @@ def visibility_sql(
         "as_of": as_of,
         "auth_user_id": auth_user_id,
     }
+    # M55 (spec §20): the tenancy clause is the active provider's — its
+    # fragment and its parameters, appended here so every read carries it
+    from app.auth import memory_visibility
+
+    fragment, tenancy_params = memory_visibility()
+    if fragment:
+        where += " AND " + fragment
+        params.update(tenancy_params)
     return where, params
 
 

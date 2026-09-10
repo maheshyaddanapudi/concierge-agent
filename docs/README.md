@@ -45,6 +45,7 @@ Complete documentation for the Concierge Agent POC. `spec.md` at the repo root r
 
 | Document | Contents |
 |---|---|
+| [extending.md](./extending.md) | The fork seam (spec §20): the `AuthProvider` port a fork implements in one module, what the core guarantees and will never do, how to wire and test it, the reference stub |
 | [development/contributing.md](./development/contributing.md) | The spec-driven workflow, conventional commits, hard constraints reviews enforce, PR evidence expectations |
 | [development/local-development.md](./development/local-development.md) | Both dev loops: full containerized stack and the fast uv/vite loop; keyless fake-LLM mode |
 | [development/testing.md](./development/testing.md) | Test suite map, the fake-provider philosophy, dual-cache-mode gate, how-to-add checklists |

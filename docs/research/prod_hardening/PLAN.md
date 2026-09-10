@@ -235,7 +235,7 @@ that makes "fork it and add your auth layer" a one-module job instead of surgery
 - A **contract test suite** any implementation must pass, mirroring the model-adapter contract suite,
   plus a reference stub provider in tests.
 - `docs/extending.md`: how to fork, what to implement, what the core guarantees, what it will never do.
-- Spec §21 records the seam as a first-class boundary with the same weight as §2.1's provider port.
+- Spec §20 records the seam as a first-class boundary with the same weight as §2.1's provider port.
 
 **Exit criteria**
 - The reference stub enforces a fake tenancy rule end-to-end with **zero changes outside its own

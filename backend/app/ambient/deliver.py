@@ -427,11 +427,11 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
     (presence/deferral), and time-based digests. §18.8: with auth on the
     pass runs per owner bucket under each owner's effective settings;
     dark = one unscoped bucket, byte-identical to M23–M25."""
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
     now = now or datetime.now(UTC)
     out = {"interrupt": 0, "notify": 0, "digest": 0, "demoted": 0}
-    if not auth_enabled():
+    if not tenancy_on():
         await _flush_bucket(now, None, False, out)
         return out
     async with get_session_factory()() as session:
@@ -457,9 +457,9 @@ async def on_user_returned(
     return from absence > 1h also flushes the digest as one collapsed
     'while you were away' stack. Micro-absences flush tier 1 only.
     §18.8: the returning USER's bucket only when auth is on."""
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
-    scoped = auth_enabled()
+    scoped = tenancy_on()
     now = now or datetime.now(UTC)
     await _flush_tier1(now, quiet=False, force=True, owner=user_id, scoped=scoped)
     if away_s > 3600:
@@ -535,9 +535,9 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
     if str(await cache.setting("ambient_learning_mode")) == "off" and bool(
         await cache.setting("ambient_precision_rule_enabled")
     ):
-        from app.auth import auth_enabled
+        from app.auth import tenancy_on
 
-        await apply_precision_rule(row.category, row.user_id, auth_enabled())
+        await apply_precision_rule(row.category, row.user_id, tenancy_on())
     return row
 
 

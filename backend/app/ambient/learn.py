@@ -200,9 +200,9 @@ async def _category_signals(
 async def _learn_retiers(mode: str) -> int:
     """§18.8: with auth on the learner observes and re-tiers each owner's
     delivery pool separately (policies carry user_id)."""
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
-    scoped = auth_enabled()
+    scoped = tenancy_on()
     owners: list[UUID | None] = [None]
     if scoped:
         async with get_session_factory()() as session:
@@ -291,9 +291,9 @@ async def _digest_anchor(current: list[str]) -> list[str]:
 
 
 async def _learn_digest_times(mode: str) -> int:
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
-    if auth_enabled():
+    if tenancy_on():
         # §18.8: digest times live per user (users.prefs) in the multi-user
         # regime — a GLOBAL shift learned from one user's feedback would
         # leak preference across tenants, so the global learner stands down

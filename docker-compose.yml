@@ -84,6 +84,9 @@ services:
       CUSTOM_GATEWAY_API_KEY: ${CUSTOM_GATEWAY_API_KEY:-}
       CUSTOM_GATEWAY_MODELS: ${CUSTOM_GATEWAY_MODELS:-}
       AUTH_ENABLED: ${AUTH_ENABLED:-}
+      # M55: the active AuthProvider and the fork module that registers it (spec §20)
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-}
+      AUTH_PROVIDER_MODULE: ${AUTH_PROVIDER_MODULE:-}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
       # M50: the per-replica connection budget (pool + overflow); see
       # docs/operations/scaling.md for sizing Postgres max_connections

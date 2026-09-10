@@ -38,6 +38,9 @@ class AppConfig(BaseSettings):
     custom_gateway_models: str | None = None
     # §18.8 auth & tenancy — dark by default: off ⇒ byte-identical
     auth_enabled: bool = False
+    # M55 (spec §20): the active AuthProvider and the fork module that registers it
+    auth_provider: str = "builtin"
+    auth_provider_module: str | None = None
     frontend_origin: str | None = None  # CORS pin when auth is on
     # M50 (PLAN M50, arch-C1): the connection budget is explicit. Per replica
     # the pooled ceiling is pool_size + max_overflow; the checkpointer pool,

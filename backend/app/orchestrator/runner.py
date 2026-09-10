@@ -67,7 +67,7 @@ async def create_run(
     full — the caller turns that into an explicit 503. M53: the spend
     ceiling is enforced HERE, for every trigger kind (chat, direct, ambient,
     eval), as a 429-shaped AtCapacity."""
-    from app.auth import auth_enabled, current_user_id
+    from app.auth import current_user_id, visible_to
     from app.cost import enforce_spend_ceiling
     from app.orchestrator import admission
 
@@ -89,7 +89,7 @@ async def create_run(
             existing = await session.get(Conversation, conversation_id)
             if existing is None:
                 raise ValueError(f"conversation {conversation_id} not found")
-            if auth_enabled() and existing.user_id != user_id:
+            if not visible_to(existing, user_id):
                 raise ValueError(f"conversation {conversation_id} not found")  # invisible
         settings = await load_settings_snapshot()
         admission.check_admission(settings, shed_if_full=shed_if_full)

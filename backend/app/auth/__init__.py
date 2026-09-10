@@ -10,7 +10,13 @@ a per-user token-bucket rate limit, and security headers.
 The current requester rides a contextvar so stores and the orchestrator
 scope work rows without threading a parameter through every call; the run
 executor re-binds it from the Run's owner so in-run writes scope to the
-owner even off-request (ambient fires, eval runs)."""
+owner even off-request (ambient fires, eval runs).
+
+M55 (spec §20): every decision here routes through the active
+`AuthProvider` (`app/auth/port.py`, `registry.py`); this module is the
+core's façade — the contextvar, the middleware, the rate limit, the
+security headers, `scope_to_user` / `owns_row` — and the builtin
+provider's session machinery (passwords, sessions, the bootstrap admin)."""
 
 import hashlib
 import hmac
@@ -30,6 +36,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app import ratelimit
+from app.auth.port import Principal
+from app.auth.registry import get_auth_provider
 from app.db import get_session_factory
 from app.models import AuthSession, User
 
@@ -43,39 +51,61 @@ RATE_LIMIT_BURST = 120  # default tokens per bucket (rate_limit_burst)
 RATE_LIMIT_REFILL_PER_S = 10.0  # default refill (rate_limit_per_s)
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 
-_current_user: ContextVar[dict[str, Any] | None] = ContextVar("current_user", default=None)
+_current_user: ContextVar[Principal | None] = ContextVar("current_user", default=None)
 _buckets: dict[str, tuple[float, float]] = {}  # user/ip → (tokens, last_ts)
 
 # guard exemptions (spec §18.8): the fire endpoint keeps its own token auth
 _EXEMPT = re.compile(r"^/api/v1/(auth/login$|routines/[0-9a-f-]+/fire$)")
 # writes to these resources require the admin role; /invoke and /overlap*
 # are member actions (read + invoke), not definition writes
-_ADMIN_WRITE = re.compile(r"^/api/v1/(mcp-servers|remote-agents|tools|skills|sub-agents|settings)")
 
 
 def auth_enabled() -> bool:
+    """The builtin's switch. Nothing outside this package reads it (§20)."""
     from app.config import get_config
 
     return bool(get_config().auth_enabled)
 
 
-def current_user() -> dict[str, Any] | None:
+def tenancy_on() -> bool:
+    """Whether the active provider makes the platform multi-user."""
+    return bool(get_auth_provider().enabled())
+
+
+def current_principal() -> Principal | None:
     return _current_user.get()
 
 
+def current_user() -> dict[str, Any] | None:
+    """The requester as the pre-M55 dict (id / username / role), or None."""
+    p = _current_user.get()
+    if p is None:
+        return None
+    return {"id": str(p.id) if p.id is not None else None, "username": p.username, "role": p.role}
+
+
 def current_user_id() -> UUID | None:
-    user = _current_user.get()
-    return UUID(str(user["id"])) if user else None
+    """The owner stamp for rows the requester creates (the provider's call)."""
+    return get_auth_provider().owner_id(_current_user.get())
 
 
-def set_current_user(user: dict[str, Any] | None) -> None:
-    _current_user.set(user)
+def set_current_user(user: dict[str, Any] | Principal | None) -> None:
+    if user is None or isinstance(user, Principal):
+        _current_user.set(user)
+        return
+    _current_user.set(
+        Principal(
+            id=UUID(str(user["id"])) if user.get("id") is not None else None,
+            role=str(user.get("role") or "member"),
+            username=user.get("username"),
+        )
+    )
 
 
 def bind_run_owner(user_id: UUID | None) -> None:
     """Run tasks re-bind the requester from the Run's owner (§18.8) so
     ambient fires and eval runs scope their writes to the owner."""
-    _current_user.set({"id": str(user_id)} if user_id is not None else None)
+    _current_user.set(Principal(id=user_id) if user_id is not None else None)
 
 
 # ── scrypt passwords ─────────────────────────────────────────────────
@@ -187,7 +217,8 @@ def _rate_limited(
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Response:
-        if not auth_enabled():
+        provider = get_auth_provider()
+        if not provider.enabled():
             set_current_user(None)  # byte-identity: no checks, no headers
             passthrough: Response = await call_next(request)
             return passthrough
@@ -196,14 +227,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             set_current_user(None)
             response: Response = await call_next(request)
             return _harden(response)
-        token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
-        if not token:
-            # EventSource cannot set headers — SSE endpoints accept the
-            # session token as a query param (still hashed-at-rest, TTL'd)
-            token = str(request.query_params.get("token") or "")
-        user = await authenticate(token)
-        if user is None:
+        principal = await provider.identify(request)
+        if principal is None:
             return _harden(JSONResponse({"detail": "authentication required"}, status_code=401))
+        owner = provider.owner_id(principal)
         from app.registry_cache import get_cache
 
         try:  # M40: live rate-limit shape; a settings hiccup falls back to defaults
@@ -214,28 +241,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # M54 (scale-H3): the bucket is `rate_buckets` — one budget across
         # every replica; a database hiccup falls back to the local bucket
         # (fail open on availability, never closed)
+        key = f"user:{owner}" if owner is not None else f"anon:{principal.username or '-'}"
         try:
-            allowed = await ratelimit.allow(f"user:{user['id']}", burst, per_s)
+            allowed = await ratelimit.allow(key, burst, per_s)
         except Exception as exc:  # noqa: BLE001 — availability over a limit the pool already bounds
             logger.warning("rate_limit_store_unavailable", error=str(exc)[:200])
-            allowed = not _rate_limited(user["id"], burst, per_s)
+            allowed = not _rate_limited(key, burst, per_s)
         if not allowed:
             return _harden(JSONResponse({"detail": "rate limit exceeded"}, status_code=429))
-        if (
-            request.method in {"POST", "PATCH", "PUT", "DELETE"}
-            and _ADMIN_WRITE.match(path)
-            and "/invoke" not in path
-            and "/overlap" not in path
-            and user["role"] != "admin"
-        ):
-            return _harden(
-                JSONResponse(
-                    {"detail": "registry and settings writes require the admin role"},
-                    status_code=403,
-                )
-            )
-        set_current_user(user)
-        request.state.user = user
+        refusal = await provider.authorize(principal, method=request.method, path=path)
+        if refusal:
+            return _harden(JSONResponse({"detail": refusal}, status_code=403))
+        set_current_user(principal)
+        request.state.user = current_user()
         try:
             response = await call_next(request)
         finally:
@@ -251,16 +269,25 @@ def _harden(response: Response) -> Response:
 
 
 def scope_to_user(stmt: Any, model: Any) -> Any:
-    """§18.8 tenancy filter: per-user work queries see only the requester's
-    rows when auth is on; unchanged (single-user) when dark."""
-    if not auth_enabled():
-        return stmt
-    return stmt.where(model.user_id == current_user_id())
+    """§18.8 tenancy filter, the provider's rule: per-user work queries see
+    what the active provider admits; unchanged (single-user) when dark."""
+    clause = get_auth_provider().tenancy_filter(model, _current_user.get())
+    return stmt if clause is None else stmt.where(clause)
 
 
 def owns_row(row: Any) -> bool:
-    """True when the requester may see this work row (§18.8)."""
-    if not auth_enabled():
-        return True
-    owner = getattr(row, "user_id", None)
-    return owner == current_user_id()
+    """True when the requester may see this work row (the provider's rule)."""
+    return bool(get_auth_provider().may_see(row, _current_user.get()))
+
+
+def visible_to(row: Any, owner_id: UUID | None) -> bool:
+    """The same rule judged for a given owner rather than the request
+    principal — the run executor asks it for the run's owner (a routine
+    fires as its owner, off-request)."""
+    principal = Principal(id=owner_id) if owner_id is not None else None
+    return bool(get_auth_provider().may_see(row, principal))
+
+
+def memory_visibility() -> tuple[str, dict[str, Any]]:
+    """The tenancy clause of the memory visibility predicate (§16.3)."""
+    return get_auth_provider().memory_visibility(_current_user.get())

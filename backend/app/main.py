@@ -121,10 +121,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     memory_loop_task = asyncio.create_task(run_periodic_loop(memory_stop))
     # §18.8: with auth on, ensure the bootstrap admin exists (one-time
     # password prints to this log)
-    from app.auth import auth_enabled, bootstrap_admin
+    # M55 (spec §20): the active provider's boot hook (the builtin's is
+    # the bootstrap admin); the provider resolves here or fails loudly
+    from app.auth.registry import get_auth_provider
 
-    if auth_enabled():
-        await bootstrap_admin()
+    await get_auth_provider().on_boot()
     # native poll sources + state probes (spec §18.3) — registered every
     # boot so the tick and the watch compiler see the live registries
     from app.ambient.sources import register_native_sources
@@ -189,7 +190,9 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     app = FastAPI(title="Concierge Agent", lifespan=lifespan if with_lifespan else None)
     # §18.8: with auth on, CORS pins to the frontend origin; dark keeps '*'
     pinned = get_config().frontend_origin
-    origins: list[str] = [pinned] if get_config().auth_enabled and pinned else ["*"]
+    from app.auth.registry import get_auth_provider
+
+    origins: list[str] = [pinned] if get_auth_provider().enabled() and pinned else ["*"]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
