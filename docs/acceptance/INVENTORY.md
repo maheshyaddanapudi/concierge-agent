@@ -34,7 +34,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `27-a2a` | 40 | 40 | 5ec9e77 2026-08-28 | stage 27-a2a | pending |
 | `28-config-hardening` | 25 | 24 | 783643e 2026-08-28 | stage 28-config-hardening | recaptured (v1, dev images; the 429 transcript lives in prod/M34) |
 | `29-ambient-pursuit` | 4 | 3 | 9720be8 2026-08-28 | stage 29-ambient-pursuit | pending |
-| `30-salience` | 14 | 11 | 4fb2b8a 2026-08-29 | stage 30-salience | pending |
+| `30-salience` | 14 | 11 | 4fb2b8a 2026-08-29 | stage 30-salience | recaptured (v1, dev images; the regression sample is superseded by the QA pass) |
 | `31-salience-decisions` | 15 | 12 | 5bab618 2026-08-30 | stage 31-salience-decisions | pending |
 | `32-durable-forgetting` | 14 | 10 | 915ced7 2026-08-30 | stage 32-durable-forgetting | pending |
 | `(root)` | 4 | 0 | e71305a 2026-09-10 | campaign (root) | pending |
