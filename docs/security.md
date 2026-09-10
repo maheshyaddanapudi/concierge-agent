@@ -4,7 +4,7 @@ This document describes the security posture of the Concierge Agent proof of con
 
 ## Explicit non-goals
 
-- **No authentication or authorization.** Every API endpoint under `/api/v1` and every admin page is open to anyone who can reach the frontend or backend port. There are no users, sessions, tokens, or roles anywhere in the codebase.
+- **No authentication or authorization ships — the seam does.** Every API endpoint under `/api/v1` and every admin page is open to anyone who can reach the port in the default deployment. Since M55 (spec §20) the repository carries the `AuthProvider` port a fork plugs its own auth into (`docs/extending.md`) and a builtin provider that is dark unless `AUTH_ENABLED=true` (spec §18.8: hashed sessions, an admin gate, per-user rows). The stance is deliberate: authentication is your organisation's, and the core's job is to ask the port on every surface — REST, both SSE streams, memory recall, run ownership — so that your rule holds everywhere at once.
 - **No multi-tenancy.** One database, one registry set, one shared conversation history. Every operator sees and controls everything.
 - **Trusted-operator assumption.** The admin UI is a command center for a trusted operator on a trusted network. Anyone with UI access can register MCP servers — including **stdio servers that spawn an arbitrary `command args` subprocess inside the backend container** (`backend/app/mcp/manager.py`, spec §5). UI access is therefore equivalent to code execution in the backend container. This is by design for a POC and is the single most important fact on this page.
 
