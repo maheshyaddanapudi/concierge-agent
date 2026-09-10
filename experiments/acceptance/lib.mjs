@@ -125,6 +125,10 @@ export async function openBrowser() {
 
 export async function nav(page, route, settleMs = 1500) {
   await page.goto(`${BASE}/#/${route.replace(/^\//, '')}`)
+  // a hash change is an in-app navigation — the query cache would keep
+  // settings written through the API stale; reload so every frame shows
+  // the server's current state
+  await page.reload()
   await page.waitForTimeout(settleMs)
 }
 

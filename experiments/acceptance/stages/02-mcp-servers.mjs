@@ -40,7 +40,7 @@ export default async function ({ page, nav, shot, get, del, log, click, closeDra
   const refresh = page.getByRole('button', { name: /refresh tools/i }).first()
   await refresh.click()
   await page.waitForTimeout(150)
-  await shot(page, '05-refresh-tools-running')
+  await shot(page, '05-refresh-tools-clicked')
   await page.waitForTimeout(2500)
   await page.getByRole('button', { name: /^reconnect/i }).first().click()
   await page.waitForTimeout(3500)

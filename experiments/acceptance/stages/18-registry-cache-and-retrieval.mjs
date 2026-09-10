@@ -119,6 +119,8 @@ export default async function (ctx) {
   await nav(page, 'tools')
   const header = page.getByText(/cache: memory/i).first()
   await header.waitFor({ timeout: 10000 })
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(300)
   log(`tools header: ${(await header.textContent()).trim()}`)
   await shot(page, '09-tools-cache-header-memory')
   const gt0 = (await status()).registries.tools.generation
@@ -133,6 +135,11 @@ export default async function (ctx) {
   await page.waitForTimeout(1200)
   await ctx.closeDrawer(page)
   const gt1 = (await status()).registries.tools.generation
+  // the header polls; reload so the bumped generation is the one in frame
+  await nav(page, 'tools')
+  await page.getByPlaceholder('Search…').fill('sitefiles.add')
+  await page.waitForTimeout(600)
+  await page.evaluate(() => window.scrollTo(0, 0))
   log(`tools generation after the exposure toggle: ${gt0} → ${gt1}; header: ${(await page.getByText(/cache: memory/i).first().textContent()).trim()}`)
   await shot(page, '10-generation-bumped-after-toggle')
   await page.locator('table tbody tr').first().click()

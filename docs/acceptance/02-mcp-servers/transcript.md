@@ -6,7 +6,7 @@
 [   6.7s] shot 02-sitefiles-active.png
 [   7.5s] shot 03-register-form-http.png
 [   8.9s] shot 04-server-drawer-detail.png
-[   9.2s] shot 05-refresh-tools-running.png
+[   9.2s] shot 05-refresh-tools-clicked.png
 [  15.3s] after reconnect: active tools=4 last_connected=2026-09-10T02:34:29.132826Z
 [  15.4s] shot 06-reconnect-done.png
 [  15.9s] # end — 2026-09-10T02:34:32.486Z

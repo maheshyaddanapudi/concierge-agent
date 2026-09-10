@@ -113,11 +113,13 @@ export default async function ({ page, nav, shot, settings, get, log, sendChat, 
   await page.waitForTimeout(600)
   await shot(page, '05-failed-drawer-retry')
   await click(page, 'Retry (re-plan)')
-  await page.waitForTimeout(2000)
+  await page.waitForTimeout(1500)
   const r3 = (await get('/runs?limit=1')).json[0]
   log(`retry launched: ${r3.id} (${r3.status})`)
-  await shot(page, '06-retry-launched')
+  // the new run's row with its live status pill, drawer closed
   await closeDrawer(page)
+  await page.waitForTimeout(800)
+  await shot(page, '06-retry-launched')
   const done3 = await waitRun(r3.id, ['completed', 'failed', 'cancelled'], 300)
   log(`retried run → ${done3.status}; steps: ${steps(done3)}`)
   log(`retry answer: ${(done3.final_answer || '').slice(0, 160)}`)

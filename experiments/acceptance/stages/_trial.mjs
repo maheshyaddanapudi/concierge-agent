@@ -31,7 +31,10 @@ export function trial({ mode, effort }) {
     const sawPlan = await planCard.waitFor({ timeout: 45000 }).then(() => true).catch(() => false)
     if (sawPlan) await shot(page, '01-plan-card-live')
     else log('no plan card appeared before the gate (fallback or a very fast route) — documented, not faked')
-    await page.waitForTimeout(1500)
+    // the rails mid-run: taken while the worker is still busy, before the gate
+    // arms (a gate already armed is frame 03, not this one)
+    await page.getByText(/SUB_AGENT|TOOL_CALL|SKILL/).first().waitFor({ timeout: 30000 }).catch(() => {})
+    await page.waitForTimeout(800)
     await shot(page, '02-rails-and-ticker-midrun')
 
     // the HITL gate armed in the chat card
@@ -68,8 +71,10 @@ export function trial({ mode, effort }) {
     log(`run 2 → ${done2.status}; answer 2: ${(done2.final_answer || '').slice(0, 120)}`)
 
     // the trace on the Runs page
+    // the trace of message 1's run (the newest row carrying its text — the
+    // follow-up is the first row and would show a one-step trace)
     await nav(page, 'runs')
-    await page.locator('table tbody tr').first().click()
+    await page.locator('table tbody tr').filter({ hasText: TRIAL_MESSAGE.slice(0, 40) }).first().click()
     await page.waitForTimeout(1200)
     await shot(page, '08-trace-top')
     const drawer = page.locator('.fixed.inset-0').last()
