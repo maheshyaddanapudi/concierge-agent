@@ -59,7 +59,7 @@ say "the backend's provider keys (read from its environment, never printed here)
 KEYS=$(docker exec "$ACC_BACKEND_CONTAINER" sh -c 'for v in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY GOOGLE_API_KEY LANGSMITH_API_KEY; do eval "x=\$$v"; [ -n "$x" ] && echo "$x"; done')
 echo "keys set on the backend: $(printf '%s\n' "$KEYS" | grep -c .)"
 BODY=$( (curl -s $API/settings; curl -s $API/providers; curl -s $API/mcp-servers; curl -s $ROOT/health) )
-HITS=0; for k in $KEYS; do n=$(printf '%s' "$BODY" | grep -o -F -- "$k" | wc -l); HITS=$((HITS + n)); done; echo "occurrences of any key value in those responses: $HITS"
+HITS=0; while IFS= read -r k; do [ -n "$k" ] || continue; n=$(printf '%s' "$BODY" | grep -o -F -- "$k" | wc -l); HITS=$((HITS + n)); done <<< "$KEYS"; echo "occurrences of any key value in those responses: $HITS"
 curl -s $API/settings | py 'print("settings keys that mention key/secret/token:", [k for k in d if any(w in k for w in ("api_key","secret","token"))] or "none")'
 curl -s $API/providers | py 'print("providers (id, configured):", [(p["provider_id"], p["configured"]) for p in d])'
 
