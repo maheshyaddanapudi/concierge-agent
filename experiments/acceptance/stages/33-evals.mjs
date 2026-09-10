@@ -61,13 +61,16 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
     await page.waitForTimeout(3000)
   }
   const detail = run ? (await get(`/evals/runs/${run.id}`)).json : null
-  log(`eval run → ${run?.status}: ${detail?.passed}/${detail?.total} passed`)
-  for (const r of detail?.results || []) log(`  ${r.grader}: ${r.outcome || r.status} score=${r.score} — ${String(r.reason || '').slice(0, 120)}`)
+  log(`eval run → ${run?.status}: ${detail?.passed_cases}/${detail?.total_cases} passed, ${detail?.failed_cases} failed, ${detail?.error_cases} errors`)
+  for (const r of detail?.results || []) log(`  ${r.grader}: ${r.passed ? 'pass' : r.status} score=${r.score} — ${String(r.reason || '').slice(0, 120)}`)
   await page.getByTestId('eval-results').waitFor({ timeout: 15000 }).catch(() => {})
   await page.getByTestId('eval-results').scrollIntoViewIfNeeded().catch(() => {})
   await page.waitForTimeout(800)
   await shot(page, '03-graded-results')
-  const evalRuns = (await get('/runs?limit=10')).json.filter((r) => r.trigger === 'eval' || r.is_eval)
-  log(`runs tagged eval: ${evalRuns.length}`)
+  // every case ran as an ordinary run — the results name them
+  const caseRuns = (detail?.results || []).map((r) => r.run_id).filter(Boolean)
+  const statuses = []
+  for (const id of caseRuns) statuses.push((await get(`/runs/${id}`)).json?.status)
+  log(`case runs on the Runs surface: ${caseRuns.length} (${statuses.join(', ')})`)
   await closeDrawer(page)
 }
