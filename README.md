@@ -1,10 +1,22 @@
 # Concierge Agent
 
-A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → Sub Agents**, every tier backed by a Postgres registry with static (seeded) and dynamic (admin-UI) entries, projected live into running agents through middleware, and fronted by a full admin command center.
+A registry-driven, tri-layer agentic orchestration platform — **Tools → Skills → Sub Agents** — every tier a Postgres registry with static (seeded) and dynamic (UI-authored) records, two orchestrator modes over LangGraph, a memory layer, an ambient mode that acts on triggers, outbound A2A, and the operations and scale work that turned a proof of concept into something an operator can deploy, watch, trim and fork. Version **1.0.0**; the spec (`spec.md`) is the complete, binding description and every milestone in it shipped with executed proof.
 
-**Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
+> **Status — all milestones complete (M1–M55).** Backend suite **1068 passed, 1 skipped**, frontend suite **94 passed**. Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/ceremony_m36/report.md)).
 
-> **Status — all milestones complete (M1–M54).** Backend suite **1040 passed, 1 skipped**, frontend suite **94 passed**. Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/ceremony_m36/report.md)).
+## What it is
+
+- **A command centre for capabilities**: plug an MCP server after startup, compose a skill from its tools, compose a sub agent from skills with a branching, error-handling, human-in-the-loop DAG, and invoke it from chat or directly — with every run traced to the step.
+- **Two orchestrators, one registry**: `graph` (explicit planner, deterministic resolution ladder, parallel dispatch) and `agentic` (one `create_agent` loop with registry middlewares), switchable per run.
+- **Memory that forgets honestly** (bi-temporal, tombstoned, consolidated by set-based sweeps) and **ambient mode that answers to switches** (every autonomous behaviour has a named gate, enforced inside the behaviour).
+- **Provider-agnostic by port**: Anthropic, Google, OpenAI, OpenRouter and any OpenAI-compatible gateway behind one `ModelProvider` protocol; keys env-only, never in the database or the UI.
+- **Operable**: readiness-first deploys, backup/restore with a measured RTO, retention gates, metrics and dashboards, runbooks, horizontal scale with a shared control plane — each proven on the shipped image (`docs/acceptance/prod/`).
+
+## What it deliberately is not
+
+- **Not an authentication product.** No auth ships. What ships is the seam yours plugs into — an `AuthProvider` port and registry the core asks on every surface (spec §20, [docs/extending.md](./docs/extending.md)) — and a builtin provider that is dark by default. Run it on localhost or a private network, or fork it and add your provider in one module.
+- **Not a queue-backed system.** No broker, no task queue, no Celery: asyncio in one FastAPI process, Postgres as the single stateful service, Redis only as an optional cache. Three compose services.
+- **Not a hosted service.** It is a repository you run and extend; `SECURITY.md` states what is and is not in scope.
 
 | Wave | Milestones | What landed |
 |---|---|---|
@@ -20,6 +32,19 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 | **Switchability** | M48 | Every autonomous behavior answers to a named switch: the four consolidation jobs, anticipation, and the eval surface. Settings coverage is now asserted by test (89/89), and "off" means off — a zero community budget stops the rebuild, not just the injection |
 
 Per-milestone detail is in [Milestone status](#milestone-status); the full evidence tree is in [docs/acceptance/](./docs/acceptance/README.md). `spec.md` is the single source of truth — implementation proceeded milestone by milestone via spec-driven development (see `CLAUDE.md`).
+
+## Run it
+
+See [Getting started](#getting-started) below — three scripts on a machine with Docker, or `cp .env.example .env && docker compose up`. With no provider key, `FAKE_LLM_ENABLED=1` runs the whole platform on a deterministic fake model.
+
+## Extend it
+
+- **Your auth**: implement the eight-member `AuthProvider` in one module, point `AUTH_PROVIDER` / `AUTH_PROVIDER_MODULE` at it, run the contract suite — [docs/extending.md](./docs/extending.md). The reference stub in `backend/tests/auth_stub.py` is the worked example.
+- **Your model provider**: a `ModelProvider` adapter in `backend/app/llm/` that passes the adapter contract suite (spec §2.1); the `custom` gateway adapter covers any OpenAI-compatible endpoint without code.
+- **Your capabilities**: MCP servers from the UI, skills as markdown documents (`.skill.md` or authored in the UI), sub agents as validated workflow JSON (`docs/api/workflow-dsl.md`) or `.agent.md` files.
+- **Your delivery channels, trigger sources and probes**: adapter registries in `backend/app/ambient/` (spec §18.3, §18.4).
+
+Contributions follow the spec-driven workflow in [CONTRIBUTING.md](./CONTRIBUTING.md); the changelog is [CHANGELOG.md](./CHANGELOG.md); the license is MIT.
 
 ## Architecture at a glance
 
@@ -99,7 +124,11 @@ Frontend at `http://localhost:${FRONTEND_PORT}`, API at `http://localhost:${BACK
 spec.md          # the specification — single source of truth
 QUICK_START.md   # setup → build → start → stop → decom, script by script
 CLAUDE.md        # spec-driven development rules for Claude Code
-CHANGELOG.md     # project history, milestone by milestone
+CHANGELOG.md     # project history, milestone by milestone; v1.0.0 at the top
+LICENSE          # MIT
+CONTRIBUTING.md  # the short version of the spec-driven workflow (docs/development/contributing.md is the long one)
+SECURITY.md      # how to report, what is in scope, the auth-is-a-fork stance
+.github/         # issue and pull-request templates (no workflows — CI is the operator's)
 backend/         # FastAPI + LangGraph app (api, models, mcp, llm, native, factory, orchestrator, seed)
 frontend/        # React admin: Chat, MCP Servers, Tools, Skills, Sub Agents, Runs, Settings
 docs/            # full documentation suite (see below); docs/operations/runbooks/ and docs/observability/ since M53; scaling.md rewritten from the N=3 evidence in M54
@@ -210,4 +239,4 @@ Every behavior the system performs on its own answers to a named switch (spec §
 
 ## Scope notes
 
-This is a POC: authentication/authorization, multi-tenancy, and production hardening are deliberately out of scope. Provider and LangSmith API keys are env-only — never stored in the database or shown in the UI. Post-POC roadmap (spreadsheet-driven evals at skill and sub agent level, published to LangSmith) is designed-for in spec.md §15.
+Authentication and multi-tenancy are a fork's business by design (spec §20, `docs/extending.md`); the builtin provider behind the seam is dark unless `AUTH_ENABLED=true`. Production hardening (PLAN M49–M56) is in: load ceilings, bounded work, untrusted-input controls, deploy lifecycle, horizontal scale. Provider and LangSmith API keys are env-only — never stored in the database or shown in the UI. Post-POC roadmap (spreadsheet-driven evals at skill and sub agent level, published to LangSmith) is designed-for in spec.md §15.
