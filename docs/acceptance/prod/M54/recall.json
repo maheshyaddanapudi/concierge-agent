@@ -1,0 +1,196 @@
+{
+  "meta": {
+    "label": "m54-recall",
+    "captured_at": "2026-09-09T23:42:45+00:00",
+    "git_sha": "34c38ba",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "recall"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "m54-recall",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/m54-out/recall.json",
+      "scenarios": [
+        "recall"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        10000,
+        100000,
+        1000000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "fake:scripted",
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": false,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "recall": {
+      "embedding_key": "fake:scripted@64",
+      "levels": [
+        {
+          "loadgen_memories": 10000,
+          "active_memories": 10000,
+          "fake_vectors": 10000,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 48.56,
+            "p95_ms": 107.15,
+            "p99_ms": 143.51,
+            "max_ms": 151.97,
+            "mean_ms": 61.51,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 100.71,
+            "p95_ms": 207.16,
+            "p99_ms": 267.68,
+            "max_ms": 285.86,
+            "mean_ms": 115.14,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 32.5,
+            "index_matches": 0,
+            "wall_ms": 36.2
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 273.58,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 100000,
+          "active_memories": 100000,
+          "fake_vectors": 100000,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 208.74,
+            "p95_ms": 405.86,
+            "p99_ms": 438.1,
+            "max_ms": 442.67,
+            "mean_ms": 229.72,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 1008.6,
+            "p95_ms": 1382.61,
+            "p99_ms": 1530.26,
+            "max_ms": 1548.66,
+            "mean_ms": 949.48,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 184.0,
+            "index_matches": 37500,
+            "wall_ms": 186.3
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 249.37,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 1000000,
+          "active_memories": 1000000,
+          "fake_vectors": 1000000,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 1221.26,
+            "p95_ms": 3952.5,
+            "p99_ms": 4201.85,
+            "max_ms": 4267.09,
+            "mean_ms": 1642.57,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 6670.47,
+            "p95_ms": 19615.85,
+            "p99_ms": 42706.35,
+            "max_ms": 53189.8,
+            "mean_ms": 9857.77,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 1292.1,
+            "index_matches": 375000,
+            "wall_ms": 1295.9
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 277.33,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        }
+      ],
+      "elapsed_s": 3906.8
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 7,
+      "idle": 7
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 1000000",
+    "memories": "DELETE 1000000",
+    "run_steps": "DELETE 0",
+    "runs": "DELETE 0",
+    "conversations": "DELETE 0"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 8,
+      "active": 1,
+      "idle": 7
+    },
+    "max_connections": 100
+  }
+}
