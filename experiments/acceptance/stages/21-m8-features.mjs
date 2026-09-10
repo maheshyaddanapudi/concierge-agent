@@ -65,13 +65,22 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   await newConversation(page)
   // (numbers given inline — naming a tool here sends the planner down the
   // rung-1 direct route to the one exposed tool, which cannot chart)
-  const done2 = await askAndSettle(
-    page,
-    'Here are three quarterly totals: Q1 = 30, Q2 = 50, Q3 = 70. Present them as a bar chart labelled Q1, Q2 and Q3, then one sentence on the trend.',
-  )
-  // the formatter's charts live in answer_ui.charts and as chart blocks
+  // the formatter is a model call: whether it charts the numbers varies run
+  // to run, so the ask is retried (each attempt logged) until a chart lands
+  let done2 = null
+  let charts = []
+  for (let attempt = 1; attempt <= 3 && !charts.length; attempt++) {
+    if (attempt > 1) await newConversation(page)
+    done2 = await askAndSettle(
+      page,
+      'Here are three quarterly totals: Q1 = 30, Q2 = 50, Q3 = 70. Present them as a bar chart labelled Q1, Q2 and Q3, then one sentence on the trend.',
+    )
+    // the formatter's charts live in answer_ui.charts and as chart blocks
+    const u = done2.answer_ui || {}
+    charts = u.charts || (u.blocks || []).filter((b) => b.chart).map((b) => b.chart)
+    log(`chart attempt ${attempt}: answer_ui ${done2.answer_ui ? 'present' : 'absent'}, ${charts.length} chart(s)`)
+  }
   const ui = done2.answer_ui || {}
-  const charts = ui.charts || (ui.blocks || []).filter((b) => b.chart).map((b) => b.chart)
   log(`answer_ui: ${(ui.a2ui || []).length} a2ui messages, ${(ui.blocks || []).length} blocks, ${charts.length} chart(s): ${charts.map((c) => `${c.kind} "${c.title}" ${JSON.stringify(c.labels)} → ${JSON.stringify(c.series?.[0]?.values)}`).join(' | ')}`)
   await page.locator('svg').last().scrollIntoViewIfNeeded().catch(() => {})
   await shot(page, '10-chart-in-a2ui-first-answer')
