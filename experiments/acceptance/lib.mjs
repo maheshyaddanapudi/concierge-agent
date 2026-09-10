@@ -199,3 +199,37 @@ export async function setTheme(page, theme) {
   await page.reload()
   await page.waitForTimeout(1200)
 }
+
+/** Start a fresh conversation on the Chat page (already navigated). */
+export async function newConversation(page) {
+  await page.getByRole('button', { name: '+ New conversation' }).click().catch(() => {})
+  await page.waitForTimeout(400)
+}
+
+/**
+ * Send a message from the composer, approve a HITL gate if one arms (form
+ * gates get their questions answered first via `answerForm`), and wait for
+ * the run to settle. Logs the outcome, steps and the answer head.
+ */
+export async function askAndSettle(page, text, { approve = true, timeoutS = 300, gateWaitS = 45, answerForm = null } = {}) {
+  await sendChat(page, text)
+  await page.waitForTimeout(2000)
+  const r = (await get('/runs?limit=1')).json[0]
+  if (approve) {
+    const gate = page.getByText('HUMAN APPROVAL REQUIRED').first()
+    const armed = await Promise.race([
+      gate.waitFor({ timeout: gateWaitS * 1000 }).then(() => true).catch(() => false),
+      waitRun(r.id, ['completed', 'failed', 'cancelled'], gateWaitS).then((x) => (x && ['completed', 'failed', 'cancelled'].includes(x.status) ? false : null)),
+    ])
+    if (armed) {
+      if (answerForm) await answerForm(page)
+      await page.getByRole('button', { name: /✓ Approve|✓ Submit answers/ }).first().click()
+      log('gate approved from the chat card')
+    }
+  }
+  const done = await waitRun(r.id, ['completed', 'failed', 'cancelled'], timeoutS)
+  await page.waitForTimeout(1200)
+  log(`run ${r.id.slice(0, 8)} → ${done.status}; steps: ${steps(done)}`)
+  log(`answer: ${(done.final_answer || '').replace(/\s+/g, ' ').slice(0, 160)}`)
+  return done
+}
