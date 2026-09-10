@@ -13,6 +13,13 @@ cd "$ACC_ROOT" || exit 1
 ACC_SHOTS=${ACC_SHOTS:-$ACC_HERE/shots}
 
 echo "# M34 builtin auth drill — $(date -u +%FT%TZ)"
+if [ "${ACC_RESET_ADMIN:-0}" = 1 ]; then
+  # a re-run on a volume that already booted with auth on: the one-time
+  # password was printed once and is gone — drop the bootstrap admin (and
+  # the drill's member) so the next auth-on boot re-issues it. Sandbox-only.
+  say "ACC_RESET_ADMIN=1: dropping the bootstrap admin and the drill's member so the boot re-issues the one-time password"
+  psql_ "delete from auth_sessions; delete from users where username in ('admin','mallory')"
+fi
 say "AUTH_ENABLED=1 docker compose up -d --force-recreate backend"
 AUTH_ENABLED=1 docker compose up -d --force-recreate backend 2>&1 | tail -1
 API=$(api_root); wait_ready
