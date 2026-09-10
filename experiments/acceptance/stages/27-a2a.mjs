@@ -165,10 +165,17 @@ export default async function (ctx) {
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(1200)
   await shot(page, '16-trace-run-top')
-  const fenced = page.locator('.fixed.inset-0').last().getByText(/untrusted_remote_agent_output/).first()
+  // the tool step's output (the fenced remote text) shows when the step row is expanded
+  const traceDrawer = page.locator('.fixed.inset-0').last()
+  const toolRow = traceDrawer.getByRole('button').filter({ hasText: /tool_call/ }).filter({ hasText: /polyglot-agent/ }).first()
+  if (await toolRow.count()) {
+    await toolRow.click()
+    await page.waitForTimeout(600)
+  }
+  const fenced = traceDrawer.getByText(/untrusted_remote_agent_output/).first()
   const sawFence = await fenced.count()
   if (sawFence) await fenced.scrollIntoViewIfNeeded()
-  log(`fenced remote output in the trace: ${sawFence ? 'yes' : 'not in frame'}`)
+  log(`fenced remote output in the trace: ${sawFence ? 'yes (tool step expanded)' : 'not in frame'}`)
   await shot(page, '17-trace-fenced-remote-output')
   await closeDrawer(page)
 
@@ -234,8 +241,14 @@ export default async function (ctx) {
   await sendChat(page, 'Ask the remote polyglot agent to research the metric system slowly.')
   await page.waitForTimeout(2000)
   const r4 = (await get('/runs?limit=1')).json[0]
-  await page.getByText(/tool_call|remote|polyglot/i).first().waitFor({ timeout: 60000 }).catch(() => {})
-  await page.waitForTimeout(6000)
+  // wait until the remote call is genuinely in flight (a running tool_call
+  // step on the run), so the Stop has a remote task to cancel
+  for (let i = 0; i < 60; i++) {
+    const cur = await ctx.run(r4.id)
+    if ((cur?.steps || []).some((s) => s.step_type === 'tool_call' && /polyglot/.test(s.node_id || '') && s.status === 'running')) break
+    await page.waitForTimeout(2000)
+  }
+  await page.waitForTimeout(3000)
   await shot(page, '23-stop-midcall-remote-inflight')
   const before4 = await control(CP.bearer, 'state')
   await page.getByRole('button', { name: /■ Stop/ }).first().click()
@@ -358,15 +371,21 @@ export default async function (ctx) {
   await setMode(CP.oauth, null)
   await nav(page, '')
   await newConversation(page)
-  const k = await askAndSettle(page, 'Ask the keyed-agent remote agent to summarize this sentence: the metric system spread with the Napoleonic wars.', { approve: false })
-  log(`apikey-env call: ${k.status}; fenced: ${/untrusted_remote_agent_output|stub-echo/.test(JSON.stringify(k.steps || []))}`)
+  // the three agents' summarize tools exposed directly so the planner can
+  // dispatch each one (rung 1) — nothing else binds them
+  for (const t of (await get('/tools')).json) {
+    if (t.kind === 'a2a' && /^(keyed-agent|oauth-agent|mtls-agent)\.summarize$/.test(t.tool_key) && !t.direct_exposure) await patch(`/tools/${t.id}`, { direct_exposure: true })
+  }
+  const SENTENCE = 'the metric system spread with the Napoleonic wars'
+  const k = await askAndSettle(page, `Use the keyed-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
+  log(`apikey-env call: ${k.status}; steps: ${steps(k)}; fenced: ${/untrusted_remote_agent_output|stub-echo/.test(JSON.stringify(k.steps || []))}`)
   await shot(page, '37-auth-apikey-env-call-answer')
   await newConversation(page)
-  const o = await askAndSettle(page, 'Ask the oauth-agent remote agent to summarize this sentence: the metric system spread with the Napoleonic wars.', { approve: false })
-  log(`oauth2 call: ${o.status}; token requests on the counterparty: ${(await control(CP.oauth, 'state')).token_requests ?? '?'}`)
+  const o = await askAndSettle(page, `Use the oauth-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
+  log(`oauth2 call: ${o.status}; steps: ${steps(o)}; token requests on the counterparty: ${(await control(CP.oauth, 'state')).token_requests ?? '?'}`)
   await shot(page, '38-auth-oauth2-call-answer')
   await newConversation(page)
-  const m = await askAndSettle(page, 'Ask the mtls-agent remote agent to summarize this sentence: the metric system spread with the Napoleonic wars.', { approve: false })
+  const m = await askAndSettle(page, `Use the mtls-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
   const mtlsStep = (m.steps || []).find((s) => s.step_type === 'tool_call' && /mtls/.test(s.node_id || ''))
   log(`unsupported-scheme call: run ${m.status}; tool step ${mtlsStep?.status}: ${String(mtlsStep?.error || m.error || '').slice(0, 160)}`)
   await shot(page, '39-auth-unsupported-call-fails')
