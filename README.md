@@ -2,7 +2,7 @@
 
 A registry-driven, tri-layer agentic orchestration platform — **Tools → Skills → Sub Agents** — every tier a Postgres registry with static (seeded) and dynamic (UI-authored) records, two orchestrator modes over LangGraph, a memory layer, an ambient mode that acts on triggers, outbound A2A, and the operations and scale work that turned a proof of concept into something an operator can deploy, watch, trim and fork. Version **1.0.0**; the spec (`spec.md`) is the complete, binding description and every milestone in it shipped with executed proof.
 
-> **Status — 1.0.0, all milestones complete (M1–M56).** Backend suite **1068 passed, 1 skipped**, frontend suite **94 passed**. Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/prod/M56/ceremony.md)).
+> **Status — 1.0.0, all milestones complete (M1–M56).** Backend suite **1068 passed, 1 skipped**, frontend suite **94 passed** (re-run 2026-09-10 on the dev images: [tests](./docs/acceptance/prod/tests.md), [frontend](./docs/acceptance/prod/frontend-tests.md)). Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/prod/M56/ceremony.md)).
 
 ## What it is
 

@@ -20,4 +20,6 @@ redis (`--profile redis`), one backend replica, the live model
 | `M56/` | `m56-ceremony.sh`, `m56-addendum.sh`, `perf-record.sh` | the §14 acceptance script steps 1–11 on a fresh `docker compose up` with the UI after each step, the direct-invocation error-edge and agentic-todo addendum, and the performance record |
 
 `tests.md` is the backend suite run once on the same commit with the fake
-provider.
+provider (1068 passed, 1 skipped — two environment-dependent tests re-run
+with the drill shell's provider key and redis URL unset, shown in the page);
+`frontend-tests.md` is the frontend lint and test run (94 passed).
