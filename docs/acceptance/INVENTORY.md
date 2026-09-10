@@ -47,7 +47,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `auth_m34` | 6 | 4 | 0da8f60 2026-08-26 | campaign auth_m34 | pending |
 | `ceremony_m36` | 68 | 66 | a404e64 2026-08-26 | the M36 full acceptance ceremony (spec §18.10) | pending |
 | `coordination_m35` | 1 | 0 | d0ab4c0 2026-08-26 | campaign coordination_m35 | pending |
-| `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | pending |
+| `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |
 | `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | pending |
 
 Totals: 879 assets, 775 frames, 133 MB.

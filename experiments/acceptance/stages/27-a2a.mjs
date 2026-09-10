@@ -51,7 +51,11 @@ export default async function (ctx) {
   await shot(page, '01-enabled-nav-remote-agents')
 
   // the empty registry, then a registration against the bearer counterparty
-  for (const a of (await get('/remote-agents')).json) await del(`/remote-agents/${a.id}`)
+  // a clean slate for this stage: the sub agent and skill that bind the remote
+  // tools go first (an agent whose tools are bound refuses deletion)
+  for (const a of (await get('/sub-agents')).json) if (a.name === 'excomm') await del(`/sub-agents/${a.id}`)
+  for (const s of (await get('/skills')).json) if (s.name === 'remote-researcher') await del(`/skills/${s.id}`)
+  for (const a of (await get('/remote-agents')).json) log(`delete ${a.name} → HTTP ${(await del(`/remote-agents/${a.id}`)).status}`)
   await nav(page, 'remote-agents')
   await shot(page, '02-remote-agents-empty')
   await click(page, '+ Register agent')
