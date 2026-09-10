@@ -44,7 +44,7 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `ambient_m25` | 2 | 1 | 7e261f7 2026-08-25 | campaign ambient_m25 | recaptured as stage `26-ambient` (removed; git history keeps it) |
 | `ambient_ui_m30` | 11 | 10 | aa13608 2026-08-25 | campaign ambient_ui_m30 | recaptured as stages `26-ambient` / `28-config-hardening` (removed; git history keeps it) |
 | `archive` | 334 | 326 | 5ec9e77 2026-08-28 | earlier campaigns superseded by the ones above (walkone retest, first campaign frames) | dropped — superseded twice over; git history keeps every frame |
-| `auth_m34` | 6 | 4 | 0da8f60 2026-08-26 | campaign auth_m34 | recaptured as `prod/M34` (the drill transcript) + stage `34-auth-builtin` (removed; git history keeps it) |
+| `auth_m34` | 6 | 4 | 0da8f60 2026-08-26 | campaign auth_m34 | recaptured as `prod/M34/auth-drill.md` + stage `34-auth-builtin` (removed; git history keeps it) |
 | `ceremony_m36` | 68 | 66 | a404e64 2026-08-26 | the M36 full acceptance ceremony (spec §18.10) | recaptured as `prod/M56` (the ceremony re-run on the dev images; removed; git history keeps it) |
 | `coordination_m35` | 1 | 0 | d0ab4c0 2026-08-26 | campaign coordination_m35 | kept as `prod/M54` (the fleet drills captured on the merged code the same day) |
 | `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |

@@ -32,8 +32,8 @@ export default async function ({ page, context, browser, nav, shot, get, log, ne
   await member.goto(`${page.url().split('#')[0]}#/runs`)
   await member.waitForTimeout(1500)
   const rows = await member.locator('table tbody tr').count()
-  log(`mallory's Runs page rows: ${rows} (admin's run is invisible to her)`)
-  await member.screenshot({ path: `${process.env.ACC_SHOTS}/34-auth-builtin/03-member-empty-runs.png` })
-  log('shot 03-member-empty-runs.png (member context)')
+  log(`mallory's Runs page rows: ${rows} (her own runs only — admin's run is invisible to her)`)
+  await member.screenshot({ path: `${process.env.ACC_SHOTS}/34-auth-builtin/03-member-own-runs-only.png` })
+  log('shot 03-member-own-runs-only.png (member context)')
   await other.close()
 }
