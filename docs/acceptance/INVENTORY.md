@@ -37,16 +37,16 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `30-salience` | 14 | 11 | 4fb2b8a 2026-08-29 | stage 30-salience | recaptured (v1, dev images; the regression sample is superseded by the QA pass) |
 | `31-salience-decisions` | 15 | 12 | 5bab618 2026-08-30 | stage 31-salience-decisions | recaptured (v1, dev images; one decision round — Undo leaves no second proposal) |
 | `32-durable-forgetting` | 14 | 10 | 915ced7 2026-08-30 | stage 32-durable-forgetting | recaptured (v1, dev images; exact-text leg only — no embeddings provider here) |
-| `(root)` | 4 | 0 | e71305a 2026-09-10 | campaign (root) | pending |
-| `a2a-14d` | 46 | 39 | 5ec9e77 2026-08-28 | spec §14d steps 33–40 on five scripted counterparties | pending |
-| `ambient_channels_m29` | 3 | 2 | ae68c1e 2026-08-25 | campaign ambient_channels_m29 | pending |
-| `ambient_m23` | 7 | 6 | 5ab6f69 2026-08-25 | campaign ambient_m23 | pending |
-| `ambient_m25` | 2 | 1 | 7e261f7 2026-08-25 | campaign ambient_m25 | pending |
-| `ambient_ui_m30` | 11 | 10 | aa13608 2026-08-25 | campaign ambient_ui_m30 | pending |
-| `archive` | 334 | 326 | 5ec9e77 2026-08-28 | earlier campaigns superseded by the ones above (walkone retest, first campaign frames) | pending |
-| `auth_m34` | 6 | 4 | 0da8f60 2026-08-26 | campaign auth_m34 | pending |
-| `ceremony_m36` | 68 | 66 | a404e64 2026-08-26 | the M36 full acceptance ceremony (spec §18.10) | pending |
-| `coordination_m35` | 1 | 0 | d0ab4c0 2026-08-26 | campaign coordination_m35 | pending |
+| `(root)` | 4 | 0 | e71305a 2026-09-10 | campaign (root) | replaced — one README (index), one report, this inventory |
+| `a2a-14d` | 46 | 39 | 5ec9e77 2026-08-28 | spec §14d steps 33–40 on five scripted counterparties | recaptured as stage `27-a2a` on four scripted counterparties (removed from the tree; git history keeps it) |
+| `ambient_channels_m29` | 3 | 2 | ae68c1e 2026-08-25 | campaign ambient_channels_m29 | recaptured as stages `26-ambient` / `29-ambient-pursuit` (removed; git history keeps it) |
+| `ambient_m23` | 7 | 6 | 5ab6f69 2026-08-25 | campaign ambient_m23 | recaptured as stage `26-ambient` (removed; git history keeps it) |
+| `ambient_m25` | 2 | 1 | 7e261f7 2026-08-25 | campaign ambient_m25 | recaptured as stage `26-ambient` (removed; git history keeps it) |
+| `ambient_ui_m30` | 11 | 10 | aa13608 2026-08-25 | campaign ambient_ui_m30 | recaptured as stages `26-ambient` / `28-config-hardening` (removed; git history keeps it) |
+| `archive` | 334 | 326 | 5ec9e77 2026-08-28 | earlier campaigns superseded by the ones above (walkone retest, first campaign frames) | dropped — superseded twice over; git history keeps every frame |
+| `auth_m34` | 6 | 4 | 0da8f60 2026-08-26 | campaign auth_m34 | recaptured as `prod/M34` (the drill transcript) + stage `34-auth-builtin` (removed; git history keeps it) |
+| `ceremony_m36` | 68 | 66 | a404e64 2026-08-26 | the M36 full acceptance ceremony (spec §18.10) | recaptured as `prod/M56` (the ceremony re-run on the dev images; removed; git history keeps it) |
+| `coordination_m35` | 1 | 0 | d0ab4c0 2026-08-26 | campaign coordination_m35 | kept as `prod/M54` (the fleet drills captured on the merged code the same day) |
 | `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |
 | `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | pending |
 
