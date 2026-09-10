@@ -63,16 +63,9 @@ export default async function (ctx) {
 
   // ── Settings sections with live nav toggling, read-back, inline 422 ──
   await nav(page, 'settings')
-  const ambient = page.getByRole('switch', { name: 'Ambient mode' }).first()
-  await ambient.scrollIntoViewIfNeeded()
-  if ((await ambient.getAttribute('aria-checked')) === 'true') await ambient.click()
-  await page.waitForTimeout(1000)
-  log(`ambient off → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
-  await shot(page, '07-settings-ambient-master-off')
-  await ambient.click()
-  await page.waitForTimeout(1000)
-  log(`ambient on → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
-  await shot(page, '08-settings-ambient-on-nav-live')
+  // (the master-switch off/on leg — frames 07/08 — runs LAST: flipping
+  // ambient off and on stalls the leader tick in this build until a
+  // restart, see report.md, and the legs below need a live tick)
   await page.getByLabel('Max routines').scrollIntoViewIfNeeded()
   await shot(page, '09-settings-ambient-knobs')
   const tick = page.getByLabel('Tick interval (s)')
@@ -202,4 +195,18 @@ export default async function (ctx) {
   log(seen ? `toast: ${(await page.getByTestId('ambient-toaster').textContent()).trim().slice(0, 120)}` : 'no toast within 40s (a tier-0 delivery needs the interrupt tick + SSE)')
   await shot(page, '24-ambient-toast-visible')
   await settings({ ambient_tick_interval_s: initial.ambient_tick_interval_s, a2a_poll_interval_s: initial.a2a_poll_interval_s, a2a_task_timeout_s: initial.a2a_task_timeout_s, ambient_quiet_hours: initial.ambient_quiet_hours })
+
+  // ── the master switch: live nav toggling (last — see the note above) ──
+  await nav(page, 'settings')
+  const ambient = page.getByRole('switch', { name: 'Ambient mode' }).first()
+  await ambient.scrollIntoViewIfNeeded()
+  if ((await ambient.getAttribute('aria-checked')) === 'true') await ambient.click()
+  await page.waitForTimeout(1000)
+  log(`ambient off → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
+  await shot(page, '07-settings-ambient-master-off')
+  await ambient.click()
+  await page.waitForTimeout(1000)
+  log(`ambient on → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
+  await shot(page, '08-settings-ambient-on-nav-live')
+  log('note: after this off/on the leader tick may stall until the backend restarts (report.md finding 2) — nothing below depends on it')
 }
