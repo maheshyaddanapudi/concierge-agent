@@ -10,7 +10,7 @@ import { execSync } from 'node:child_process'
 
 const DB = process.env.ACC_DB_CONTAINER || 'concierge-agent-db-1'
 const psql = (q) => execSync(`docker exec ${DB} psql -U ${process.env.ACC_DB_USER || 'concierge'} -d ${process.env.ACC_DB_NAME || 'concierge'} -tAc "${q.replace(/"/g, '\\"')}"`, { encoding: 'utf8' }).trim()
-const seed = (title, body, urgency) => psql(`insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, ${urgency}, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', now()) returning id`)
+const seed = (title, body, urgency) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, ${urgency}, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', now()) returning id) select id from ins`)
 const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered', delivered_at is not null, 'verdict', salience->>'verdict', 'decision', salience->>'decision', 'applied', salience->>'applied', 'judge_reward', salience->>'judge_reward') from deliveries where id='${id}'`))
 
 export default async function ({ page, nav, shot, settings, get, log, MODEL }) {

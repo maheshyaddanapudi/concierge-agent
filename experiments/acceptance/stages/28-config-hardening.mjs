@@ -162,31 +162,19 @@ export default async function (ctx) {
   if (res.outcome === 'overlap') await page.getByRole('button', { name: /Cancel/ }).first().click().catch(() => {})
   await closeDrawer(page)
   await settings({ overlap_threshold_percent: initial.overlap_threshold_percent })
+  for (const s of (await get('/skills')).json) if (s.name === 'notes-tidier') await api('DELETE', `/skills/${s.id}`)
 
-  // ── the rate-limit burst moves the 429 boundary (transcript) ──
-  const lines = ['# §14e-43 — rate_limit_burst moves the 429 boundary (spec §18.8 token bucket)', '']
-  const burst = async (n) => {
-    const out = []
-    for (let i = 1; i <= n; i++) out.push(`GET /skills [${i}] -> ${(await get('/skills')).status}`)
-    return out
-  }
-  lines.push(`$ PATCH /settings {rate_limit_burst: 5, rate_limit_per_s: 1} -> ${(await api('PATCH', '/settings', { rate_limit_burst: 5, rate_limit_per_s: 1 })).status}`)
-  lines.push('', '$ burst=5, refill=1/s — eight rapid GETs:', ...(await burst(8)))
-  let restore = await api('PATCH', '/settings', { rate_limit_burst: initial.rate_limit_burst, rate_limit_per_s: initial.rate_limit_per_s })
-  for (let i = 0; i < 10 && restore.status === 429; i++) {
-    await page.waitForTimeout(1500)
-    restore = await api('PATCH', '/settings', { rate_limit_burst: initial.rate_limit_burst, rate_limit_per_s: initial.rate_limit_per_s })
-  }
-  lines.push('', `$ PATCH /settings {rate_limit_burst: ${initial.rate_limit_burst}, rate_limit_per_s: ${initial.rate_limit_per_s}} (retried while throttled) -> ${restore.status}`)
-  await page.waitForTimeout(2000)
-  lines.push('', `$ burst=${initial.rate_limit_burst} — the same eight rapid GETs, boundary moved:`, ...(await burst(8)))
-  const fs = await import('node:fs')
-  const dir = `${process.env.ACC_SHOTS}/28-config-hardening`
-  fs.writeFileSync(`${dir}/22-rate-limit-429-transcript.txt`, lines.join('\n') + '\n')
-  log(`rate-limit transcript written (${lines.filter((l) => l.includes('-> 429')).length} throttled calls)`)
+  // ── the rate-limit burst settings (the 429 boundary itself needs an identity) ──
+  // The token bucket lives in the auth middleware and keys on the identified
+  // principal; with auth dark the middleware passes every request through
+  // untouched (byte-identity), so the 429 transcript is produced by
+  // prod/m34-auth.sh with AUTH_ENABLED=1 — this stage shows the live setting.
+  await api('PATCH', '/settings', { rate_limit_burst: 5, rate_limit_per_s: 1 })
   await nav(page, 'settings')
   await page.getByLabel('Rate-limit burst').scrollIntoViewIfNeeded()
+  log(`rate_limit_burst=5 rate_limit_per_s=1 set live (the 429 boundary is exercised under an identity in prod/m34-auth.sh)`)
   await shot(page, '21-guardrails-burst-5')
+  await api('PATCH', '/settings', { rate_limit_burst: initial.rate_limit_burst, rate_limit_per_s: initial.rate_limit_per_s })
 
   // ── the ambient toast for a tier-0 delivery ──
   // (a tier-0 delivery inserted server-side — no click, no navigation — the
@@ -200,7 +188,7 @@ export default async function (ctx) {
   let seeded = 'db not reachable from this host — no tier-0 delivery seeded'
   try {
     seeded = execSync(
-      `docker exec ${DB} psql -U ${process.env.ACC_DB_USER || 'concierge'} -d ${process.env.ACC_DB_NAME || 'concierge'} -tAc "insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, 'payments-api p99 error rate 9.4% and rising', 'one in eleven checkouts failing; no rollback yet', now()) returning id"`,
+      `docker exec ${DB} psql -U ${process.env.ACC_DB_USER || 'concierge'} -d ${process.env.ACC_DB_NAME || 'concierge'} -tAc "with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, 'payments-api p99 error rate 9.4% and rising', 'one in eleven checkouts failing; no rollback yet', now()) returning id) select id from ins"`,
       { encoding: 'utf8' },
     ).trim()
   } catch {}

@@ -88,7 +88,7 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   await shot(page, '05-unforgotten')
 
   // the §17.7 rider: a learner proposal is inert until approved; reject it
-  const pid = psql(`insert into ambient_policies (id, category, tier_override, reason, source, created_at) values (gen_random_uuid(), 'build-noise', 2, 'learner: 9 of 11 build-noise interrupts dismissed this week', 'learner_proposal', now()) returning id`)
+  const pid = psql(`with ins as (insert into ambient_policies (id, category, tier_override, reason, source, created_at) values (gen_random_uuid(), 'build-noise', 2, 'learner: 9 of 11 build-noise interrupts dismissed this week', 'learner_proposal', now()) returning id) select id from ins`)
   say(`learner proposal seeded server-side: ${pid}`)
   await nav(page, 'ambient')
   await page.getByRole('tab', { name: 'Ledger' }).click()

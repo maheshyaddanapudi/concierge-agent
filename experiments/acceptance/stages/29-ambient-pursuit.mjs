@@ -42,7 +42,7 @@ export default async function ({ page, nav, shot, settings, get, log }) {
   const s0 = (await get('/settings')).json
   say(`# channels=${JSON.stringify(s0.ambient_channels)} budget=${s0.ambient_notification_budget_per_day} tick=${s0.ambient_tick_interval_s}s`)
 
-  const seed = (title) => psql(`insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title}', 'pursuit matrix', now()) returning id`)
+  const seed = (title) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title}', 'pursuit matrix', now()) returning id) select id from ins`)
   const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered_at', delivered_at, 'channel', channel, 'external', external) from deliveries where id='${id}'`))
   const settle = async (id, s) => {
     for (let i = 0; i < 40; i++) {

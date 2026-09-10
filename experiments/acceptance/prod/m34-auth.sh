@@ -56,7 +56,16 @@ curl -s -X POST $API/routines/$RT/fire -H "$H" -H "Authorization: Bearer $FT" -d
 for i in $(seq 1 90); do n=$(curl -s "$API/runs?routine_id=$RT" $(as $MTOKEN) | py 'print(len(d) if isinstance(d,list) else 0)'); [ "$n" != "0" ] && break; sleep 2; done
 curl -s "$API/runs?routine_id=$RT" $(as $MTOKEN) | py 'print("mallory GET /runs?routine_id →", [(r["status"], (r.get("final_answer") or "")[:30]) for r in d])'
 curl -s "$API/runs?routine_id=$RT" $(as $TOKEN) | py 'print("admin GET /runs?routine_id →", d)'
-say "§7 the UI: the login gate, admin signed in, a run under identity, the member's empty Runs page"
+say "§7 §14e-43: rate_limit_burst moves the 429 boundary (the bucket keys on the identified principal — dark auth passes through untouched)"
+curl -s -X PATCH $API/settings -H "$H" $(as $TOKEN) -d '{"rate_limit_burst":5,"rate_limit_per_s":1}' -o /dev/null -w 'PATCH {rate_limit_burst: 5, rate_limit_per_s: 1} → HTTP %{http_code}\n'
+sleep 1
+for i in $(seq 1 8); do printf 'GET /skills [%d] -> %s\n' $i "$(curl -s -o /dev/null -w '%{http_code}' $API/skills $(as $MTOKEN))"; done
+sleep 3
+for i in $(seq 1 10); do code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH $API/settings -H "$H" $(as $TOKEN) -d '{"rate_limit_burst":120,"rate_limit_per_s":10}'); [ "$code" = 200 ] && break; sleep 1.5; done
+echo "PATCH {rate_limit_burst: 120, rate_limit_per_s: 10} (retried while throttled) → HTTP $code"
+sleep 2
+for i in $(seq 1 8); do printf 'GET /skills [%d] -> %s\n' $i "$(curl -s -o /dev/null -w '%{http_code}' $API/skills $(as $MTOKEN))"; done
+say "§8 the UI: the login gate, admin signed in, a run under identity, the member's empty Runs page"
 ACC_BEARER=$TOKEN ACC_AUTH_PASSWORD=$PW ACC_MEMBER_PASSWORD=mallory-pass-1 ACC_SHOTS=$ACC_SHOTS node "$ACC_HERE/../run.mjs" "$ACC_HERE/../stages/34-auth-builtin.mjs" 2>&1 | grep -v "^\s*$" | tail -20
 say "auth back off: docker compose up -d --force-recreate backend"
 docker compose up -d --force-recreate backend 2>&1 | tail -1; API=$(api_root); wait_ready
