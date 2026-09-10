@@ -49,5 +49,14 @@ M49 load scenarios re-run as the performance record.
   chat sweep paid a live planner call per run (e2e p50 7 s at c=5). The
   record was re-taken on a clean configuration; the first pass is not the
   record.
+- **The chat frames were re-taken with the conversation open.** The
+  driver's first screenshots of the Chat page showed the conversation list
+  only; `06a` (the HITL card, a fresh run paused at the gate and approved
+  after the frame) and `06b` (the two-run conversation) were re-taken with
+  the conversation selected. While re-taking them one planner call to the
+  live model stalled for over five minutes with the provider reachable;
+  it was cancelled through the API (`{'status': 'cancelled'}`) — the M51
+  wall clock would have ended it at 900 s — and the next run paused at the
+  gate in 21 s.
 - **No `pkill` in the image.** `python:3.12-slim` ships no `procps`; the
   driver kills the stub by walking `/proc`. Not a product change.
