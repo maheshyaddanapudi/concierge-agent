@@ -73,3 +73,5 @@ use `docker compose` with the caller's `COMPOSE_FILE` / profile environment.
 | `m55-seam.sh` | the auth seam with the reference stub provider selected by environment |
 | `m56-ceremony.sh`, `m56-addendum.sh` | the §14 ceremony steps 1–11 through the API with the UI screenshotted per step |
 | `perf-record.sh` | the performance record (api, runs-scale, chat, sse) |
+| `fixes-hitl-deny.sh` | the campaign's finding 1 re-verified: a gated sub agent denied with a note through the API, the steps and the answer that must report the refusal (`ACC_AGENT` names the agent; default `site-reporter`) |
+| `fixes-ambient-toggle.sh` | the campaign's finding 2 re-verified: `ambient_enabled` off→on cycles (one-second and held for a tick), then the lease, gauge, log line and a tier-0 probe flush after each |

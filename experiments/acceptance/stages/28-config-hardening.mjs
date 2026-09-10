@@ -64,8 +64,9 @@ export default async function (ctx) {
   // ── Settings sections with live nav toggling, read-back, inline 422 ──
   await nav(page, 'settings')
   // (the master-switch off/on leg — frames 07/08 — runs LAST: flipping
-  // ambient off and on stalls the leader tick in this build until a
-  // restart, see report.md, and the legs below need a live tick)
+  // ambient off and on once stalled the leader tick until a restart
+  // (report.md finding 2, fixed since — prod/FIXES/ambient-toggle.md); the
+  // order is kept so the legs below never depend on that fix)
   await page.getByLabel('Max routines').scrollIntoViewIfNeeded()
   await shot(page, '09-settings-ambient-knobs')
   const tick = page.getByLabel('Tick interval (s)')
@@ -208,5 +209,5 @@ export default async function (ctx) {
   await page.waitForTimeout(1000)
   log(`ambient on → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
   await shot(page, '08-settings-ambient-on-nav-live')
-  log('note: after this off/on the leader tick may stall until the backend restarts (report.md finding 2) — nothing below depends on it')
+  log('note: this off/on once stalled the leader tick until a restart (report.md finding 2, fixed — prod/FIXES/ambient-toggle.md re-verifies it); nothing in this stage depends on the tick afterwards')
 }

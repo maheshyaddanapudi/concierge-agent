@@ -460,13 +460,7 @@ async def invoke_worker_with_hitl(
         # sibling's interrupt kept the orchestrator superstep open, so this
         # dispatch is replaying after the fact; return the recorded result
         # without re-running anything (steps were recorded when it ran)
-        outputs = (snapshot.values or {}).get("node_outputs", {})
-        parts = [
-            str(outputs[k].get("output", ""))
-            for k in sorted(outputs)
-            if not k.startswith("route:") and outputs[k].get("status") == "ok"
-        ]
-        return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
+        return worker_result((snapshot.values or {}).get("node_outputs", {}))
     if snapshot is not None and snapshot.next:
         for t in snapshot.tasks:
             if t.interrupts:
@@ -522,13 +516,47 @@ async def invoke_worker_with_hitl(
         if interrupts:
             pending_interrupt = interrupts[0].value
             continue
-        outputs = state.get("node_outputs", {})
-        parts = [
-            str(outputs[k].get("output", ""))
-            for k in sorted(outputs)
-            if not k.startswith("route:") and outputs[k].get("status") == "ok"
-        ]
-        return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
+        return worker_result(state.get("node_outputs", {}))
+
+
+def worker_result(outputs: dict[str, Any]) -> dict[str, Any]:
+    """The dispatch result a worker's node outputs amount to.
+
+    The text is the successful nodes' outputs in node order. A gate the
+    human DENIED is part of the result too: the workflow stopped at that
+    node (spec §3.5 routes a deny to END), so the denial and its note ride
+    along in the text and the status is `denied` — the aggregator, the
+    agentic loop and the skill tools all see the refusal instead of the
+    last successful draft alone, which read as if the gated action had
+    happened."""
+    parts: list[str] = []
+    denials: list[dict[str, str]] = []
+    for node_id in sorted(outputs):
+        if node_id.startswith("route:"):
+            continue
+        out = outputs[node_id]
+        if not isinstance(out, dict):
+            parts.append(str(out))
+            continue
+        status = out.get("status")
+        if status == "ok":
+            text = str(out.get("output", ""))
+            if text:
+                parts.append(text)
+        elif status == "denied":
+            denials.append({"node_id": node_id, "note": str(out.get("note") or "denied")})
+    text = "\n".join(parts) or "(no output)"
+    if not denials:
+        return {"status": "ok", "output": text}
+    verdicts = "; ".join(
+        f"the human reviewer DENIED step '{d['node_id']}' with the note: {d['note']}"
+        for d in denials
+    )
+    text = (
+        f"{text}\n\n[human review] {verdicts}. The workflow stopped at the denied "
+        "gate: the gated action was NOT performed and no step after it ran."
+    )
+    return {"status": "denied", "output": text, "denied": denials, "error": verdicts}
 
 
 async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
@@ -608,5 +636,15 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
 
         if isinstance(exc, GraphInterrupt):
             raise
+        # the step row keeps the message; the traceback goes to the log —
+        # a failure in the worker plumbing (not in a skill node, which
+        # records its own error edge) is otherwise invisible to an operator
+        logger.warning(
+            "dispatch_failed",
+            run_id=str(ctx.run_id),
+            node_id=entry_id,
+            error=f"{type(exc).__name__}: {exc}",
+            exc_info=True,
+        )
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}

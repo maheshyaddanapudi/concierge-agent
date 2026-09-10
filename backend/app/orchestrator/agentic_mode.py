@@ -50,6 +50,9 @@ def _spin_worker_tool() -> StructuredTool:
         # checkpoint thread ("agentic:spin_worker" would collide)
         node_id = f"agentic:{resolution.payload.get('callsign', 'spin_worker')}"
         result = await execute_resolution(resolution, task, node_id)
+        if result.get("status") == "denied":
+            # the worker's text already carries the human reviewer's verdict
+            return str(result.get("output", ""))
         if result.get("status") != "ok":
             return f"worker failed: {result.get('error')}"
         return str(result.get("output", ""))

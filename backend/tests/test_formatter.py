@@ -262,6 +262,52 @@ class TestFormatterPayload:
         assert payload is not None
         assert payload["charts"], "repair must yield a chart when the user asked for one"
 
+    async def test_prose_instead_of_the_tool_call_is_retried_once(self) -> None:
+        """A thinking model sometimes answers the structured call with prose
+        and no tool call: the parsed document is None. That used to end the
+        formatter with no artifact at all (the answer showed its ASCII chart
+        and nothing rendered); now one no-thinking retry follows."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        with_chart = AnswerUi(
+            components=[
+                UiComponent(type="text", markdown="Q1 30, Q2 50, Q3 70."),
+                UiComponent(
+                    type="chart",
+                    chart_kind="bar",
+                    labels=["Q1", "Q2", "Q3"],
+                    series=[{"name": "", "values": [30.0, 50.0, 70.0]}],  # type: ignore[list-item]
+                ),
+            ]
+        )
+        fake_llm.push_message(AIMessage(content="Here is a text chart: Q1 | ███ 30"))
+        fake_llm.push_message(
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "AnswerUi", "args": with_chart.model_dump(), "id": "e2"}],
+            )
+        )
+        payload, _usage = await generate_answer_ui(
+            "fake:scripted", "present them as a bar chart", "Q1 30, Q2 50, Q3 70.", []
+        )
+        assert payload is not None
+        assert payload["charts"], "the retry's document must be used"
+        assert fake_llm.script_len() == 0, "exactly one retry"
+
+    async def test_prose_twice_means_no_artifact(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        fake_llm.push_message(AIMessage(content="prose"))
+        fake_llm.push_message(AIMessage(content="prose again"))
+        fake_llm.push_message(AIMessage(content="never consumed"))
+        payload, _usage = await generate_answer_ui("fake:scripted", "chart it", "1, 2, 3", [])
+        assert payload is None
+        assert fake_llm.script_len() == 1, "two attempts, never a third"
+
     def test_place_missing_refs_matches_narrative(self) -> None:
         from app.orchestrator.answer_ui import place_missing_refs
 

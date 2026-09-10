@@ -421,6 +421,9 @@ async def generate_answer_ui(
         structured = model.with_structured_output(AnswerUi, include_raw=True)
         parsed: AnswerUi | None = None
         attempt_prompt = prompt
+        # the repair attempt runs WITHOUT thinking: forced tool calls are
+        # far more reliable that way, and the repair is a mechanical edit
+        repair_params = (model_params or ModelParams()).model_copy(update={"effort": "none"})
         for attempt in range(2):
             result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
                 attempt_prompt, config={"callbacks": callbacks}
@@ -431,15 +434,22 @@ async def generate_answer_ui(
                 usage["output_tokens"] += meta.get("output_tokens", 0)
             candidate = result.get("parsed")
             if candidate is None or not candidate.components:
-                break  # keep the previous attempt's document, if any
+                if parsed is not None or attempt == 1:
+                    break  # keep the previous attempt's document, if any
+                # a thinking model now and then answers the structured call
+                # with prose or an empty document instead of the tool call —
+                # the same repair doctrine applies: one more try, no thinking,
+                # rather than a chart-less answer with no artifact at all
+                logger.info("formatter_empty_retry", model=model_ref)
+                structured = get_model(model_ref, repair_params).with_structured_output(
+                    AnswerUi, include_raw=True
+                )
+                continue
             parsed = candidate
             deficiency = _chart_deficiency(parsed, task, tool_charts, charts_enabled)
             if deficiency is None or attempt == 1:
                 break
             logger.info("formatter_chart_repair", reason=deficiency)
-            # the repair attempt runs WITHOUT thinking: forced tool calls are
-            # far more reliable that way, and the repair is a mechanical edit
-            repair_params = (model_params or ModelParams()).model_copy(update={"effort": "none"})
             structured = get_model(model_ref, repair_params).with_structured_output(
                 AnswerUi, include_raw=True
             )

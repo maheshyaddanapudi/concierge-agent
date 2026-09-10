@@ -11,6 +11,25 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 
 > **Reconstruction note (M56).** Entries M13–M55 below were reconstructed from the README milestone table when the project was tagged `v1.0.0`; each entry's text is that milestone's row, its date the newest commit in the history that names the milestone. Entries M1–M12 are the original hand-written ones.
 
+## Fixes from campaign v1 — 2026-09-11
+
+The three product findings of the acceptance campaign on the `dev` images (`docs/acceptance/report.md`, findings 1, 2 and 4), each with a regression test on the fake provider and a live re-verification under `docs/acceptance/prod/FIXES/`.
+
+### Fixed
+
+- **A HITL deny reached the aggregator as a success.** The worker's dispatch result was built from its `ok` nodes only, so a denied gate vanished with the steps after it and the aggregator saw the pre-gate draft alone — and answered as if the gated action had happened ("[Published successfully]…" after "Do not publish"). `worker_result` (`app/orchestrator/ladder.py`) now carries every denied gate into the result text with the reviewer's note and marks the result `status=denied`; the aggregator prompt names that status as a refusal that must never be reported as done; the agentic loop and the skill/sub-agent tools return the verdict text instead of a "failed" line. Regression: `TestHitlHappyPath.test_deny_routes_to_end` asserts the dispatch step and the aggregator's prompt both carry the denial; `TestWorkerResult` pins the builder.
+- **Flipping `ambient_enabled` off and on stalled the leader tick until a restart.** A local `from app import obs` inside `_tick` (`app/ambient/drain.py`) made `obs` a function local, so the dark branch (`elif lease.held: … obs.AMBIENT_LEADER.set(0.0)`) raised `UnboundLocalError`, the `except` handler raised again on the same name, and the loop task ended with the exception unretrieved: no lease, gauge 0, nothing logged. The shadowing import is gone and the loop body now survives a failure of the tick's own error handling (`ambient_tick_crashed`, counted in `concierge_loop_errors_total`). Regression: `TestDarkTick` (the dark tick releases without raising; a raising tick never ends the loop) and `TestTwoLoops.test_off_then_on_leads_again` — all three fail on the previous code.
+- **A chart-less answer with no artifact when the formatter's structured call came back as prose.** The formatter kept the first attempt's parse failure as its final word; it now retries once without thinking (the same repair doctrine as the chart-contract repair) before giving up. Regression: `test_prose_instead_of_the_tool_call_is_retried_once`, `test_prose_twice_means_no_artifact`.
+
+### Changed
+
+- A dispatch that fails outside a skill node (in the worker plumbing rather than on a node's error edge) now logs `dispatch_failed` with the traceback; the step row kept only the message, which left one such failure during the re-verification (`'NoneType' object has no attribute 'index'`, seen once, report finding 8) undiagnosable after the fact.
+
+### Noted, not changed
+
+- The rate limiter runs only for identified principals: the token bucket is per user (spec §18.8) and auth off is byte-identity (§14 step 44), so there is no key to bucket on while dark — the 429 boundary is proven under `AUTH_ENABLED=1` (`prod/M34`).
+- The egress policy refusing private counterparties unless named in `EGRESS_ALLOW_HOSTS`, the scripted counterparty's per-task "ask" script, and the missing embeddings provider are environment or driver facts, not defects.
+
 ## M55 — The fork seam — 2026-09-10
 
 ### Added / changed

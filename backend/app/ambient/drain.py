@@ -195,7 +195,17 @@ async def run_ambient_loop(stop: asyncio.Event, tick_s: float | None = None) -> 
 
     try:
         while not stop.is_set():
-            await _tick(stop, wake, lease, get_cache)
+            try:
+                await _tick(stop, wake, lease, get_cache)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a tick may never end the loop
+                # `_tick` handles its own failures; this guard is for a
+                # failure of that handling itself. Before it existed the
+                # loop task died with the exception unretrieved: no lease,
+                # gauge 0, no log line, and only a restart brought it back
+                obs.LOOP_ERRORS.labels(loop="ambient").inc()
+                logger.error("ambient_tick_crashed", error=f"{type(exc).__name__}: {exc}")
             if listener is None and bool(await _setting_or(get_cache, "ambient_enabled", False)):
                 listener = SupervisedListener(
                     NOTIFY_CHANNEL,
@@ -281,7 +291,11 @@ async def _tick(stop: asyncio.Event, wake: asyncio.Event, lease: Any, get_cache:
                 from app.ambient.execute import execute_fired_event
 
                 register_executor(execute_fired_event)
-            from app import obs
+            # NOTE: `obs` is the module-level import. A local `from app import
+            # obs` here once made `obs` a local of this function, so the
+            # dark branch below raised UnboundLocalError, the handler raised
+            # again on the same name, and the loop task died silently — the
+            # "ambient_enabled off→on stalls the tick until restart" defect.
 
             # §18.9 leader election: the session advisory lock is the
             # lease — renew-or-acquire once per tick, failover ≤ one tick

@@ -52,4 +52,6 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 
 Totals at the start: 879 assets, 775 frames, 133 MB. At the end: 377 files, 303 frames (283 in the 35 stage directories, 20 under `prod/`), 55 MB — one tree, every directory captured in this campaign except the six M54 fleet transcripts kept from the same day's capture on the merged code.
 
+After the campaign, the fixes for findings 1, 2 and 4 added `prod/FIXES/` (three transcripts, no frames) and replaced `11-hitl-deny-and-queue` with its re-run on the fixed image (six frames, one transcript — same names).
+
 The unreferenced-frame count (frames no markdown names) was 729 of 775 at the start: the old campaigns referenced frames by directory listing, not by name. Every frame in the consolidated tree is named by the transcript of the stage or drill that took it: the count ends at zero.

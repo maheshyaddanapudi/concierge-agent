@@ -55,6 +55,10 @@ redis-backed cache failing open (M51), untrusted content and secrets (M52),
 readiness, metrics, retention, the spend ceiling, MCP reconnect, the
 rolling deploy and the restore round trip (M53), recall at scale (M54), the
 auth seam (M55), and the §14 ceremony with the performance record (M56).
+`prod/FIXES/` re-verifies the campaign's findings 1 and 2 on the fixed
+image (the HITL deny reported as a refusal; the ambient tick leading again
+after `ambient_enabled` off→on) with the test suite on the fix commit;
+stage 11 was re-run on that image and its directory replaced.
 
 ## How to re-run
 

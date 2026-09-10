@@ -431,6 +431,9 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
                     source=resolution.source,
                 )
             result = await execute_resolution(resolution, task, node_id)
+            if result.get("status") == "denied":
+                # the worker's text already carries the human reviewer's verdict
+                return str(result.get("output", ""))
             if result.get("status") != "ok":
                 return f"sub agent failed: {result.get('error')}"
             return str(result.get("output", ""))

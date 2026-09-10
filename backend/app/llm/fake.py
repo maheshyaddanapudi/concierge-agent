@@ -20,6 +20,9 @@ from app.llm.registry import model_provider
 
 _SCRIPT: deque[AIMessage | BaseException] = deque()
 _SEEN_TOOLS: list[list[str]] = []
+# the rendered text of every message on each captured call, so a test can
+# assert what a surface (planner, aggregator, formatter) was actually told
+_SEEN_PROMPTS: list[str] = []
 # M51: when strict, a provider call made with a DB session open in the
 # current task raises — the test-time enforcement of "claim → commit →
 # call → write back" (spec §16.2, PLAN M51)
@@ -45,6 +48,19 @@ def _assert_no_open_session(where: str) -> None:
 
 
 _DEFAULT_USAGE = UsageMetadata(input_tokens=7, output_tokens=11, total_tokens=18)
+
+
+def _message_text(message: BaseMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(parts)
 
 
 def push_ai(
@@ -74,6 +90,11 @@ def clear_seen_tools() -> None:
     _SEEN_TOOLS.clear()
 
 
+def seen_prompts() -> list[str]:
+    """The text each captured model call was given (all messages joined)."""
+    return list(_SEEN_PROMPTS)
+
+
 def push_message(msg: AIMessage) -> None:
     if msg.usage_metadata is None:
         msg.usage_metadata = _DEFAULT_USAGE
@@ -83,6 +104,7 @@ def push_message(msg: AIMessage) -> None:
 def clear_script() -> None:
     _SCRIPT.clear()
     _SEEN_TOOLS.clear()
+    _SEEN_PROMPTS.clear()
 
 
 def script_len() -> int:
@@ -132,6 +154,7 @@ class ScriptedChatModel(BaseChatModel):
         _SEEN_TOOLS.append(
             [t.get("function", {}).get("name", t.get("name", "?")) for t in bound_tools]
         )
+        _SEEN_PROMPTS.append("\n".join(_message_text(m) for m in messages))
         if _SCRIPT:
             item = _SCRIPT.popleft()
             if isinstance(item, BaseException):
