@@ -4,7 +4,7 @@ A registry-driven, tri-layer agentic orchestration POC: **Tools → Skills → S
 
 **Goal**: plug an MCP server from the UI after startup, compose a skill from its tools, compose a sub agent from skills with a branching DAG workflow, and invoke it through chat with a visible run trace — without restarting the app. The complete definition of done is the 11-step acceptance script in [spec.md §14](./spec.md).
 
-> **Status — all milestones complete (M1–M53).** Backend suite **1001 passed, 1 skipped**, frontend suite **94 passed**. Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/ceremony_m36/report.md)).
+> **Status — all milestones complete (M1–M54).** Backend suite **1040 passed, 1 skipped**, frontend suite **94 passed**. Every wave carries live acceptance evidence, and the full §18.10 ceremony passed end to end on fresh volumes and a fresh `docker compose up` ([report](./docs/acceptance/ceremony_m36/report.md)).
 
 | Wave | Milestones | What landed |
 |---|---|---|
