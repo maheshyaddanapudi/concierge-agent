@@ -1,8 +1,8 @@
 {
   "meta": {
     "label": "m54-recall",
-    "captured_at": "2026-09-09T23:42:45+00:00",
-    "git_sha": "34c38ba",
+    "captured_at": "2026-09-10T21:32:28+00:00",
+    "git_sha": "8d5424c",
     "base_url": "http://localhost:8000",
     "model": "fake:scripted",
     "scenarios": [
@@ -12,7 +12,7 @@
       "base_url": "http://localhost:8000",
       "model": "fake:scripted",
       "label": "m54-recall",
-      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/m54-out/recall.json",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M54/recall.json",
       "scenarios": [
         "recall"
       ],
@@ -44,10 +44,10 @@
       "keep_data": false
     },
     "settings_before": {
-      "default_model": "fake:scripted",
+      "default_model": "openrouter:qwen/qwen3.8-max",
       "embedding_model": null,
       "memory_enabled": false,
-      "ambient_enabled": false,
+      "ambient_enabled": true,
       "ambient_routine_events_per_hour": 20,
       "ambient_runs_per_day": 50
     }
@@ -58,34 +58,34 @@
       "levels": [
         {
           "loadgen_memories": 10000,
-          "active_memories": 10000,
+          "active_memories": 10014,
           "fake_vectors": 10000,
           "concurrency_1": {
             "n": 40,
-            "p50_ms": 48.56,
-            "p95_ms": 107.15,
-            "p99_ms": 143.51,
-            "max_ms": 151.97,
-            "mean_ms": 61.51,
+            "p50_ms": 38.1,
+            "p95_ms": 81.23,
+            "p99_ms": 94.41,
+            "max_ms": 98.87,
+            "mean_ms": 46.56,
             "errors": 0
           },
           "concurrency_5": {
             "n": 40,
-            "p50_ms": 100.71,
-            "p95_ms": 207.16,
-            "p99_ms": 267.68,
-            "max_ms": 285.86,
-            "mean_ms": 115.14,
+            "p50_ms": 74.57,
+            "p95_ms": 237.4,
+            "p99_ms": 270.13,
+            "max_ms": 280.67,
+            "mean_ms": 95.62,
             "errors": 0
           },
           "lexical_leg": {
-            "execution_ms": 32.5,
+            "execution_ms": 18.9,
             "index_matches": 0,
-            "wall_ms": 36.2
+            "wall_ms": 22.1
           },
           "vector_leg_plan": {
             "node": "Limit",
-            "total_cost": 273.58,
+            "total_cost": 195.24,
             "scans": [
               "Index Scan on memories",
               "Index Scan on memory_embeddings",
@@ -95,34 +95,34 @@
         },
         {
           "loadgen_memories": 100000,
-          "active_memories": 100000,
-          "fake_vectors": 100000,
+          "active_memories": 100014,
+          "fake_vectors": 100092,
           "concurrency_1": {
             "n": 40,
-            "p50_ms": 208.74,
-            "p95_ms": 405.86,
-            "p99_ms": 438.1,
-            "max_ms": 442.67,
-            "mean_ms": 229.72,
+            "p50_ms": 188.78,
+            "p95_ms": 298.74,
+            "p99_ms": 334.35,
+            "max_ms": 343.89,
+            "mean_ms": 193.1,
             "errors": 0
           },
           "concurrency_5": {
             "n": 40,
-            "p50_ms": 1008.6,
-            "p95_ms": 1382.61,
-            "p99_ms": 1530.26,
-            "max_ms": 1548.66,
-            "mean_ms": 949.48,
+            "p50_ms": 637.9,
+            "p95_ms": 888.66,
+            "p99_ms": 1089.96,
+            "max_ms": 1211.35,
+            "mean_ms": 602.44,
             "errors": 0
           },
           "lexical_leg": {
-            "execution_ms": 184.0,
-            "index_matches": 37500,
-            "wall_ms": 186.3
+            "execution_ms": 181.5,
+            "index_matches": 37503,
+            "wall_ms": 208.7
           },
           "vector_leg_plan": {
             "node": "Limit",
-            "total_cost": 249.37,
+            "total_cost": 241.49,
             "scans": [
               "Index Scan on memories",
               "Index Scan on memory_embeddings",
@@ -132,34 +132,34 @@
         },
         {
           "loadgen_memories": 1000000,
-          "active_memories": 1000000,
-          "fake_vectors": 1000000,
+          "active_memories": 1000016,
+          "fake_vectors": 1000121,
           "concurrency_1": {
             "n": 40,
-            "p50_ms": 1221.26,
-            "p95_ms": 3952.5,
-            "p99_ms": 4201.85,
-            "max_ms": 4267.09,
-            "mean_ms": 1642.57,
+            "p50_ms": 999.48,
+            "p95_ms": 3072.23,
+            "p99_ms": 3149.99,
+            "max_ms": 3170.78,
+            "mean_ms": 1318.45,
             "errors": 0
           },
           "concurrency_5": {
             "n": 40,
-            "p50_ms": 6670.47,
-            "p95_ms": 19615.85,
-            "p99_ms": 42706.35,
-            "max_ms": 53189.8,
-            "mean_ms": 9857.77,
+            "p50_ms": 4270.39,
+            "p95_ms": 12001.97,
+            "p99_ms": 24782.32,
+            "max_ms": 32757.08,
+            "mean_ms": 6049.57,
             "errors": 0
           },
           "lexical_leg": {
-            "execution_ms": 1292.1,
-            "index_matches": 375000,
-            "wall_ms": 1295.9
+            "execution_ms": 990.1,
+            "index_matches": 375003,
+            "wall_ms": 993.9
           },
           "vector_leg_plan": {
             "node": "Limit",
-            "total_cost": 277.33,
+            "total_cost": 277.17,
             "scans": [
               "Index Scan on memories",
               "Index Scan on memory_embeddings",
@@ -168,18 +168,18 @@
           }
         }
       ],
-      "elapsed_s": 3906.8
+      "elapsed_s": 2915.3
     }
   },
   "at_rest": {
     "connections": {
-      "total": 7,
-      "idle": 7
+      "total": 14,
+      "idle": 14
     },
     "max_connections": 100
   },
   "cleanup": {
-    "memory_embeddings": "DELETE 1000000",
+    "memory_embeddings": "DELETE 1000121",
     "memories": "DELETE 1000000",
     "run_steps": "DELETE 0",
     "runs": "DELETE 0",
@@ -187,9 +187,9 @@
   },
   "at_rest_after": {
     "connections": {
-      "total": 8,
+      "total": 14,
       "active": 1,
-      "idle": 7
+      "idle": 13
     },
     "max_connections": 100
   }
