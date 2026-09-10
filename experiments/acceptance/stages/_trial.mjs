@@ -31,11 +31,13 @@ export function trial({ mode, effort }) {
     const sawPlan = await planCard.waitFor({ timeout: 45000 }).then(() => true).catch(() => false)
     if (sawPlan) await shot(page, '01-plan-card-live')
     else log('no plan card appeared before the gate (fallback or a very fast route) — documented, not faked')
-    // the rails mid-run: taken while the worker is still busy, before the gate
-    // arms (a gate already armed is frame 03, not this one)
+    // the rails while the run is live (Stop button, RUNNING pill). The stub
+    // tools answer in milliseconds, so by the time the sub agent's rail
+    // renders its gate is usually already armed — this frame is the live
+    // run, not a distinct pre-gate moment
     await page.getByText(/SUB_AGENT|TOOL_CALL|SKILL/).first().waitFor({ timeout: 30000 }).catch(() => {})
     await page.waitForTimeout(800)
-    await shot(page, '02-rails-and-ticker-midrun')
+    await shot(page, '02-rails-live-run')
 
     // the HITL gate armed in the chat card
     await page.getByText('HUMAN APPROVAL REQUIRED').first().waitFor({ timeout: 180000 })

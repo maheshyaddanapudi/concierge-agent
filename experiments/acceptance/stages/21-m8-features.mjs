@@ -69,12 +69,13 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
     page,
     'Here are three quarterly totals: Q1 = 30, Q2 = 50, Q3 = 70. Present them as a bar chart labelled Q1, Q2 and Q3, then one sentence on the trend.',
   )
-  const comps = done2.answer_ui?.components || done2.answer_ui?.a2ui || []
-  const chartComponents = JSON.stringify(done2.answer_ui || {}).match(/"type":\s*"chart"/g)?.length || 0
-  log(`answer_ui components: ${Array.isArray(comps) ? comps.length : '?'}; chart components: ${chartComponents}; run charts: ${(done2.charts || []).length}`)
+  // the formatter's charts live in answer_ui.charts and as chart blocks
+  const ui = done2.answer_ui || {}
+  const charts = ui.charts || (ui.blocks || []).filter((b) => b.chart).map((b) => b.chart)
+  log(`answer_ui: ${(ui.a2ui || []).length} a2ui messages, ${(ui.blocks || []).length} blocks, ${charts.length} chart(s): ${charts.map((c) => `${c.kind} "${c.title}" ${JSON.stringify(c.labels)} → ${JSON.stringify(c.series?.[0]?.values)}`).join(' | ')}`)
   await page.locator('svg').last().scrollIntoViewIfNeeded().catch(() => {})
   await shot(page, '10-chart-in-a2ui-first-answer')
-  if (!chartComponents && !(done2.charts || []).length) log('no chart in this answer — the formatter chose not to chart it (recorded as-is)')
+  if (!charts.length) log('no chart in this answer — the formatter chose not to chart it (recorded as-is)')
 
   // 3. agentic research within the iteration budget
   await settings({ orchestrator_mode: 'agentic' })
