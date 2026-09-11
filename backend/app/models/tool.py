@@ -52,6 +52,12 @@ class Tool(RegistryRecord):
     schema_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # the description is what the planner routes by: fingerprinted like the
+    # schema, and an operator's edit ('operator') survives re-ingests
+    description_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    description_source: Mapped[str] = mapped_column(
+        String(16), default="server", server_default="server"
+    )
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
     embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
@@ -32,6 +33,9 @@ async def _tool_counts(session: SessionDep, server_ids: list[UUID]) -> dict[UUID
         .group_by(Tool.mcp_server_id)
     )
     return {sid: count for sid, count in rows if sid is not None}
+
+
+logger = structlog.get_logger("mcp")
 
 
 def _to_out(server: McpServer, tool_count: int = 0) -> McpServerOut:
@@ -74,6 +78,9 @@ async def create_server(body: McpServerCreate, session: SessionDep) -> McpServer
         # active/error when it connects (spec §5)
         status="inactive",
     )
+    from app.mcp.manager import config_fingerprint
+
+    server.config_hash = config_fingerprint(server)  # stamped at birth, not at first success
     session.add(server)
     await session.commit()
     from app.mcp.manager import get_manager
@@ -107,10 +114,40 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
         server.headers = merge_secret_map(server.headers, changes.pop("headers"))
     for field, value in changes.items():
         setattr(server, field, value)
+    # hardening wave: a connection edit is a different binary behind the
+    # same tool rows — hashed onto the row, logged, and reconnected NOW so
+    # the swap and its re-ingest happen at edit time, not at the next
+    # health ping
+    from app.mcp.manager import config_fingerprint, get_manager
+
+    new_hash = config_fingerprint(server)
+    # a row never stamped (from before the hash) counts as changed; so does
+    # a secret rotation — its VALUE is not in the fingerprint by design, but
+    # the running process holds the old one (review round 2)
+    secrets_written = body.env is not None or body.headers is not None
+    config_changed = server.config_hash is None or new_hash != server.config_hash
+    server.config_hash = new_hash
     await session.commit()
     # onupdate columns (updated_at) are expired by the flush — reload before
     # serializing, or Pydantic's attribute access triggers lazy IO
     await session.refresh(server)
+    if config_changed or secrets_written:
+        logger.warning(
+            "mcp_server_config_changed",
+            server_id=str(server.id),
+            name=server.name,
+            config_hash=new_hash[:12],
+            secrets_rotated=secrets_written and not config_changed,
+            changed_fields=sorted(
+                set(changes)
+                | ({"env"} if body.env is not None else set())
+                | ({"headers"} if body.headers is not None else set())
+            ),
+        )
+        manager = get_manager()
+        if manager is not None and (server.status != "inactive" or server.config_hash is None):
+            await manager.connect_server(server.id)
+            await session.refresh(server)
     counts = await _tool_counts(session, [server.id])
     return _to_out(server, counts.get(server.id, 0))
 

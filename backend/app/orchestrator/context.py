@@ -162,9 +162,21 @@ class RunContext:
     # §17.4: the owning routine's narrowed registry projection — None for
     # interactive runs and for routines without an allowlist
     ambient_allowlist: dict[str, Any] | None = None
+    # a HITL resume: the only case a tool call can replay arguments made
+    # against an older schema (the per-call check runs only then)
+    resumed: bool = False
     # §18.1: the routine's model_ref — replaces the default_model FALLBACK
     # everywhere this run resolves a model; explicit role/skill models win
     ambient_model_ref: str | None = None
+    # spec §3.6 (hardening wave): what each surface was actually told —
+    # the rendered memory block, exemplar ids, the history window — and
+    # what each model call could see; written to run.snapshot at the end
+    context_log: list[dict[str, Any]] = field(default_factory=list)
+    catalog_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def log_context(self, surface: str, **fields: Any) -> None:
+        if len(self.context_log) < 50:
+            self.context_log.append({"surface": surface, **fields})
 
     def next_worker_callsign(self) -> str:
         n = self.worker_count

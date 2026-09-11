@@ -193,13 +193,7 @@ function MarkdownPreview({ text, boundKeys }: { text: string; boundKeys: string[
   return <div className="space-y-0.5">{html}</div>
 }
 
-function SkillEditor({
-  skill,
-  onDone,
-}: {
-  skill: Skill | null
-  onDone: () => void
-}) {
+function SkillEditor({ skill, onDone }: { skill: Skill | null; onDone: () => void }) {
   const { data: tools = [] } = useTools()
   const invalidate = useInvalidate()
   const navigate = useNavigate()
@@ -279,10 +273,12 @@ function SkillEditor({
           entity="skill"
           onConfirm={async () => {
             // M44: saving past the warning is a captured, content-free event
-            void api.post('/skills/overlap-ack', {
-              draft_type: 'skill',
-              overlap_percent: overlap.overlap_percent,
-            }).catch(() => {})
+            void api
+              .post('/skills/overlap-ack', {
+                draft_type: 'skill',
+                overlap_percent: overlap.overlap_percent,
+              })
+              .catch(() => {})
             setOverlap(null)
             await doSave()
           }}
@@ -365,9 +361,7 @@ function SkillEditor({
                   checked={toolIds.includes(t.id)}
                   onChange={(e) =>
                     setToolIds(
-                      e.target.checked
-                        ? [...toolIds, t.id]
-                        : toolIds.filter((id) => id !== t.id),
+                      e.target.checked ? [...toolIds, t.id] : toolIds.filter((id) => id !== t.id),
                     )
                   }
                 />
@@ -436,6 +430,37 @@ function SkillEditor({
         </div>
       )}
     </div>
+  )
+}
+
+/** A bound tool that the loop cannot actually call: deleted at a re-ingest,
+ * toggled inactive, or quarantined under the schema-change policy. Binding
+ * is availability strictly, so the skill runs with fewer tools than its
+ * document names — the badge says so on the list, not only in a run's
+ * failed step. */
+export function unavailableBoundTools(tools: Tool[]): { tool: Tool; reason: string }[] {
+  return tools.flatMap((t) => {
+    if (t.deleted_at) return [{ tool: t, reason: 'deleted' }]
+    if (t.ingest_state === 'changed') return [{ tool: t, reason: 'quarantined' }]
+    if (t.ingest_state === 'missing') return [{ tool: t, reason: 'missing from server' }]
+    if (t.status !== 'active') return [{ tool: t, reason: t.status }]
+    return []
+  })
+}
+
+function BoundToolWarning({ tools }: { tools: Tool[] }) {
+  const gone = unavailableBoundTools(tools)
+  if (gone.length === 0) return null
+  return (
+    <span
+      role="status"
+      title={gone.map((g) => `${g.tool.tool_key}: ${g.reason}`).join('\n')}
+      className="inline-flex items-center rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-amber-500/30"
+    >
+      {gone.length === 1
+        ? `${gone[0].tool.tool_key} unavailable · ${gone[0].reason}`
+        : `${gone.length} bound tools unavailable`}
+    </span>
   )
 }
 
@@ -526,6 +551,7 @@ export function SkillsPage() {
                   </Chip>
                 ))}
                 {s.tools.length > 4 && <Chip tone="muted">+{s.tools.length - 4}</Chip>}
+                <BoundToolWarning tools={s.tools} />
               </div>
             ),
           },
@@ -533,15 +559,15 @@ export function SkillsPage() {
           { header: 'Status', render: (s) => <StatusPill status={s.status} /> },
         ]}
       />
-      <Drawer
-        open={creating}
-        onClose={() => setCreating(false)}
-        title="New skill document"
-        wide
-      >
+      <Drawer open={creating} onClose={() => setCreating(false)} title="New skill document" wide>
         {creating && <SkillEditor skill={null} onDone={() => setCreating(false)} />}
       </Drawer>
-      <Drawer open={selected !== null} onClose={() => setSelectedId(null)} title={selected?.name} wide>
+      <Drawer
+        open={selected !== null}
+        onClose={() => setSelectedId(null)}
+        title={selected?.name}
+        wide
+      >
         {selected && (
           <SkillEditor key={selected.id} skill={selected} onDone={() => setSelectedId(null)} />
         )}

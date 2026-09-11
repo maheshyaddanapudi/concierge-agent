@@ -2,7 +2,7 @@
  * native-tool steps, route reasons, cancel / retry / delete. */
 import { useState } from 'react'
 import { api } from '../api/client'
-import { useInvalidate, useRun, useRuns, useSubAgents } from '../api/hooks'
+import { useInvalidate, useRun, useRuns, useSkills, useSubAgents, useTools } from '../api/hooks'
 import type { Run, RunStep } from '../api/types'
 import { RegistryTable } from '../components/RegistryTable'
 import { AnswerTrace, type AnswerUiPayload } from '../components/AnswerPanel'
@@ -28,6 +28,276 @@ const STEP_ICONS: Record<string, string> = {
   hitl: '⏸',
   tool_call: '🛠',
   aggregate: 'Σ',
+  format: '🎨',
+}
+
+const VERSION_LABEL: Record<string, string> = { tool_call: 'schema', skill: 'def', route: 'def' }
+
+/** One pinned registry entity read against the live registry: the version
+ * the run saw vs the version that exists now, or gone entirely. */
+interface Pinned {
+  kind: 'tool' | 'skill' | 'sub_agent'
+  id: string
+  name: string
+  pinnedVersion: number | null
+  pinnedHash: string | null
+}
+
+type LiveEntity = {
+  id: string
+  version: number | null
+  hash: string | null
+  name: string
+  status: string
+}
+
+export function pinnedEntities(snapshot: Record<string, unknown>): Pinned[] {
+  const seen = new Map<string, Pinned>()
+  const add = (p: Pinned) => {
+    if (!seen.has(`${p.kind}:${p.id}`)) seen.set(`${p.kind}:${p.id}`, p)
+  }
+  const asRec = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  const addTool = (t: Record<string, unknown>) =>
+    add({
+      kind: 'tool',
+      id: String(t.id),
+      name: String(t.tool_key ?? t.tool_name ?? t.id),
+      pinnedVersion: typeof t.schema_version === 'number' ? t.schema_version : null,
+      pinnedHash: typeof t.schema_hash === 'string' ? t.schema_hash : null,
+    })
+  const addSkill = (s: Record<string, unknown>) => {
+    add({
+      kind: 'skill',
+      id: String(s.id),
+      name: String(s.name ?? s.id),
+      pinnedVersion: typeof s.definition_version === 'number' ? s.definition_version : null,
+      pinnedHash: typeof s.definition_hash === 'string' ? s.definition_hash : null,
+    })
+    for (const t of Array.isArray(s.tools) ? s.tools : []) {
+      const rec = asRec(t)
+      if (rec) addTool(rec)
+    }
+  }
+  const addAgent = (a: Record<string, unknown>) =>
+    add({
+      kind: 'sub_agent',
+      id: String(a.id),
+      name: String(a.name ?? a.id),
+      pinnedVersion: typeof a.definition_version === 'number' ? a.definition_version : null,
+      pinnedHash: typeof a.definition_hash === 'string' ? a.definition_hash : null,
+    })
+  // agentic / direct runs: the catalog the loop could see at start
+  const catalog = asRec(snapshot.catalog)
+  if (catalog) {
+    for (const t of Array.isArray(catalog.tools) ? catalog.tools : []) {
+      const rec = asRec(t)
+      if (rec) addTool(rec)
+    }
+    for (const s of Array.isArray(catalog.skills) ? catalog.skills : []) {
+      const rec = asRec(s)
+      if (rec) addSkill(rec)
+    }
+    for (const a of Array.isArray(catalog.sub_agents) ? catalog.sub_agents : []) {
+      const rec = asRec(a)
+      if (rec) addAgent(rec)
+    }
+  }
+  // graph mode: one frozen resolution per plan entry (spec §3.6)
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (['catalog', 'settings', 'prompts', 'build', 'context', 'catalog_calls'].includes(key))
+      continue
+    const entry = asRec(value)
+    const payload = entry ? asRec(entry.payload) : null
+    if (!payload) continue
+    const snap = asRec(payload.snapshot)
+    const agent = snap ? asRec(snap.sub_agent) : null
+    if (agent) addAgent(agent)
+    const skills = snap ? asRec(snap.skills) : null
+    for (const s of skills ? Object.values(skills) : []) {
+      const rec = asRec(s)
+      if (rec) addSkill(rec)
+    }
+    const skill = asRec(payload.skill)
+    if (skill) addSkill(skill)
+    const tool = asRec(payload.tool)
+    if (tool) addTool(tool)
+    // a native sub agent's card, a direct tool's row, an ephemeral
+    // worker's composed skills (rung 4)
+    const native = asRec(payload.sub_agent)
+    if (native) addAgent(native)
+    if (typeof payload.tool_id === 'string' && !tool) addTool({ ...payload, id: payload.tool_id })
+    for (const s of Array.isArray(payload.skills) ? payload.skills : []) {
+      const rec = asRec(s)
+      if (rec) addSkill(rec)
+    }
+  }
+  return [...seen.values()]
+}
+
+/** The name each sub agent had when the run dispatched it: from the route
+ * steps (which pin `resolved_to.entity_id` + `entity_name`) — a rename or
+ * delete since never rewrites the chip. */
+export function pinnedAgentNames(steps: RunStep[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const s of steps) {
+    if (s.step_type !== 'route') continue
+    const resolved = (s.output?.resolved_to ?? null) as Record<string, unknown> | null
+    const id = resolved && typeof resolved.entity_id === 'string' ? resolved.entity_id : null
+    const name = resolved && typeof resolved.entity_name === 'string' ? resolved.entity_name : null
+    if (id && name && !names.has(id)) names.set(id, name)
+  }
+  return names
+}
+
+export function compareEntity(
+  pinned: Pinned,
+  live: LiveEntity | undefined,
+): { state: 'same' | 'changed' | 'deleted' | 'inactive' | 'unknown'; detail: string } {
+  if (!live) return { state: 'deleted', detail: 'not in the registry any more' }
+  if (live.status !== 'active') return { state: 'inactive', detail: `now ${live.status}` }
+  if (pinned.pinnedVersion == null && pinned.pinnedHash == null)
+    return { state: 'unknown', detail: 'pinned before versions were recorded' }
+  const hashDiffers =
+    pinned.pinnedHash != null && live.hash != null && pinned.pinnedHash !== live.hash
+  const versionDiffers =
+    pinned.pinnedVersion != null && live.version != null && pinned.pinnedVersion !== live.version
+  if (hashDiffers || versionDiffers)
+    return {
+      state: 'changed',
+      detail: `v${pinned.pinnedVersion ?? '?'} then · v${live.version ?? '?'} now${
+        live.name !== pinned.name ? ` · renamed to ${live.name}` : ''
+      }`,
+    }
+  return { state: 'same', detail: `v${live.version ?? '?'}` }
+}
+
+const DIFF_TONE: Record<string, string> = {
+  same: 'text-emerald-400',
+  changed: 'text-amber-300',
+  deleted: 'text-rose-400',
+  inactive: 'text-slate-400',
+  unknown: 'text-slate-500',
+}
+
+/** Snapshot vs registry (hardening wave): what the run pinned — tools by
+ * schema version, skills and sub agents by definition version — read against
+ * the live registry, so a trace from last week says which of its inputs has
+ * moved since rather than silently reading against today's records. */
+function SnapshotPanel({ snapshot }: { snapshot: Record<string, unknown> }) {
+  const { data: tools = [] } = useTools()
+  const { data: skills = [] } = useSkills()
+  const { data: agents = [] } = useSubAgents()
+  const pinned = pinnedEntities(snapshot)
+  const live: Record<Pinned['kind'], Map<string, LiveEntity>> = {
+    tool: new Map(
+      tools.map((t) => [
+        t.id,
+        {
+          id: t.id,
+          version: t.schema_version ?? null,
+          hash: t.schema_hash ?? null,
+          name: t.tool_key,
+          status: t.deleted_at ? 'deleted' : t.status,
+        },
+      ]),
+    ),
+    skill: new Map(
+      skills.map((s) => [
+        s.id,
+        {
+          id: s.id,
+          version: s.definition_version ?? null,
+          hash: s.definition_hash ?? null,
+          name: s.name,
+          status: s.deleted_at ? 'deleted' : s.status,
+        },
+      ]),
+    ),
+    sub_agent: new Map(
+      agents.map((a) => [
+        a.id,
+        {
+          id: a.id,
+          version: a.definition_version ?? null,
+          hash: a.definition_hash ?? null,
+          name: a.name,
+          status: a.deleted_at ? 'deleted' : a.status,
+        },
+      ]),
+    ),
+  }
+  const rows = pinned.map((p) => ({ p, cmp: compareEntity(p, live[p.kind].get(p.id)) }))
+  const moved = rows.filter((r) => r.cmp.state !== 'same' && r.cmp.state !== 'unknown').length
+  const settings = snapshot.settings as Record<string, unknown> | undefined
+  const prompts = snapshot.prompts as Record<string, string> | undefined
+  const context = Array.isArray(snapshot.context)
+    ? (snapshot.context as { surface?: string }[])
+    : undefined
+  const catalogCalls = snapshot.catalog_calls as unknown[] | undefined
+  const resumes = Array.isArray(snapshot.resumes) ? (snapshot.resumes as unknown[]) : undefined
+  const [showSettings, setShowSettings] = useState(false)
+  const [showContext, setShowContext] = useState(false)
+  return (
+    <div className="space-y-2" data-testid="snapshot-panel">
+      <div className="text-[11px] text-slate-500" role="status">
+        {rows.length === 0
+          ? 'Nothing pinned by version on this run.'
+          : moved === 0
+            ? `All ${rows.length} pinned records still match the registry.`
+            : `${moved} of ${rows.length} pinned records moved since this run.`}
+        {typeof snapshot.build === 'string' ? ` Build ${snapshot.build}.` : ''}
+      </div>
+      {rows.length > 0 && (
+        <table className="w-full text-[11px]">
+          <tbody>
+            {rows.map(({ p, cmp }) => (
+              <tr key={`${p.kind}:${p.id}`} className="border-t border-slate-800/60">
+                <td className="py-1 pr-2 text-slate-500">{p.kind.replace('_', ' ')}</td>
+                <td className="py-1 pr-2">
+                  <code className="text-slate-300">{p.name}</code>
+                </td>
+                <td className={cx('py-1 pr-2 font-medium', DIFF_TONE[cmp.state])}>{cmp.state}</td>
+                <td className="py-1 text-slate-500">{cmp.detail}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="flex flex-wrap gap-3 text-[11px]">
+        {settings && (
+          <button
+            className="text-indigo-400 hover:underline"
+            onClick={() => setShowSettings(!showSettings)}
+          >
+            {showSettings ? 'hide' : 'show'} settings as the run saw them
+          </button>
+        )}
+        {prompts && (
+          <span className="text-slate-500">
+            {Object.keys(prompts).length} prompt files pinned by hash
+          </span>
+        )}
+        {context && (
+          <button
+            className="text-indigo-400 hover:underline"
+            onClick={() => setShowContext(!showContext)}
+          >
+            {showContext ? 'hide' : 'show'} injected context (
+            {new Set(context.map((c) => c.surface ?? '?')).size} surfaces
+            {catalogCalls ? `, ${catalogCalls.length} catalog calls` : ''})
+          </button>
+        )}
+        {resumes && resumes.length > 0 && (
+          <span className="text-amber-300/80">
+            resumed {resumes.length}× under the settings of that moment (see settings)
+          </span>
+        )}
+      </div>
+      {showSettings && <JsonBlock value={{ settings, prompts, resumes }} />}
+      {showContext && <JsonBlock value={{ context, catalog_calls: catalogCalls }} />}
+    </div>
+  )
 }
 
 function StepRow({ step, depth }: { step: RunStep; depth: number }) {
@@ -44,18 +314,30 @@ function StepRow({ step, depth }: { step: RunStep; depth: number }) {
       >
         <span className="w-5 text-center">{STEP_ICONS[step.step_type] ?? '·'}</span>
         <span className="font-medium text-slate-300">{step.step_type}</span>
+        {step.entity_name && (
+          // the entity's name as it was when the step ran — pinned on the
+          // record, so a rename or delete since does not rewrite the trace
+          <code className="text-[10px] text-slate-300">{step.entity_name}</code>
+        )}
         {step.node_id && <code className="text-[10px] text-slate-500">{step.node_id}</code>}
         {rung && <Chip tone={rung === 'fallback' ? 'direct' : 'default'}>rung: {rung}</Chip>}
-        {step.model && <code className="text-[10px] text-indigo-400">{step.model}</code>}
+        {step.model && (
+          <code
+            className="text-[10px] text-indigo-400"
+            title={step.model_params ? JSON.stringify(step.model_params) : undefined}
+          >
+            {step.model}
+          </code>
+        )}
         {step.entity_version != null && (
-          // the schema version the tool call was made against, pinned into
+          // the schema / definition version the step ran against, pinned into
           // the record — a renamed parameter since then shows as a higher
           // version on the Tools page, not as a silently different trace
           <code
             className="text-[10px] text-amber-300/80"
-            title={step.entity_hash ? `schema hash ${step.entity_hash}` : undefined}
+            title={step.entity_hash ? `hash ${step.entity_hash}` : undefined}
           >
-            schema v{step.entity_version}
+            {VERSION_LABEL[step.step_type] ?? 'v'} v{step.entity_version}
             {step.entity_hash ? ` · ${step.entity_hash.slice(0, 8)}` : ''}
           </code>
         )}
@@ -126,11 +408,20 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
       setError(e)
     }
   }
+  // the name pinned by the route step wins: a sub agent renamed or deleted
+  // since the run still reads as it was, not as 'ephemeral' (worker node
+  // steps share the sub_agent_id but name the SKILL, so they never feed this)
+  const pinnedNames = pinnedAgentNames(run.steps ?? [])
   const agentsInvolved = [
     ...new Set(
       (run.steps ?? [])
         .filter((s) => s.sub_agent_id)
-        .map((s) => agents.find((a) => a.id === s.sub_agent_id)?.name ?? 'ephemeral'),
+        .map(
+          (s) =>
+            pinnedNames.get(s.sub_agent_id as string) ??
+            agents.find((a) => a.id === s.sub_agent_id)?.name ??
+            'ephemeral',
+        ),
     ),
   ]
   const pausedStep = (run.steps ?? []).find((s) => s.step_type === 'hitl' && s.status === 'running')
@@ -209,6 +500,29 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
       {run.plan != null && (
         <Field label="Plan JSON">
           <JsonBlock value={run.plan} />
+        </Field>
+      )}
+      {run.price_snapshot?.prices && Object.keys(run.price_snapshot.prices).length > 0 && (
+        <Field label="Prices at finish (stamped — later price changes never rewrite this run)">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+            {Object.entries(run.price_snapshot.prices).map(([ref, p]) => (
+              <span
+                key={ref}
+                className={p.input_per_m == null ? 'text-slate-500' : 'text-slate-300'}
+              >
+                <code className="text-indigo-400">{ref}</code>{' '}
+                {p.input_per_m == null
+                  ? 'unpriced'
+                  : `$${p.input_per_m} in / $${p.output_per_m} out per M tokens`}{' '}
+                <span className="text-slate-500">· {p.source ?? 'no price'}</span>
+              </span>
+            ))}
+          </div>
+        </Field>
+      )}
+      {run.snapshot != null && (
+        <Field label="Snapshot vs registry">
+          <SnapshotPanel snapshot={run.snapshot} />
         </Field>
       )}
       {run.snapshot != null && (

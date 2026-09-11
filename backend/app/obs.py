@@ -67,6 +67,34 @@ TOOL_SCHEMA_CHANGES = Counter(
     "Tool input schemas that changed on re-ingest, by kind and policy",
     ["kind", "policy"],
 )
+TOOL_DESCRIPTION_CHANGES = Counter(
+    "concierge_tool_description_changes_total",
+    "Tool descriptions that changed on re-ingest (server) or by an operator edit",
+    ["kind", "source"],
+)
+# a second tool whose sanitized bound name collides with a bound one — it is
+# never bound, and before the hardening wave its id was stamped on the
+# other tool's calls
+TOOL_NAME_COLLISIONS = Counter(
+    "concierge_tool_name_collisions_total",
+    "Tools skipped at bind time because their sanitized name collided with a bound tool",
+)
+# a skill loop resolved fewer tools than the skill binds (inactive, deleted,
+# quarantined) — the model is told about a tool it cannot call
+SKILL_TOOL_UNAVAILABLE = Counter(
+    "concierge_skill_tool_unavailable_total",
+    "Bound tools a skill loop could not resolve at bind time",
+    ["reason"],
+)
+A2A_CARD_CHANGES = Counter(
+    "concierge_a2a_card_changes_total",
+    "Remote agent cards that changed under a refresh",
+)
+RETRIEVAL_STALE_VECTORS = Counter(
+    "concierge_retrieval_stale_vectors_total",
+    "Registry vectors ignored at rank time because they were embedded by a different model",
+    ["kind"],
+)
 ERRORS_TOTAL = Counter("concierge_errors_total", "Errors", ["tier", "kind", "source"])
 RUN_DURATION = Histogram("concierge_run_duration_seconds", "Run duration", ["mode", "status"])
 # memory layers (spec §16.6)

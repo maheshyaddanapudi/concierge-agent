@@ -38,7 +38,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app import obs
 from app.db import get_session_factory
 from app.models import McpServer, Tool
-from app.toolschema import QUARANTINED, apply_schema, schema_fingerprint
+from app.toolschema import (
+    QUARANTINED,
+    apply_description,
+    apply_schema,
+    schema_fingerprint,
+    text_fingerprint,
+)
 
 logger = structlog.get_logger("mcp.manager")
 
@@ -114,11 +120,22 @@ class McpManager:
     async def start(self, connect_timeout: float = CONNECT_TIMEOUT_S) -> None:
         """Connect every non-deleted server (spec §5 startup) + health loop."""
         async with get_session_factory()() as db:
-            server_ids = list(
+            servers = list(
                 (
-                    await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
+                    await db.execute(select(McpServer).where(McpServer.deleted_at.is_(None)))
                 ).scalars()
             )
+            server_ids = [s.id for s in servers]
+            # rows from before the config hash: stamped at boot so the next
+            # edit is judged against something (review round 2)
+            stamped = 0
+            for server in servers:
+                if server.config_hash is None:
+                    server.config_hash = config_fingerprint(server)
+                    stamped += 1
+            if stamped:
+                await db.commit()
+                logger.info("mcp_config_hashes_stamped_at_boot", servers=stamped)
         self._seen.update(server_ids)
         await asyncio.gather(
             *(self.connect_server(sid, timeout_s=connect_timeout) for sid in server_ids),
@@ -361,6 +378,8 @@ class McpManager:
             server = await db.get(McpServer, server_id)
             if server is None:
                 return
+            if server.config_hash is None:
+                server.config_hash = config_fingerprint(server)  # first sighting
             existing = {
                 t.tool_name: t
                 for t in (
@@ -368,7 +387,15 @@ class McpManager:
                 ).scalars()
             }
             taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
+            # the LLM-facing name is the sanitized key: two keys that
+            # sanitize alike would bind first-wins and leave the newcomer
+            # silently unbound (spec §3.2 collision-safety applies to the
+            # bound name, not only the key)
+            from app.factory.worker import sanitize_tool_name
+
+            taken_names = {sanitize_tool_name(k) for k in taken_keys}
             seen: set[str] = set()
+            changed_ids: list[str] = []
             # spec §3.2 drift: what a changed input schema does to the row —
             # 'warn' flags it for acknowledgement, 'quarantine' also takes
             # it out of service until an operator acknowledges the change
@@ -384,13 +411,16 @@ class McpManager:
                 row = existing.get(spec.name)
                 if row is None:
                     key = f"{server.name}.{spec.name}"
-                    if key in taken_keys:  # collision-safe (spec §3.2)
-                        key = f"{key}-{uuid4().hex[:6]}"
+                    if key in taken_keys or sanitize_tool_name(key) in taken_names:
+                        key = f"{key}-{uuid4().hex[:6]}"  # collision-safe (spec §3.2)
                     taken_keys.add(key)
+                    taken_names.add(sanitize_tool_name(key))
                     stmt = pg_insert(Tool).values(
                         id=uuid4(),
                         name=spec.name,
                         description=spec.description or "",
+                        description_hash=text_fingerprint(spec.description or ""),
+                        description_source="server",
                         kind="mcp",
                         source=server.source,  # inherited (spec §5)
                         status="active",
@@ -407,7 +437,6 @@ class McpManager:
                         index_elements=["mcp_server_id", "tool_name"],
                         index_where=sql_text("mcp_server_id IS NOT NULL"),
                         set_={
-                            "description": stmt.excluded.description,
                             "input_schema": stmt.excluded.input_schema,
                             "ingest_state": "present",
                             "schema_hash": stmt.excluded.schema_hash,
@@ -415,9 +444,11 @@ class McpManager:
                     )
                     await db.execute(stmt)
                 else:
-                    row.description = spec.description or ""
+                    described = apply_description(row, spec.description or "", source="server")
                     if apply_schema(row, spec.inputSchema, policy=policy):
                         changed.append(row.tool_key)
+                    if described or row.tool_key in changed:
+                        changed_ids.append(str(row.id))
                     # M53: only the SERVER's absence is undone by its return;
                     # an operator's inactive (or deleted) row stays as set —
                     # and so does a row the quarantine policy took out of
@@ -439,11 +470,19 @@ class McpManager:
         from app.registry_cache import get_cache
 
         await get_cache().invalidate("tools")
+        # a changed description or schema is a changed retrieval text: the
+        # vector is refreshed now, not at the next restart
+        from app.retrieval import schedule_embedding
+
+        for tool_id in changed_ids:
+            schedule_embedding("tools", tool_id)
         logger.info(
             "mcp_tools_ingested",
             server_id=str(server_id),
             tool_count=len(result.tools),
             schema_changed=changed,
+            content_changed=len(changed_ids),
+            config_hash=(server.config_hash or "")[:12],
         )
 
     def _handle_notification(self, server_id: UUID, message: Any) -> None:
@@ -569,6 +608,25 @@ def _describe(exc: BaseException, *, secrets: list[str] | None = None) -> str:
 
 
 _manager: McpManager | None = None
+
+
+def config_fingerprint(server: McpServer) -> str:
+    """A hash of what decides which process answers a server's tools:
+    transport, command, args, url, and the env / header KEYS (values are
+    secrets and are not part of the fingerprint)."""
+    import hashlib
+    import json
+
+    fields = {
+        "transport": server.transport,
+        "command": server.command,
+        "args": server.args,
+        "url": server.url,
+        "env_keys": sorted((server.env or {}).keys()),
+        "header_keys": sorted((server.headers or {}).keys()),
+    }
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def get_manager() -> McpManager | None:

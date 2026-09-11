@@ -28,6 +28,8 @@ JOB_COMPACT = 5
 JOB_COMMUNITIES = 6  # §18.6 label-propagation rebuild
 JOB_BACKFILL = 7  # §16.2 embedding backfill (on embedding_model change)
 JOB_EXTRACT_TUNE = 8  # M47 §17.7 extraction tuner (own gate, born dark)
+JOB_OVERLAP_AUDIT = 9  # §4 registry overlap re-audit (hardening wave, born dark)
+JOB_EXEMPLAR_SETTLE = 10  # §16.5 deferred exemplar votes (the "no correction" half)
 
 # M48 §3.7.1 — the switchability map: for every job that runs on its own
 # schedule, the §3.7 key that silences it. ENFORCEMENT LIVES INSIDE EACH
@@ -46,6 +48,8 @@ JOB_GATES: dict[int, str] = {
     JOB_COMMUNITIES: "memory_communities_enabled",
     JOB_BACKFILL: "embedding_model",  # null ⇒ nothing to embed against
     JOB_EXTRACT_TUNE: "memory_extraction_learning",  # off|propose|auto
+    JOB_OVERLAP_AUDIT: "registry_overlap_audit_enabled",
+    JOB_EXEMPLAR_SETTLE: "procedural_learning_enabled",
 }
 
 
@@ -77,6 +81,8 @@ _INTERVALS_S = {
     JOB_COMMUNITIES: 3600,
     JOB_BACKFILL: 3600,
     JOB_EXTRACT_TUNE: 3600,
+    JOB_OVERLAP_AUDIT: 6 * 3600,
+    JOB_EXEMPLAR_SETTLE: 300,
 }
 _LAST_RUN: dict[int, float] = {}
 
@@ -350,7 +356,26 @@ _JOB_NAMES: dict[int, str] = {
     JOB_COMMUNITIES: "memory:communities",
     JOB_BACKFILL: "memory:backfill",
     JOB_EXTRACT_TUNE: "memory:extract_tune",
+    JOB_OVERLAP_AUDIT: "registry:overlap_audit",
+    JOB_EXEMPLAR_SETTLE: "memory:exemplar_settle",
 }
+
+
+async def _overlap_audit() -> int:
+    """§4 registry overlap re-audit (hardening wave): gated in-function."""
+    if not await gate_open(JOB_GATES[JOB_OVERLAP_AUDIT]):
+        return 0
+    from app.overlap import audit_registry_overlap
+
+    return int(await audit_registry_overlap())
+
+
+async def _settle_exemplar_votes() -> int:
+    if not await gate_open(JOB_GATES[JOB_EXEMPLAR_SETTLE]):
+        return 0
+    from app.memory.procedural import settle_exemplar_votes
+
+    return await settle_exemplar_votes()
 
 
 async def _due(job_id: int, now: Any = None) -> bool:
@@ -387,6 +412,10 @@ async def run_due_jobs() -> dict[str, int]:
         JOB_COMMUNITIES: ("communities", rebuild_communities),
         JOB_BACKFILL: ("backfill", embedding_backfill),
         JOB_EXTRACT_TUNE: ("extract_tune", _extraction_tuner_moves),
+        # JOB_OVERLAP_AUDIT is a REGISTRY job: it ticks from the periodic
+        # loop on its own gate (maybe_run_overlap_audit), not behind
+        # memory_enabled (review round 2)
+        JOB_EXEMPLAR_SETTLE: ("exemplar_settle", _settle_exemplar_votes),
     }
     # M48 §3.7.1: each job enforces its own gate in-function; this loop
     # reads the SAME map only to avoid taking an advisory lock for work
@@ -423,6 +452,35 @@ async def run_due_jobs() -> dict[str, int]:
     return results
 
 
+async def maybe_run_overlap_audit() -> int | None:
+    """§4 registry overlap re-audit: its own gate, its own clock entry, the
+    shared advisory lock — a registry job, so it runs whether or not the
+    memory layer is on (review round 2: it used to sit behind
+    `memory_enabled` and never fire for a memory-dark deployment)."""
+    from datetime import UTC, datetime
+
+    from app.jobclock import job_ran
+    from app.memory.scheduler import acquire_job_lock, release_job_lock
+
+    if not await gate_open(JOB_GATES[JOB_OVERLAP_AUDIT]):
+        return None
+    now = datetime.now(UTC)
+    if not await _due(JOB_OVERLAP_AUDIT, now):
+        return None
+    async with get_session_factory()() as session:
+        if not await acquire_job_lock(session, JOB_OVERLAP_AUDIT):
+            return None
+        try:
+            judged = await _overlap_audit()
+            await job_ran(_JOB_NAMES[JOB_OVERLAP_AUDIT], now=now)
+            return judged
+        except Exception as exc:  # noqa: BLE001 — jobs never crash the loop
+            logger.warning("memory_job_failed", job="overlap_audit", error=str(exc))
+            return None
+        finally:
+            await release_job_lock(session, JOB_OVERLAP_AUDIT)
+
+
 async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
     """Lifespan-owned loop (spec §16.2): ticks are cheap when memory is off.
     M53: the same loop ticks retention (its own gates, its own lock) and
@@ -445,6 +503,11 @@ async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
         except Exception as exc:  # noqa: BLE001 — retention must never take the loop down
             obs.LOOP_ERRORS.labels(loop="retention").inc()
             logger.warning("retention_tick_failed", error=str(exc))
+        try:
+            await maybe_run_overlap_audit()
+        except Exception as exc:  # noqa: BLE001 — the audit must never take the loop down
+            obs.LOOP_ERRORS.labels(loop="overlap_audit").inc()
+            logger.warning("overlap_audit_tick_failed", error=str(exc))
         now = asyncio.get_event_loop().time()
         if prices_refreshed_at is None or now - prices_refreshed_at >= 3600:
             prices_refreshed_at = now

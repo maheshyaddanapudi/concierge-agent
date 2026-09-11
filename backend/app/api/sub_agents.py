@@ -89,12 +89,30 @@ async def create_sub_agent(body: SubAgentCreate, session: SessionDep) -> SubAgen
         direct_exposure=body.direct_exposure,
         skills=skills,
     )
+    stamp_sub_agent(agent)
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
     await get_cache().invalidate("sub_agents")
     schedule_embedding("sub_agents", str(agent.id))
     return agent
+
+
+def stamp_sub_agent(agent: SubAgent) -> bool:
+    """The definition's version (spec §3.6) — see skills.stamp_skill."""
+    from app.toolschema import stamp_definition, sub_agent_definition_fields
+
+    return stamp_definition(
+        agent,
+        sub_agent_definition_fields(
+            description=agent.description,
+            persona=agent.persona,
+            model=agent.model,
+            model_params=agent.model_params,
+            workflow=agent.workflow,
+            native_ref=agent.native_ref,
+        ),
+    )
 
 
 @router.post("/check-overlap", response_model=OverlapCheckOut)
@@ -136,6 +154,7 @@ async def patch_sub_agent(agent_id: UUID, body: SubAgentPatch, session: SessionD
         agent.skills = await _validate_and_resolve(session, changes["workflow"])
     for f, v in changes.items():
         setattr(agent, f, v)
+    stamp_sub_agent(agent)
     await session.commit()
     await session.refresh(agent)
     await get_cache().invalidate("sub_agents")

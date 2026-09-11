@@ -28,6 +28,12 @@ async def _target_snapshot(dataset: EvalDataset) -> dict[str, Any]:
     cache = get_cache()
     if dataset.level == "skill":
         return dict(await cache.skill_by_id(str(dataset.target_id)) or {})
+    # the definition the eval actually runs (spec §15 "reproducible against
+    # the exact definition evaluated"): the assembled snapshot with every
+    # skill's persona, instructions and bound tools, not only the workflow
+    snapshot = await cache.sub_agent_snapshot(str(dataset.target_id))
+    if snapshot is not None:
+        return dict(snapshot)
     return dict(await cache.sub_agent_by_id(str(dataset.target_id)) or {})
 
 
@@ -91,13 +97,28 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
                 raise RuntimeError("eval_run vanished mid-operation")
             eval_run.total_cases = len(cases)
         settings = await load_settings_snapshot()
+        from app.evals.grade import _judge_model
+        from app.orchestrator.snapshot import prompt_hashes
+
+        target_snapshot = await _target_snapshot(dataset)
+        judge_ref, _judge = await _judge_model()
+        target_model = str(
+            (target_snapshot.get("sub_agent") or {}).get("model")
+            or target_snapshot.get("model")
+            or settings.get("default_model")
+            or ""
+        )
         eval_run.config_snapshot = {
-            "settings": {
-                k: v
-                for k, v in settings.items()
-                if isinstance(v, str | int | float | bool | type(None))
-            },
-            "target": await _target_snapshot(dataset),
+            # every setting, structured ones included (model params, prices,
+            # quarantine kinds): the knobs that shaped the scores
+            "settings": dict(settings),
+            "prompts": prompt_hashes(),
+            "target": target_snapshot,
+            # the judge that graded, and whether it is the model under test
+            # grading itself (review round 2: said on the record, not only
+            # in the Settings hint)
+            "judge_model": judge_ref,
+            "judge_is_target_model": judge_ref == target_model,
             "level": dataset.level,
             "target_id": str(dataset.target_id),
         }

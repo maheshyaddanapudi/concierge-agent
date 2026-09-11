@@ -35,6 +35,7 @@ not wanted. `publish.mjs` never publishes a stage that has a `zz-failure.png`.
 | `25`–`32` | memory, ambient, A2A, configuration hardening, pursuit, salience, salience decisions, durable forgetting |
 | `33`–`34` | evals; the builtin auth provider in the UI (run by `prod/m34-auth.sh`) |
 | `35` | tool schema drift: the seeded stub server renames a parameter under a live run — badge, banner, acknowledge, the trace's pinned version, the policy toggle, quarantine |
+| `36` | the hardening wave: operator description vs re-ingest, the trace's pinned names / versions / format step, the Snapshot vs registry panel before and after a definition edit, the unavailable-bound-tool badge, the judges' own roles in Settings |
 
 Some stages need host-side counterparts, reached from the containers at the
 docker bridge gateway (`172.18.0.1` on a default compose network):
@@ -75,5 +76,6 @@ use `docker compose` with the caller's `COMPOSE_FILE` / profile environment.
 | `m56-ceremony.sh`, `m56-addendum.sh` | the §14 ceremony steps 1–11 through the API with the UI screenshotted per step |
 | `perf-record.sh` | the performance record (api, runs-scale, chat, sse) |
 | `schema-drift.sh` | tool schema drift (spec §3.2): the stub server renames a parameter under a live run; the log line, the metric, the versioned row, the pinned tool-call step and snapshot, quarantine and acknowledgement through the API |
+| `hardening-wave.sh` | the hardening wave through the API: operator description surviving a re-ingest, tool_key renames refused (sanitized-name collision, skill mention), an MCP config edit hashed + logged + reconnected at once, definition versions bumping on edits not toggles, a run's pinned settings / prompts / context / catalog slices, the format step, the cost stamped and unmoved by a price change, the eval judge and overlap-audit settings validated |
 | `fixes-hitl-deny.sh` | the campaign's finding 1 re-verified: a gated sub agent denied with a note through the API, the steps and the answer that must report the refusal (`ACC_AGENT` names the agent; default `site-reporter`) |
 | `fixes-ambient-toggle.sh` | the campaign's finding 2 re-verified: `ambient_enabled` off→on cycles (one-second and held for a tick), then the lease, gauge, log line and a tier-0 probe flush after each |

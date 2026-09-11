@@ -157,7 +157,14 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
     return {
         "status": "proposed",
         "intent_id": str(intent.id),
-        "interpretation": out.echo,
+        # the criterion the judge will actually apply rides with the echo,
+        # so the human confirms the predicate, not only a paraphrase of it
+        "interpretation": (
+            f"{out.echo} (judged against: {out.semantic_predicate})"
+            if out.semantic_predicate
+            else out.echo
+        ),
+        "semantic_predicate": out.semantic_predicate,
         "compiled": compiled,
         "note": "ask the user to confirm, then call ambient.confirm_watch with this intent_id",
     }

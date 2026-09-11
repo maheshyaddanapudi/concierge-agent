@@ -26,11 +26,17 @@ from a2a.client import A2ACardResolver, Client, ClientConfig, ClientFactory
 from a2a.types import AgentCard
 from sqlalchemy import select
 
-from app import egress
+from app import egress, obs
 from app.a2a.auth import AgentCredentialService, ConciergeAuthInterceptor, scheme_supported
 from app.db import get_session_factory
 from app.models import RemoteAgent, Tool
-from app.toolschema import apply_schema, schema_fingerprint
+from app.toolschema import (
+    apply_description,
+    apply_schema,
+    definition_fingerprint,
+    schema_fingerprint,
+    text_fingerprint,
+)
 
 logger = structlog.get_logger("a2a")
 
@@ -145,8 +151,11 @@ class A2AManager:
         resolver = A2ACardResolver(self._http, base, agent_card_path=path)
         return await resolver.get_agent_card()
 
-    async def refresh_agent(self, agent_id: UUID) -> None:
-        """(Re)fetch the card, project schemes, ingest skills, set status."""
+    async def refresh_agent(self, agent_id: UUID, *, activate: bool = False) -> None:
+        """(Re)fetch the card, project schemes, ingest skills, set status.
+        `activate` is registration's first fetch: the row is born inactive
+        and a good card makes it active; every later fetch recovers an
+        ERROR agent only — an operator's `inactive` is theirs to undo."""
         async with get_session_factory()() as db:
             agent = await db.get(RemoteAgent, agent_id)
             if agent is None or agent.deleted_at is not None:
@@ -169,10 +178,37 @@ class A2AManager:
             agent = await db.get(RemoteAgent, agent_id)
             if agent is None or agent.deleted_at is not None:
                 return
-            agent.card = card.model_dump(mode="json", by_alias=True, exclude_none=True)
+            dumped = card.model_dump(mode="json", by_alias=True, exclude_none=True)
+            # hardening wave: a card that changed under a refresh (endpoint,
+            # schemes, skills, anything) is versioned, logged and counted —
+            # the client built from it moves with it, never silently
+            new_hash = definition_fingerprint(dumped)
+            if agent.card_hash is not None and new_hash != agent.card_hash:
+                previous = agent.card or {}
+                changed_keys = sorted(
+                    k for k in set(previous) | set(dumped) if previous.get(k) != dumped.get(k)
+                )
+                agent.card_version = int(agent.card_version or 1) + 1
+                obs.A2A_CARD_CHANGES.inc()
+                logger.warning(
+                    "a2a_card_changed",
+                    tier="a2a",
+                    kind="card_fetch",
+                    agent_id=str(agent_id),
+                    card_version=agent.card_version,
+                    changed_keys=changed_keys,
+                    previous_hash=agent.card_hash[:12],
+                    card_hash=new_hash[:12],
+                )
+            agent.card_hash = new_hash
+            agent.card = dumped
             agent.card_fetched_at = datetime.now(UTC)
             agent.auth_schemes = project_auth_schemes(card)
-            agent.status = "active"
+            # a fetch recovers an ERROR agent; an operator's `inactive` is
+            # theirs alone to undo (review round 2 — a refresh used to
+            # re-enable a disabled agent within one interval)
+            if agent.status == "error" or (activate and agent.status == "inactive"):
+                agent.status = "active"
             agent.last_error = None
             await db.commit()
         await self._ingest(agent_id, card)
@@ -197,15 +233,23 @@ class A2AManager:
                 ).scalars()
             }
             taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
+            # the LLM-facing name is the sanitized key: a new key that
+            # sanitizes like an existing one would bind first-wins and
+            # silently lose (the MCP ingest rule, mirrored — review round 2)
+            from app.factory.worker import sanitize_tool_name
+
+            taken_names = {sanitize_tool_name(k) for k in taken_keys}
             seen: set[str] = set()
+            changed_ids: list[str] = []
             for skill in card.skills:
                 seen.add(skill.id)
                 row = existing.get(skill.id)
                 if row is None:
                     key = f"{agent.name}.{skill.name}"
-                    if key in taken_keys:  # collision-safe (spec §3.2)
-                        key = f"{key}-{uuid4().hex[:6]}"
+                    if key in taken_keys or sanitize_tool_name(key) in taken_names:
+                        key = f"{key}-{uuid4().hex[:6]}"  # collision-safe (spec §3.2)
                     taken_keys.add(key)
+                    taken_names.add(sanitize_tool_name(key))
                     db.add(
                         Tool(
                             name=skill.name,
@@ -219,17 +263,33 @@ class A2AManager:
                             input_schema=A2A_TOOL_INPUT_SCHEMA,
                             schema_hash=schema_fingerprint(A2A_TOOL_INPUT_SCHEMA),
                             schema_version=1,
+                            description_hash=text_fingerprint(skill_description(skill)),
+                            ingest_state="present",
                         )
                     )
                 else:
-                    row.description = skill_description(skill)
+                    # MCP ingest_state semantics (M53) apply here too: only
+                    # the CARD's absence is undone by the skill's return —
+                    # an operator's disable or delete stays as set, and a
+                    # rewritten description is a logged change
+                    if apply_description(row, skill_description(skill), source="server"):
+                        changed_ids.append(str(row.id))
                     apply_schema(row, A2A_TOOL_INPUT_SCHEMA, policy="warn")
-                    row.status = "active"
-                    row.deleted_at = None
+                    if row.ingest_state == "missing" and row.deleted_at is None:
+                        row.status = "active"
+                    row.ingest_state = "present"
             for skill_id, row in existing.items():
-                if skill_id not in seen and row.status != "inactive":
-                    row.status = "inactive"  # removed skills marked inactive
+                if skill_id not in seen:
+                    if row.status == "active":
+                        row.status = "inactive"  # removed skills marked inactive
+                        row.ingest_state = "missing"
+                    elif row.ingest_state == "present":
+                        row.ingest_state = None
             await db.commit()
+        from app.retrieval import schedule_embedding
+
+        for tool_id in changed_ids:
+            schedule_embedding("tools", tool_id)
         from app.registry_cache import get_cache
 
         await get_cache().invalidate("tools")
@@ -261,7 +321,10 @@ class A2AManager:
                     agent_ids = list(
                         (
                             await db.execute(
-                                select(RemoteAgent.id).where(RemoteAgent.deleted_at.is_(None))
+                                select(RemoteAgent.id).where(
+                                    RemoteAgent.deleted_at.is_(None),
+                                    RemoteAgent.status != "inactive",  # disabled: left alone
+                                )
                             )
                         ).scalars()
                     )
@@ -276,6 +339,10 @@ class A2AManager:
             agent = await db.get(RemoteAgent, agent_id)
             if agent is None or agent.deleted_at is not None or agent.card is None:
                 raise RuntimeError(f"remote agent {agent_id} is not registered")
+            if agent.status == "inactive":
+                # the operator's disable is enforced at the call, not only
+                # shown on the page (review round 2)
+                raise RuntimeError(f"remote agent {agent.name!r} is disabled (status inactive)")
             card = AgentCard.model_validate(agent.card)
             credentials = dict(agent.credentials or {})
         service = AgentCredentialService(agent_id=str(agent_id), card=card, credentials=credentials)

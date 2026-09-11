@@ -64,10 +64,10 @@ async def _planner_model() -> Any:
         )
     from app.llm import ModelParams
 
-    return str(ref), get_model(str(ref), ModelParams.model_validate(raw) if raw else None)
+    return str(ref), get_model(str(ref), ModelParams.model_validate(raw) if raw else None), raw
 
 
-async def _aggregator_model() -> tuple[str, Any]:
+async def _aggregator_model() -> tuple[str, Any, Any]:
     from app.orchestrator.context import ambient_default_override
 
     async with get_session_factory()() as session:
@@ -81,7 +81,7 @@ async def _aggregator_model() -> tuple[str, Any]:
         )
     from app.llm import ModelParams
 
-    return str(ref), get_model(str(ref), ModelParams.model_validate(raw) if raw else None)
+    return str(ref), get_model(str(ref), ModelParams.model_validate(raw) if raw else None), raw
 
 
 async def plan_node(state: OrchestratorState) -> dict[str, Any]:
@@ -89,8 +89,10 @@ async def plan_node(state: OrchestratorState) -> dict[str, Any]:
     async with get_session_factory()() as session:
         max_steps = int(await get_setting(session, "max_plan_steps"))
         fallback_enabled = bool(await get_setting(session, "orchestrator_full_fallback_enabled"))
-    ref, model = await _planner_model()
-    step_id = await ctx.recorder.start_step("plan", tier="orchestrator", model=ref)
+    ref, model, params = await _planner_model()
+    step_id = await ctx.recorder.start_step(
+        "plan", tier="orchestrator", model=ref, model_params=params or None
+    )
     try:
         async with get_session_factory()() as session:
             plan, raw_outputs, usage = await run_planner(
@@ -177,17 +179,22 @@ async def resolve_node(state: OrchestratorState) -> dict[str, Any]:
     result: dict[str, Any] = {"resolutions": resolutions}
     if outputs:
         result["outputs"] = outputs
-    # snapshot frozen at dispatch (spec §3.6)
-    async with get_session_factory()() as session:
-        run = await session.get(Run, ctx.run_id)
-        if run is not None:
-            run.snapshot = {
-                entry_id: {k: v for k, v in res.items() if k != "payload"}
-                | {"payload_kinds": sorted((res.get("payload") or {}).keys())}
-                | {"payload": res.get("payload")}
-                for entry_id, res in resolutions.items()
-            }
-            await session.commit()
+    # snapshot frozen at dispatch (spec §3.6) — merged onto what the run
+    # already pinned at start (settings, prompts, build): a wholesale write
+    # here dropped those keys on every routed graph run (caught live by
+    # stage 36, not by the fake-provider suite whose graph runs answered
+    # directly)
+    from app.orchestrator.snapshot import write_snapshot
+
+    await write_snapshot(
+        ctx.run_id,
+        {
+            entry_id: {k: v for k, v in res.items() if k != "payload"}
+            | {"payload_kinds": sorted((res.get("payload") or {}).keys())}
+            | {"payload": res.get("payload")}
+            for entry_id, res in resolutions.items()
+        },
+    )
     return result
 
 
@@ -339,8 +346,10 @@ async def aggregate_node(state: OrchestratorState) -> dict[str, Any]:
         answer = str(state["direct_answer"])
         ctx.recorder.emit("token", {"text": answer})
         return {"answer": answer}
-    ref, model = await _aggregator_model()
-    step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator", model=ref)
+    ref, model, params = await _aggregator_model()
+    step_id = await ctx.recorder.start_step(
+        "aggregate", tier="orchestrator", model=ref, model_params=params or None
+    )
     outputs = dict(state.get("outputs", {}))
     if state.get("direct_answer"):
         # the planner answered part of the request itself — merge it with

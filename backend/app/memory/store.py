@@ -213,6 +213,12 @@ async def remember(
     review_note: str | None = None
     if kind == "instruction" and (source in {"extracted", "inferred"} or via_tool):
         status = "quarantined"  # behavior-changing writes gate through review
+    elif source == "inferred":
+        # hardening wave: a reflection's generalization is the model's own
+        # conclusion about the model's own extractions — it reaches the
+        # injection path only after a human has read it (spec §16.2)
+        status = "quarantined"
+        review_note = "inferred by reflection — review before it is injected"
     elif source in MACHINE_SOURCES:
         # M47 §16.2: a kind the extraction tuner routed through review —
         # machine writes only; the human's own words always land directly

@@ -161,6 +161,7 @@ async def build_memory_block(
         stats.tokens = max(len(block) // _CHARS_PER_TOKEN, 1)
         stats.memory_ids = [str(h.memory.id) for h in hits] + [str(m.id) for m in pinned]
         _record_injected(stats.memory_ids)
+        _log_context(surface, stats.memory_ids, block)
         _observe(stats)
         return block, stats
     except Exception as exc:  # noqa: BLE001 — memory never breaks a run
@@ -196,6 +197,20 @@ def render_memory_block(
         episodes_section=untrusted.neutralize(episodes_section),
         communities_section=untrusted.neutralize(communities_section),
     )
+
+
+def _log_context(surface: str, memory_ids: list[str], block: str) -> None:
+    """Spec §3.6: the rendered block itself onto the run's context log —
+    the memories it came from are superseded, compacted or forgotten
+    later, and a plan that followed one must still be explainable."""
+    try:
+        from app.orchestrator.context import get_run_context
+
+        ctx = get_run_context()
+        if ctx is not None:
+            ctx.log_context(f"memory:{surface}", memory_ids=list(memory_ids), block=block[:6000])
+    except Exception:  # noqa: BLE001, S110 - bookkeeping only
+        pass
 
 
 def _record_injected(memory_ids: list[str]) -> None:

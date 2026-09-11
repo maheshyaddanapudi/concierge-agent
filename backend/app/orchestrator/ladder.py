@@ -43,6 +43,10 @@ class Resolution:
     entity_id: str | None
     entity_name: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # the version of the definition resolved (a tool's schema version, a
+    # skill's or sub agent's definition version) — pinned on the route step
+    definition_version: int | None = None
+    definition_hash: str | None = None
 
     def as_route(self) -> dict[str, Any]:
         return {
@@ -51,6 +55,8 @@ class Resolution:
             "entity_name": self.entity_name,
             "tier": self.tier,
             "kind": self.kind,
+            "definition_version": self.definition_version,
+            "definition_hash": self.definition_hash,
         }
 
 
@@ -84,6 +90,8 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                 "schema_hash": tool.get("schema_hash"),
                 "input_schema": tool.get("input_schema"),
             },
+            definition_version=tool.get("schema_version"),
+            definition_hash=tool.get("schema_hash"),
         )
 
     if ctx_type == "direct_skill":
@@ -99,6 +107,8 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                 entity_id=skill["id"],
                 entity_name=skill["name"],
                 payload={"skill": skill},
+                definition_version=skill.get("definition_version"),
+                definition_hash=skill.get("definition_hash"),
             )
         agents = await cache.sub_agents()
         # rung 2: native sub agent whose covers_skill_ids includes the skill
@@ -111,7 +121,9 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                     source=agent["source"],
                     entity_id=agent["id"],
                     entity_name=agent["name"],
-                    payload={"native_name": agent["name"]},
+                    payload={"native_name": agent["name"], "sub_agent": _agent_pin(agent)},
+                    definition_version=agent.get("definition_version"),
+                    definition_hash=agent.get("definition_hash"),
                 )
         # rung 3: first (created_at order) custom sub agent using the skill
         for agent in agents:
@@ -125,6 +137,8 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                     entity_id=agent["id"],
                     entity_name=agent["name"],
                     payload={"snapshot": snap},
+                    definition_version=agent.get("definition_version"),
+                    definition_hash=agent.get("definition_hash"),
                 )
         # rung 4: ephemeral dynamic worker
         return await _dynamic_resolution([skill["id"]])
@@ -141,7 +155,9 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                 source=agent_rec["source"],
                 entity_id=agent_rec["id"],
                 entity_name=agent_rec["name"],
-                payload={"native_name": agent_rec["name"]},
+                payload={"native_name": agent_rec["name"], "sub_agent": _agent_pin(agent_rec)},
+                definition_version=agent_rec.get("definition_version"),
+                definition_hash=agent_rec.get("definition_hash"),
             )
         snap = await cache.sub_agent_snapshot(agent_rec["id"])
         return Resolution(
@@ -152,12 +168,26 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
             entity_id=agent_rec["id"],
             entity_name=agent_rec["name"],
             payload={"snapshot": snap},
+            definition_version=agent_rec.get("definition_version"),
+            definition_hash=agent_rec.get("definition_hash"),
         )
 
     if ctx_type == "spin_worker":
         return await _dynamic_resolution([str(s) for s in capability.get("skill_ids") or []])
 
     raise ResolutionError(f"unknown capability type {ctx_type!r}")
+
+
+def _agent_pin(agent: dict[str, Any]) -> dict[str, Any]:
+    """What a native sub agent's frozen payload can say about its definition
+    (its graph is code, so the card and its version are the definition)."""
+    return {
+        "id": agent["id"],
+        "name": agent["name"],
+        "native_ref": agent.get("native_ref"),
+        "definition_version": agent.get("definition_version"),
+        "definition_hash": agent.get("definition_hash"),
+    }
 
 
 async def _dynamic_resolution(skill_ids: list[str]) -> Resolution:
@@ -239,6 +269,7 @@ async def run_inline_skill(
 
     ctx = require_run_context()
     step_id: UUID | None = None
+    model_ref, params = await resolve_node_model(skill_snapshot, {})
     if record:
         step_id = await ctx.recorder.start_step(
             "skill",
@@ -250,11 +281,15 @@ async def run_inline_skill(
             parent_step_id=parent_step_id,
             input={"task": task},
             emit_dispatch=True,
+            # the definition and the model the loop ran with, on the row
+            model=model_ref,
+            model_params=params.model_dump(exclude_none=True) if params else None,
+            entity_version=skill_snapshot.get("definition_version"),
+            entity_hash=skill_snapshot.get("definition_hash"),
         )
     try:
         from app.registry_cache import get_cache
 
-        model_ref, params = await resolve_node_model(skill_snapshot, {})
         model = get_model(model_ref, params)
         max_iter = int(
             skill_snapshot.get("max_tool_iterations")
@@ -455,6 +490,11 @@ async def invoke_worker_with_hitl(
                 parent_step_id=parent_step_id,
                 model=out.get("model") if isinstance(out, dict) else None,
                 effort=out.get("effort") if isinstance(out, dict) else None,
+                # the skill definition this node ran and the params it ran
+                # with, pinned on the row (spec §3.6)
+                model_params=out.get("model_params") if isinstance(out, dict) else None,
+                entity_version=out.get("definition_version") if isinstance(out, dict) else None,
+                entity_hash=out.get("definition_hash") if isinstance(out, dict) else None,
             )
             await ctx.recorder.finish_step(
                 step_id,
@@ -608,6 +648,10 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
 
     step_id = await find_running_dispatch(ctx.run_id, entry_id)
     if step_id is None:
+        definition = (resolution.payload.get("snapshot") or {}).get("sub_agent") or {
+            "definition_version": resolution.definition_version,
+            "definition_hash": resolution.definition_hash,
+        }
         step_id = await ctx.recorder.start_step(
             "skill",
             tier="sub_agent",
@@ -619,6 +663,9 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
             node_id=entry_id,
             input={"task": task},
             emit_dispatch=True,
+            # the agent definition's version this dispatch ran (spec §3.6)
+            entity_version=definition.get("definition_version"),
+            entity_hash=definition.get("definition_hash"),
         )
     try:
         checkpointer = await get_checkpointer()

@@ -108,7 +108,7 @@ async def create_agent(body: RemoteAgentCreate, session: SessionDep) -> RemoteAg
     )
     session.add(agent)
     await session.commit()
-    await manager.refresh_agent(agent.id)
+    await manager.refresh_agent(agent.id, activate=True)
     await session.refresh(agent)
     counts = await _tool_counts(session, [agent.id])
     return _to_out(agent, counts.get(agent.id, 0))

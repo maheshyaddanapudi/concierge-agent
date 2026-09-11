@@ -91,6 +91,15 @@ async def create_run(
                 raise ValueError(f"conversation {conversation_id} not found")
             if not visible_to(existing, user_id):
                 raise ValueError(f"conversation {conversation_id} not found")  # invisible
+            # spec §16.5: the next turn settles the previous run's deferred
+            # exemplar vote — a correction downvotes, anything else upvotes
+            if kind == "chat":
+                from app.memory.procedural import judge_pending_vote
+
+                try:
+                    await judge_pending_vote(conversation_id, message)
+                except Exception as exc:  # noqa: BLE001 — bookkeeping never blocks a chat
+                    logger.warning("exemplar_vote_settle_failed", error=str(exc))
         settings = await load_settings_snapshot()
         admission.check_admission(settings, shed_if_full=shed_if_full)
         await enforce_spend_ceiling(settings, kind)
@@ -350,7 +359,13 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         _structlog.contextvars.bind_contextvars(eval=True)
     # §17.4: an ambient run carries its routine's narrowed registry projection
     ambient_allowlist: dict[str, Any] | None = None
-    if trigger and trigger.get("routine_id"):
+    pinned_routine = (trigger or {}).get("routine") if trigger else None
+    if isinstance(pinned_routine, dict) and "allowlist" in pinned_routine:
+        # spec §3.6: the projection the run executes under is the one its
+        # record shows — the routine as it was when the fire was prepared,
+        # not the live row (edited or deleted while the run sat queued)
+        ambient_allowlist = pinned_routine.get("allowlist")
+    elif trigger and trigger.get("routine_id"):
         from app.models import Routine
 
         async with get_session_factory()() as session:
@@ -376,12 +391,37 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         ),
     )
     set_run_context(ctx)
+    from app.orchestrator.snapshot import (
+        append_snapshot_list,
+        run_settings_snapshot,
+        write_snapshot,
+    )
+
     if resume is None:
         obs.RUNS_TOTAL.labels(mode=mode, status="started").inc()
         recorder.emit("run_status", {"status": "running"})
+        # spec §3.6 (hardening wave): the settings that shape this run, the
+        # prompt files' hashes and the build, frozen on the run at start —
+        # best-effort, like every other pin: the record never fails the run
+        try:
+            await write_snapshot(run_id, run_settings_snapshot(settings))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settings_snapshot_failed", run_id=str(run_id), error=str(exc))
     else:
+        ctx.resumed = True
         await _set_status(run_id, "running")
         recorder.emit("run_status", {"status": "running"})
+        # a resume runs under the settings of NOW, which may differ from the
+        # start-time pin: recorded as such, so the trace says which half
+        # ran under what
+        try:
+            await append_snapshot_list(
+                run_id,
+                "resumes",
+                {"at": datetime.now(UTC).isoformat(), **run_settings_snapshot(settings)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("resume_snapshot_failed", run_id=str(run_id), error=str(exc))
     started = datetime.now(UTC)
     try:
         if mode == "direct":
@@ -400,6 +440,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
         else:
             outcome = await _run_graph(ctx, task_text, conversation_id, resume)
+        await _pin_context(ctx)
         if outcome["paused"]:
             await _set_status(run_id, "paused_hitl")
             recorder.emit("run_status", {"status": "paused_hitl"})
@@ -408,6 +449,8 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         totals = {"input_tokens": 0, "output_tokens": 0}
         tool_charts = await _collect_tool_charts(run_id)
         answer_ui = await _maybe_format_answer(ctx, task_text, answer, tool_charts)
+        from app.cost import stamp_run_cost
+
         async with get_session_factory()() as session:
             run = await session.get(Run, run_id)
             if run is not None:
@@ -416,6 +459,9 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
                 run.answer_ui = answer_ui
                 run.charts = tool_charts or None
                 run.finished_at = datetime.now(UTC)
+                # the cost with the prices of this moment, stamped: a later
+                # price change never rewrites a finished run
+                await stamp_run_cost(session, run, settings)
                 await session.commit()
                 totals = {
                     "input_tokens": run.total_input_tokens,
@@ -448,10 +494,32 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         )
         raise
     except RunFailed as exc:
+        await _pin_context(ctx)
         await _finalize_failure(run_id, mode, "failed", str(exc))
     except Exception as exc:  # noqa: BLE001 - all failures surface in chat
         logger.exception("run_failed", run_id=str(run_id))
+        await _pin_context(ctx)
         await _finalize_failure(run_id, mode, "failed", _describe_failure(exc, settings))
+
+
+async def _pin_context(ctx: RunContext) -> None:
+    """Spec §3.6 (hardening wave): what every surface was actually told
+    (memory blocks, exemplars, the history window) and what every model
+    call could see, onto the run's snapshot — read live at run time, and
+    superseded, compacted or deleted afterwards. Best-effort, never fatal."""
+    if not ctx.context_log and not ctx.catalog_calls:
+        return
+    try:
+        from app.orchestrator.snapshot import append_snapshot_list
+
+        # appended, never replaced: a HITL resume starts a fresh context
+        # whose lists must land NEXT TO what the pre-pause half recorded
+        if ctx.context_log:
+            await append_snapshot_list(ctx.run_id, "context", *ctx.context_log, cap=100)
+        if ctx.catalog_calls:
+            await append_snapshot_list(ctx.run_id, "catalog_calls", *ctx.catalog_calls, cap=200)
+    except Exception as exc:  # noqa: BLE001 — the record must never fail the run
+        logger.warning("context_snapshot_failed", run_id=str(ctx.run_id), error=str(exc))
 
 
 async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
@@ -504,6 +572,19 @@ async def _maybe_format_answer(
     raw_params = ctx.settings.get("formatter_model_params")
     params = ModelParams.model_validate(raw_params) if raw_params else None
     presentation = str(ctx.settings.get("formatter_presentation") or "a2ui_first")
+    # hardening wave: the formatter is a recorded step like every other
+    # model call — model, params, the repair taken, the artifact's shape
+    step_id = await ctx.recorder.start_step(
+        "format",
+        tier="orchestrator",
+        model=ref,
+        model_params=params.model_dump(exclude_none=True) if params else None,
+        input={
+            "presentation": presentation,
+            "charts_enabled": bool(ctx.settings.get("answer_ui_charts_enabled", True)),
+            "tool_charts": len(tool_charts),
+        },
+    )
     payload, usage = await generate_answer_ui(
         ref,
         task,
@@ -513,18 +594,23 @@ async def _maybe_format_answer(
         presentation=presentation,
         tool_charts=tool_charts,
     )
-    if usage["input_tokens"] or usage["output_tokens"]:
-        async with get_session_factory()() as session:
-            # M51: atomic in-database increment — never read-modify-write
-            await session.execute(
-                update(Run)
-                .where(Run.id == ctx.run_id)
-                .values(
-                    total_input_tokens=Run.total_input_tokens + usage["input_tokens"],
-                    total_output_tokens=Run.total_output_tokens + usage["output_tokens"],
-                )
-            )
-            await session.commit()
+    formatter_meta = (payload or {}).get("formatter") or {}
+    await ctx.recorder.finish_step(
+        step_id,
+        status="completed" if payload else "failed",
+        output={
+            "artifact": payload is not None,
+            "coverage": (payload or {}).get("coverage"),
+            "charts": len((payload or {}).get("charts") or []),
+            "attempts": formatter_meta.get("attempts"),
+            "repair": formatter_meta.get("repair"),
+        },
+        error=None if payload else "formatter produced no artifact (fail-open)",
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+    )
+    # the step's finish rolled the usage onto the run totals (recorder);
+    # adding it here again double-counted the formatter (review round 2)
     return payload
 
 
@@ -556,6 +642,15 @@ async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) 
             run.status = status
             run.error = message
             run.finished_at = datetime.now(UTC)
+            # a failed or cancelled run spent tokens too: stamped with the
+            # prices of this moment like a completed one (review round 2),
+            # best-effort
+            try:
+                from app.cost import stamp_run_cost
+
+                await stamp_run_cost(session, run, await load_settings_snapshot())
+            except Exception as exc:  # noqa: BLE001 — the stamp never blocks the failure
+                logger.warning("cost_stamp_failed", run_id=str(run_id), error=str(exc))
             await session.commit()
             mode = run.orchestrator_mode or mode
         await session.execute(

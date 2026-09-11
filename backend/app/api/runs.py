@@ -56,6 +56,8 @@ def _step_out(step: RunStep) -> dict[str, Any]:
         # registry as it was, not as it is
         "entity_version": step.entity_version,
         "entity_hash": step.entity_hash,
+        "entity_name": step.entity_name,
+        "model_params": step.model_params,
         "input_tokens": step.input_tokens,
         "output_tokens": step.output_tokens,
         "status": step.status,
@@ -95,10 +97,20 @@ def _run_out(
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "total_input_tokens": run.total_input_tokens,
         "total_output_tokens": run.total_output_tokens,
-        # M53 cost model: priced from the usage above; null when a model in
-        # play has no price (reported, never guessed)
-        "cost_usd": cost["cost_usd"] if cost else None,
-        "cost_priced": bool(cost["cost_priced"]) if cost else False,
+        # M53 cost model: the cost STAMPED at finish with the prices of that
+        # moment (hardening wave — a later price change never rewrites a
+        # finished run); an unfinished or pre-wave run is priced live from
+        # its usage; null when a model in play has no price (reported,
+        # never guessed)
+        "cost_usd": run.cost_usd
+        if run.cost_priced is not None
+        else (cost["cost_usd"] if cost else None),
+        "cost_priced": (
+            bool(run.cost_priced)
+            if run.cost_priced is not None
+            else (bool(cost["cost_priced"]) if cost else False)
+        ),
+        "price_snapshot": run.price_snapshot,
     }
     if with_steps:
         data["steps"] = [_step_out(s) for s in run.steps]

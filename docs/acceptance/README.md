@@ -45,6 +45,7 @@ this campaign and what became of it. `report.md` holds the findings.
 | `33-evals` | a three-case dataset (exact / contains / llm_judge) uploaded and graded live, every case an ordinary run |
 | `34-auth-builtin` | the login gate, admin signed in with the bootstrap password, a run under identity, a member's empty Runs page (driven by `prod/m34-auth.sh`) |
 | `35-schema-drift` | tool schema drift (spec §3.2) and the pinned registry (§3.6): the stub server renames `echo`'s parameter under a live run — the Tools page badge, the drawer banner and its Acknowledge, the trace pinning the schema version before and after, the Settings policy toggle and the overlap judge's own model role, then the same change quarantined and re-enabled from the drawer |
+| `36-hardening-wave` | the hardening wave (spec §3.2, §3.6, §8.3, §8.6, §8.7): an operator's tool description surviving a re-ingest of the stub server, a run whose trace names its entities and definition versions with the formatter as a step, the **Snapshot vs registry** panel reading all-same then `changed` after the skill is edited, the Skills list flagging a bound tool taken inactive, and Settings with the registry overlap audit gate, the eval judge's own model and the salience-judge hint |
 
 ## Production-hardening drills
 

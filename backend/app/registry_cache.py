@@ -30,6 +30,11 @@ from sqlalchemy import select
 
 from app.config import get_config
 from app.models import Skill, SubAgent, Tool
+from app.toolschema import (
+    definition_fingerprint,
+    skill_definition_fields,
+    sub_agent_definition_fields,
+)
 
 logger = structlog.get_logger("registry_cache")
 
@@ -75,6 +80,11 @@ def _tool_record(t: Tool) -> dict[str, Any]:
         "schema_version": t.schema_version,
         "schema_changed_at": _iso(t.schema_changed_at),
         "embedding": getattr(t, "embedding", None),
+        # the model+text the vector was built from: rank time drops a vector
+        # another embedding model produced (hardening wave)
+        "embedding_hash": getattr(t, "embedding_hash", None),
+        "description_hash": t.description_hash,
+        "description_source": t.description_source,
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),
     }
@@ -96,8 +106,25 @@ def _skill_record(s: Skill) -> dict[str, Any]:
         "direct_exposure": s.direct_exposure,
         "max_tool_iterations": s.max_tool_iterations,
         "embedding": getattr(s, "embedding", None),
+        "embedding_hash": getattr(s, "embedding_hash", None),
         "created_at": _iso(s.created_at),
         "updated_at": _iso(s.updated_at),
+        # the definition's version (spec §3.6): a row from before the
+        # hardening wave has no stored hash — computed here so a read never
+        # sees None; its version stays 1 until a stamped write
+        "definition_hash": s.definition_hash
+        or definition_fingerprint(
+            skill_definition_fields(
+                description=s.description,
+                persona=s.persona,
+                instructions=s.instructions,
+                model=s.model,
+                model_params=s.model_params,
+                max_tool_iterations=s.max_tool_iterations,
+                tool_ids=[t.id for t in s.tools if t.deleted_at is None],
+            )
+        ),
+        "definition_version": s.definition_version or 1,
         "tools": [
             {
                 "id": str(t.id),
@@ -137,8 +164,21 @@ def _sub_agent_record(a: SubAgent) -> dict[str, Any]:
         "skill_ids": [str(s.id) for s in a.skills],
         "skill_names": [s.name for s in a.skills],
         "embedding": getattr(a, "embedding", None),
+        "embedding_hash": getattr(a, "embedding_hash", None),
         "created_at": _iso(a.created_at),
         "updated_at": _iso(a.updated_at),
+        "definition_hash": a.definition_hash
+        or definition_fingerprint(
+            sub_agent_definition_fields(
+                description=a.description,
+                persona=a.persona,
+                model=a.model,
+                model_params=a.model_params,
+                workflow=a.workflow,
+                native_ref=a.native_ref,
+            )
+        ),
+        "definition_version": a.definition_version or 1,
     }
 
 
@@ -534,6 +574,8 @@ class RegistryCache:
                 "kind": agent["kind"],
                 "source": agent["source"],
                 "updated_at": agent["updated_at"],
+                "definition_hash": agent.get("definition_hash"),
+                "definition_version": agent.get("definition_version"),
             },
             "workflow": workflow,
             "skills": skills,

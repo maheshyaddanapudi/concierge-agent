@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, RegistryRecord
@@ -38,6 +38,11 @@ class RemoteAgent(RegistryRecord):
     # may use the 'env:VAR_NAME' indirection; never serialized outward
     credentials: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    # the card's version: a hash of the card as last fetched, bumped when a
+    # refresh brings a different one (logged and counted — a counterparty
+    # moving its endpoint, schemes or skills is never adopted silently)
+    card_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    card_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class A2ATask(Base):

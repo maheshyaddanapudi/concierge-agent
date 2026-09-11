@@ -77,6 +77,34 @@ class AgenticLoopContext:
 
 
 ToolsMode = Literal["scoped", "exposed", "full_catalog"]
+# tools a loop carries that are not registry tools — never "unavailable"
+KNOWN_LOOP_TOOLS = {"spin_worker", "use_full_catalog", "write_todos"}
+# the names the sibling registry projections attach per model call
+# (skills, sub agent dispatch): theirs to resolve, not the tools registry's
+SIBLING_TOOL_PREFIXES = ("use_skill_", "dispatch_")
+
+
+def log_catalog_call(kind: str, mode: str, shown: list[str]) -> None:
+    """Spec §3.6: what this model call could see — the shown ids per call
+    and registry, bounded, onto the run's snapshot at the end. Without it
+    a catalog frozen at start says nothing about which records ranking or
+    an allowlist left out of a given call. A call shown the same slice as
+    the previous one of its kind is not repeated."""
+    ctx = get_run_context()
+    if ctx is None:
+        return
+    last = next((c for c in reversed(ctx.catalog_calls) if c.get("kind") == kind), None)
+    if last is not None and last.get("shown") == shown and last.get("mode") == mode:
+        last["repeats"] = int(last.get("repeats") or 1) + 1
+        return
+    entry = {
+        "step_id": str(CURRENT_STEP_ID.get()) if CURRENT_STEP_ID.get() else None,
+        "kind": kind,
+        "mode": mode,
+        "shown": shown,
+    }
+    if len(ctx.catalog_calls) < 200:
+        ctx.catalog_calls.append(entry)
 
 
 async def _record_tool_call(
@@ -152,6 +180,10 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         self._strict_tool_errors = strict_tool_errors
         self._current: dict[str, BaseTool] = {}
         self._meta: dict[str, dict[str, Any]] = {}
+        self._reported_missing: set[str] = set()
+        # sanitized name → reason, for bound tools that did not resolve
+        self._missing_names: dict[str, str] = {}
+        self._last_shown: list[str] = []
 
     def _effective_mode(self) -> ToolsMode:
         ctx = get_run_context()
@@ -160,7 +192,7 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         return self._mode
 
     async def _resolve(self) -> list[BaseTool]:
-        from app.factory.worker import materialize_tool, sanitize_tool_name
+        from app.factory.worker import materialize_tool
         from app.registry_cache import get_cache
         from app.retrieval import apply_ambient_allowlist, apply_retrieval
 
@@ -178,36 +210,135 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
                 # catalog only — scoped loops are pinned contracts, full-catalog
                 # is the deliberate escape hatch past ranking
                 records, _dropped = await apply_retrieval(records, kind="tools")
-        tools: list[BaseTool] = []
+        if mode == "scoped":
+            # spec §3.3 "binding = availability, strictly": a bound tool that
+            # did not resolve (inactive, quarantined, deleted, dropped by its
+            # server) is a tool the instructions still name — say so, count
+            # it, and put it on the trace instead of letting the loop run
+            # half-blind and silent
+            resolved_ids = {str(r["id"]) for r in records}
+            missing = [t for t in self._scoped_tool_ids if str(t) not in resolved_ids]
+            if missing and set(missing) != self._reported_missing:
+                self._reported_missing = set(missing)
+                # the reason per tool, from the row the cache still holds
+                # (inactive rows stay cached; a deleted one is gone)
+                from app.factory.worker import sanitize_tool_name
+
+                reasons: dict[str, str] = {}
+                self._missing_names = {}
+                for tool_id in missing:
+                    row = await cache.tool_by_id(tool_id)
+                    if row is None:
+                        reason = "deleted"
+                    elif row.get("ingest_state") == "changed":
+                        reason = "quarantined"
+                    elif row.get("ingest_state") == "missing":
+                        reason = "missing"
+                    else:
+                        reason = str(row.get("status") or "inactive")
+                    reasons[str(tool_id)] = reason
+                    if row is not None:
+                        self._missing_names[sanitize_tool_name(row["tool_key"])] = reason
+                    obs.SKILL_TOOL_UNAVAILABLE.labels(reason=reason).inc()
+                logger.warning(
+                    "skill_bound_tool_unavailable",
+                    tier="skill",
+                    kind="bind",
+                    missing_tool_ids=missing,
+                    reasons=reasons,
+                    resolved=len(records),
+                )
+                ctx = get_run_context()
+                if ctx is not None:
+                    ctx.recorder.emit(
+                        "activity",
+                        {"label": f"skill: {len(missing)} bound tool(s) unavailable at bind time"},
+                    )
+                    # onto the stored run, not only the live stream: a loop
+                    # that never calls the missing tool still ran half-blind
+                    ctx.log_context(
+                        "skill_bind",
+                        step_id=str(CURRENT_STEP_ID.get()) if CURRENT_STEP_ID.get() else None,
+                        missing=reasons,
+                        resolved=sorted(resolved_ids),
+                    )
+        # sanitized names can collide even though tool_keys are unique —
+        # bind first-wins, because duplicate bound names are a provider
+        # error; the metadata recorded on a call is the BOUND tool's, never
+        # the skipped one's (the hardening wave: `_meta` used to be built
+        # from every record, last-wins, so a call ran tool A and was
+        # stamped with tool B's id, version and hash)
+        deduped: dict[str, BaseTool] = {}
+        meta: dict[str, dict[str, Any]] = {}
         for record in records:
             tool = materialize_tool(record)
-            if tool is not None:
-                tools.append(tool)
-        # sanitized names can collide even though tool_keys are unique —
-        # bind first-wins, because duplicate bound names are a provider error
-        deduped: dict[str, BaseTool] = {}
-        for t in tools:
-            if t.name in deduped:
-                logger.warning("tool_name_collision_skipped", name=t.name)
+            if tool is None:
                 continue
-            deduped[t.name] = t
-        tools = list(deduped.values())
-        self._current = deduped
-        self._meta = {
-            sanitize_tool_name(record["tool_key"]): {
+            if tool.name in deduped:
+                obs.TOOL_NAME_COLLISIONS.inc()
+                logger.warning(
+                    "tool_name_collision_skipped",
+                    name=tool.name,
+                    skipped_tool_key=record["tool_key"],
+                    bound_tool_id=meta[tool.name]["id"],
+                )
+                continue
+            deduped[tool.name] = tool
+            meta[tool.name] = {
                 "kind": record["kind"],
                 "source": record["source"],
                 "id": record["id"],
+                "tool_key": record["tool_key"],
                 "schema_version": record.get("schema_version"),
                 "schema_hash": record.get("schema_hash"),
             }
-            for record in records
-        }
-        return tools
+        self._current = deduped
+        self._meta = meta
+        self._last_shown = [str(r["id"]) for r in records]
+        return list(deduped.values())
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         tools = await self._resolve()
+        # the slice this MODEL CALL was shown (a tool-call replay resolves
+        # too, but is not a model call — review round 2)
+        log_catalog_call("tools", self._effective_mode(), self._last_shown)
         return await handler(request.override(tools=[*request.tools, *tools]))
+
+    async def _check_paused_schema(self, name: str, meta: dict[str, Any]) -> None:
+        """A HITL resume replays the interrupted tool call with arguments
+        the model produced against the schema of that moment; if the tool's
+        schema changed while the run was paused, say so on the log — the
+        step records the version it runs against now, the args are older."""
+        ctx = get_run_context()
+        if ctx is None or not meta.get("schema_hash"):
+            return
+        from sqlalchemy import select
+
+        from app.db import get_session_factory
+        from app.models import RunStep
+
+        async with get_session_factory()() as session:
+            prior = (
+                await session.execute(
+                    select(RunStep.entity_hash, RunStep.entity_version)
+                    .where(
+                        RunStep.run_id == ctx.run_id,
+                        RunStep.step_type == "tool_call",
+                        RunStep.node_id == name,
+                        RunStep.status == "running",
+                    )
+                    .order_by(RunStep.started_at.desc())
+                    .limit(1)
+                )
+            ).first()
+        if prior is not None and prior[0] and prior[0] != meta.get("schema_hash"):
+            logger.warning(
+                "tool_schema_changed_during_pause",
+                tool=name,
+                paused_version=prior[1],
+                current_version=meta.get("schema_version"),
+                run_id=str(ctx.run_id),
+            )
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         name = request.tool_call["name"]
@@ -218,8 +349,52 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             await self._resolve()
             tool = self._current.get(name)
         if tool is None:
-            return await handler(request)
+            if (
+                request.tool is not None
+                or name in KNOWN_LOOP_TOOLS
+                or name.startswith(SIBLING_TOOL_PREFIXES)
+            ):
+                # a tool the loop itself registered with its ToolNode (the
+                # agentic loop's spin_worker / use_full_catalog, a native
+                # HITL gate) or one a sibling projection attaches per model
+                # call (use_skill_*, dispatch_*) is not a registry tool —
+                # not ours to judge. Registry tools are attached per model
+                # call too, so for them `request.tool` is None and
+                # `_current` is the authority
+                return await handler(request)
+            # the model called a tool this loop does not have — a FAILED
+            # tool_call step so the trace shows it, never a silent "not a
+            # valid tool" burn of the iteration budget. Two cases (review
+            # round 2): a BOUND tool that went inactive, quarantined or
+            # missing is the contract broken — in a strict loop that is the
+            # node's error edge (spec §3.5); a name the loop never had (a
+            # hallucination, an unsanitized key) is the model's own slip and
+            # gets the error message back to correct itself, as before
+            bound_reason = self._missing_names.get(name)
+            obs.SKILL_TOOL_UNAVAILABLE.labels(
+                reason=f"called:{bound_reason}" if bound_reason else "called:unknown"
+            ).inc()
+            error = (
+                f"tool {name!r} is bound to this skill but unavailable ({bound_reason})"
+                if bound_reason
+                else f"tool {name!r} is not a tool of this loop; use one of "
+                f"{sorted(self._current) or '(none)'}"
+            )
+            step_id = await _record_tool_call(name, None, None, None)
+            await _finish_tool_call(
+                step_id, status="failed", output=None, error=error, usage={}, kind=None, source=None
+            )
+            if self._strict_tool_errors and bound_reason:
+                raise ToolExecutionFailed(error)
+            return ToolMessage(
+                content=error, name=name, tool_call_id=request.tool_call["id"], status="error"
+            )
         meta = self._meta.get(name, {})
+        ctx_now = get_run_context()
+        if ctx_now is not None and ctx_now.resumed:
+            # only a resumed run can be replaying arguments made against an
+            # older schema — no query per call otherwise
+            await self._check_paused_schema(name, meta)
         step_id = await _record_tool_call(
             name,
             meta.get("kind"),
@@ -321,7 +496,12 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
                 await ctx.recorder.record_route(
                     capability={"type": "direct_skill", "id": snap["id"]},
                     rung="fallback" if self._effective_full() else "direct_skill",
-                    resolved_to={"entity_id": snap["id"], "entity_name": snap["name"]},
+                    resolved_to={
+                        "entity_id": snap["id"],
+                        "entity_name": snap["name"],
+                        "definition_version": snap.get("definition_version"),
+                        "definition_hash": snap.get("definition_hash"),
+                    },
                     kind="skill",
                 )
             result = await run_inline_skill(snap, task, parent_step_id=CURRENT_STEP_ID.get())
@@ -386,6 +566,11 @@ class SkillsRegistryMiddleware(AgentMiddleware[Any, Any]):
             tools=[*request.tools, *tools],
             system_message=SystemMessage(content=base + section),
         )
+        log_catalog_call(
+            "skills",
+            "full_catalog" if self._effective_full() else "exposed",
+            [str(s.get("id")) for s in self._current.values()],
+        )
         return await handler(request)
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
@@ -438,6 +623,19 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             # HITL resume replays this handler — the route was already
             # recorded before the pause when the dispatch step is still open
             replay = ctx is not None and await find_running_dispatch(ctx.run_id, node_id)
+            if replay and ctx is not None:
+                # the replay runs the agent as it is NOW; the catalog the run
+                # froze says what it was — a difference is on the log
+                from app.orchestrator.snapshot import frozen_definition_hash
+
+                was = await frozen_definition_hash(ctx.run_id, "sub_agents", card["id"])
+                if was is not None and was != resolution.definition_hash:
+                    logger.warning(
+                        "definition_changed_during_pause",
+                        run_id=str(ctx.run_id),
+                        entity=card["name"],
+                        current_version=resolution.definition_version,
+                    )
             if ctx is not None and not replay:
                 await ctx.recorder.record_route(
                     capability={"type": "sub_agent", "id": card["id"]},
@@ -481,6 +679,9 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         tools = await self._refresh()
+        log_catalog_call(
+            "sub_agents", "exposed", [str(c.get("id")) for c in self._current.values()]
+        )
         return await handler(request.override(tools=[*request.tools, *tools]))
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:

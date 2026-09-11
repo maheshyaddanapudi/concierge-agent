@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sqlalchemy import Boolean, Column, ForeignKey, String, Table, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, RegistryRecord
@@ -32,5 +32,9 @@ class SubAgent(RegistryRecord):
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
     embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # the definition's version (spec §3.6) — see Skill
+    definition_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    overlap_audited_hash: Mapped[str | None] = mapped_column(String(64), default=None)
 
     skills: Mapped[list[Skill]] = relationship(secondary=sub_agent_skills, lazy="selectin")

@@ -44,6 +44,14 @@ DEFAULTS: dict[str, Any] = {
     # keeps the judge from sharing the generator's blind spots
     "overlap_judge_model": None,
     "overlap_judge_model_params": None,
+    # the §15 eval judge's model: null → the extraction role → default. A
+    # judge that is not the model under test does not share its blind spots
+    "eval_judge_model": None,
+    "eval_judge_model_params": None,
+    # the §4 registry overlap audit (hardening wave): a consolidation-class
+    # job that re-judges changed skills and sub agents against the registry
+    # with the overlap judge role and posts an inbox item — born dark
+    "registry_overlap_audit_enabled": False,
     "log_level": "INFO",
     "langsmith_enabled": False,
     "langsmith_endpoint": "",
@@ -199,6 +207,7 @@ _MODEL_KEYS = {
     "memory_extraction_model",
     "ambient_salience_model",
     "overlap_judge_model",
+    "eval_judge_model",
 }
 _PARAMS_KEYS = {
     "default_model_params",
@@ -208,6 +217,7 @@ _PARAMS_KEYS = {
     "memory_extraction_model_params",
     "ambient_salience_model_params",
     "overlap_judge_model_params",
+    "eval_judge_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -259,6 +269,7 @@ _BOOL_KEYS = {
     "memory_communities_enabled",
     "memory_compaction_enabled",
     "ambient_anticipation_enabled",
+    "registry_overlap_audit_enabled",
     "evals_enabled",
     # M53 gates
     "retention_ambient_events_enabled",
@@ -570,7 +581,32 @@ async def update_settings(session: AsyncSession, updates: dict[str, Any]) -> dic
         from app.obs import apply_otlp_endpoint
 
         apply_otlp_endpoint(str(updates["otlp_endpoint"]))
+    if "embedding_model" in updates or "retrieval_enabled" in updates:
+        # hardening wave: a new embedding model leaves every registry vector
+        # stale (the memory layer already re-embeds on model change; the
+        # registry used to wait for a restart) — re-embed now, off the
+        # request, and rank lexically in the meantime
+        import asyncio
+
+        from app.retrieval import backfill_embeddings
+
+        task = asyncio.create_task(backfill_embeddings())
+        _BACKFILL_TASKS.add(task)
+        task.add_done_callback(_BACKFILL_TASKS.discard)
     return await get_settings(session)
+
+
+_BACKFILL_TASKS: set[Any] = set()
+
+
+async def drain_backfill() -> None:
+    """Await every embedding backfill an `update_settings` started (tests
+    and shutdown: the task is fire-and-forget by design)."""
+    import asyncio
+
+    pending = [t for t in _BACKFILL_TASKS if not t.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _ping_redis() -> None:

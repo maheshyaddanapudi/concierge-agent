@@ -122,6 +122,31 @@ async def _step_usage(
     return out
 
 
+async def stamp_run_cost(session: AsyncSession, run: Run, settings: dict[str, Any]) -> None:
+    """Hardening wave: price the run NOW and stamp the result and the prices
+    it came from onto the row. A later price-table change, an override
+    edit or a provider feed refresh never rewrites a finished run or the
+    spend ceiling it counted toward."""
+    usage = (await _step_usage(session, [run.id])).get(run.id, [])
+    priced = run_cost((run.total_input_tokens, run.total_output_tokens), usage, settings)
+    overrides = (
+        settings.get("model_prices") if isinstance(settings.get("model_prices"), dict) else None
+    )
+    models = {m for m, _i, _o in usage if m}
+    models.add(str(settings.get("formatter_model") or settings.get("default_model") or ""))
+    snapshot: dict[str, Any] = {}
+    for ref in sorted(m for m in models if m):
+        price = pricing.price_for(ref, overrides)
+        snapshot[ref] = {
+            "input_per_m": price[0] if price else None,
+            "output_per_m": price[1] if price else None,
+            "source": pricing.price_source(ref, overrides),
+        }
+    run.cost_usd = priced["cost_usd"]
+    run.cost_priced = bool(priced["cost_priced"])
+    run.price_snapshot = {"prices": snapshot, "unpriced_tokens": priced["unpriced_tokens"]}
+
+
 async def attach_costs(
     session: AsyncSession, runs: list[Run], settings: dict[str, Any]
 ) -> dict[UUID, dict[str, Any]]:
@@ -164,9 +189,19 @@ async def spend_today(
         usage = await _step_usage(session, [r.id for r in runs])
     for run in runs:
         count += 1
-        priced = run_cost(
-            (run.total_input_tokens, run.total_output_tokens), usage.get(run.id, []), settings
-        )
+        priced: dict[str, Any]
+        if run.cost_priced is not None:
+            # stamped at finish (hardening wave): the number the ceiling
+            # counted at the time, not a re-pricing under today's table
+            priced = {
+                "cost_usd": run.cost_usd,
+                "cost_priced": run.cost_priced,
+                "unpriced_tokens": int((run.price_snapshot or {}).get("unpriced_tokens") or 0),
+            }
+        else:
+            priced = run_cost(
+                (run.total_input_tokens, run.total_output_tokens), usage.get(run.id, []), settings
+            )
         if priced["cost_usd"]:
             by_kind[run_kind(run)] += priced["cost_usd"]
             total += priced["cost_usd"]

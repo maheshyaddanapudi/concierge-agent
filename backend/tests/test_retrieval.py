@@ -115,6 +115,11 @@ class TestEmbeddingsPipeline:
                 session,
                 {"retrieval_enabled": True, "embedding_model": "fake:scripted"},
             )
+        # the settings change starts a backfill (hardening wave) — let it
+        # land before the write under test, or it embeds the tool first
+        from app.settings_store import drain_backfill
+
+        await drain_backfill()
         tool = await create_tool(direct_exposure=True)
         from app.retrieval import refresh_record_embedding
 

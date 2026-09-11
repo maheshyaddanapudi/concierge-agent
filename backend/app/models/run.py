@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -83,6 +83,11 @@ class Run(Base):
     answer_ui: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # chart specs from the render_chart native tool — formatter-independent
     charts: Mapped[list[Any] | None] = mapped_column(default=None)
+    # the cost stamped at finish with the prices it was computed from — a
+    # later price change never rewrites history or the spend ceiling
+    cost_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    cost_priced: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    price_snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -119,6 +124,10 @@ class RunStep(Base):
     # against the registry as it was, not as it is
     entity_version: Mapped[int | None] = mapped_column(Integer, default=None)
     entity_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # the entity's name at run time (a trace never resolves names live) and
+    # the model params the step ran with
+    entity_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    model_params: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="running")

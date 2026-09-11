@@ -68,6 +68,10 @@ export interface Tool extends RegistryRecord {
   schema_hash?: string | null
   schema_version?: number
   schema_changed_at?: string | null
+  // description fingerprint: 'operator' once an operator edited the text —
+  // a re-ingest never overwrites it after that
+  description_hash?: string | null
+  description_source?: 'server' | 'operator'
 }
 
 export interface ModelParams {
@@ -85,6 +89,9 @@ export interface Skill extends RegistryRecord {
   model_params: ModelParams | null
   max_tool_iterations: number | null
   tools: Tool[]
+  // definition fingerprint: bumped when a field that shapes behaviour changes
+  definition_hash?: string | null
+  definition_version?: number
 }
 
 export interface WorkflowNode {
@@ -117,6 +124,8 @@ export interface SubAgent extends RegistryRecord {
   covers_skill_ids: string[] | null
   direct_exposure: boolean
   skills: Skill[]
+  definition_hash?: string | null
+  definition_version?: number
 }
 
 export interface RunStep {
@@ -124,14 +133,20 @@ export interface RunStep {
   parent_step_id: string | null
   sub_agent_id: string | null
   node_id: string | null
-  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate'
+  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate' | 'format'
   input: Record<string, unknown> | null
   output: Record<string, unknown> | null
   model: string | null
+  // the model parameters the step's call was made with, pinned on the record
+  model_params?: ModelParams | null
   // the entity version the step ran against (a tool's schema version and
-  // hash on tool_call steps) — the trace reads against the registry as it was
+  // hash on tool_call steps, a skill's or sub agent's definition version on
+  // skill / route steps) — the trace reads against the registry as it was
   entity_version?: number | null
   entity_hash?: string | null
+  // the entity's name AS IT WAS — a rename or delete since does not rewrite
+  // the trace
+  entity_name?: string | null
   input_tokens: number
   output_tokens: number
   status: string
@@ -170,6 +185,15 @@ export interface Run {
   owner_replica?: string | null
   cancel_requested_at?: string | null
   cost_priced?: boolean
+  // the prices the run was costed with, stamped at finish — a later price
+  // change never rewrites a finished run
+  price_snapshot?: {
+    prices?: Record<
+      string,
+      { input_per_m: number | null; output_per_m: number | null; source: string }
+    >
+    unpriced_tokens?: number
+  } | null
   steps?: RunStep[]
 }
 
@@ -241,6 +265,9 @@ export type Settings = Record<string, unknown> & {
   aggregator_model_params: ModelParams | null
   overlap_judge_model?: string | null
   overlap_judge_model_params?: ModelParams | null
+  eval_judge_model?: string | null
+  eval_judge_model_params?: ModelParams | null
+  registry_overlap_audit_enabled?: boolean
   mcp_schema_change_policy?: 'warn' | 'quarantine'
   max_parallel_dispatch: number
   max_plan_steps: number

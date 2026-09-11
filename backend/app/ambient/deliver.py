@@ -93,6 +93,16 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
     """Latest APPLIED policy-ledger row wins (spec §17.6). Queued
     learner_proposal rows are inert until approved (§17.7 propose mode).
     §18.8: a user-scoped row beats the global (NULL-user) fallback."""
+    tier, _policy_id = await current_policy(category, user_id)
+    return tier
+
+
+async def current_policy(
+    category: str, user_id: "UUID | None" = None
+) -> "tuple[int | None, UUID | None]":
+    """The tier override AND the policy row it came from — the row's id
+    rides on the delivery (hardening wave) so the lineage survives the
+    policy's supersession."""
     async with get_session_factory()() as session:
         rows = list(
             (
@@ -109,8 +119,8 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
         )
     for row in rows:  # newest first; prefer the user-scoped lineage
         if row.user_id == user_id:
-            return row.tier_override
-    return rows[0].tier_override if rows else None
+            return row.tier_override, row.id
+    return (rows[0].tier_override, rows[0].id) if rows else (None, None)
 
 
 async def add_delivery(
@@ -133,7 +143,7 @@ async def add_delivery(
     the requester — in that order."""
     if user_id is None:
         user_id = await _resolve_owner(run_id, intent_id)
-    override = await current_tier_override(category, user_id)
+    override, policy_id = await current_policy(category, user_id)
     if override is not None:
         tier = override
     now = datetime.now(UTC)
@@ -144,6 +154,7 @@ async def add_delivery(
             intent_id=intent_id,
             category=category,
             tier=tier,
+            policy_id=policy_id if override is not None else None,
             urgency=urgency,
             title=title[:250],
             body=body,

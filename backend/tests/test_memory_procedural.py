@@ -22,6 +22,7 @@ from app.memory.procedural import (
     harvest_exemplar,
     mine_fallback_skills,
     recall_exemplars,
+    settle_harvested,
     update_routing_stats,
     vote_exemplars,
 )
@@ -41,6 +42,7 @@ async def _enable_procedural() -> None:
         memory_enabled=True,
         procedural_learning_enabled=True,
         embedding_model="fake:scripted",
+        default_model="fake:scripted",  # the §4 judge reads every mined proposal
     )
 
 
@@ -150,7 +152,8 @@ async def test_exemplar_votes_retire_at_zero() -> None:
     await _enable_procedural()
     run = await _finished_run("votable task", rungs=[("direct_skill", "notes-formatter")])
     ex = await harvest_exemplar(run.id)
-    assert ex is not None and ex.votes == 1
+    assert ex is not None and ex.votes == 1 and ex.status == "pending"
+    await settle_harvested([ex.id], confirmed=True)  # the human's next turn confirmed it
     await vote_exemplars([ex.id], success=True)
     async with get_session_factory()() as session:
         fresh = await session.get(PlanExemplar, ex.id)
@@ -171,7 +174,12 @@ async def test_exemplar_block_gated_and_formatted() -> None:
         "research the langgraph framework on the web",
         rungs=[("custom_sub_agent", "research-concierge")],
     )
-    await harvest_exemplar(run.id)
+    ex = await harvest_exemplar(run.id)
+    assert ex is not None
+    assert (await exemplar_block("research the langgraph framework thoroughly"))[1] == [], (
+        "a pending harvest never serves the planner"
+    )
+    await settle_harvested([ex.id], confirmed=True)
     block, ids = await exemplar_block("research the langgraph framework thoroughly")
     assert "Similar past asks" in block
     assert "custom_sub_agent(research-concierge)" in block
@@ -208,6 +216,8 @@ async def test_fallback_mining_creates_inactive_proposal() -> None:
             tool_keys=["filesystem.read_file"],
             fallback=True,
         )
+    # the §4 judge reads every machine-authored proposal (hardening wave):
+    # the fake's unscripted default is a clean 0% verdict
     proposals = await mine_fallback_skills()
     assert len(proposals) == 1
     async with get_session_factory()() as session:

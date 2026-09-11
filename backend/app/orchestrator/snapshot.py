@@ -38,13 +38,53 @@ async def catalog_snapshot() -> dict[str, Any]:
             for t in tools
         ],
         "skills": [
-            {"id": s["id"], "name": s["name"], "updated_at": s.get("updated_at")} for s in skills
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "definition_version": s.get("definition_version"),
+                "definition_hash": s.get("definition_hash"),
+            }
+            for s in skills
         ],
         "sub_agents": [
-            {"id": a["id"], "name": a["name"], "updated_at": a.get("updated_at")}
+            {
+                "id": a["id"],
+                "name": a["name"],
+                "definition_version": a.get("definition_version"),
+                "definition_hash": a.get("definition_hash"),
+            }
             for a in agents
             if a.get("status") == "active"
         ],
+    }
+
+
+def prompt_hashes() -> dict[str, str]:
+    """A short hash per prompt file: the largest unversioned input to a
+    run, pinned on the snapshot so a deploy that edits a prompt is visible
+    in the record rather than read as model nondeterminism."""
+    import hashlib
+    from pathlib import Path
+
+    from app.prompts import load_prompt
+
+    prompts_dir = Path(load_prompt.__wrapped__.__code__.co_filename).resolve().parent
+    out: dict[str, str] = {}
+    for path in sorted(prompts_dir.glob("*.md")):
+        out[path.stem] = hashlib.sha256(load_prompt(path.stem).encode("utf-8")).hexdigest()[:12]
+    return out
+
+
+def run_settings_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings that shaped the run, as the run saw them (a run reads
+    some knobs live per step, but the snapshot at start is the operator's
+    baseline). No provider keys live in settings (spec §3.7)."""
+    import os
+
+    return {
+        "settings": dict(settings),
+        "prompts": prompt_hashes(),
+        "build": os.environ.get("APP_BUILD") or None,
     }
 
 
@@ -60,9 +100,62 @@ def resolution_snapshot(resolution: Any) -> dict[str, Any]:
     )
 
 
+async def pinned_resolution(run_id: UUID, entry_id: str) -> Any | None:
+    """The Resolution a run froze under `entry_id`, rebuilt from the
+    snapshot — what a HITL replay executes (spec §3.6)."""
+    from app.orchestrator.ladder import Resolution
+
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+        entry = ((run.snapshot or {}) if run is not None else {}).get(entry_id)
+    if not isinstance(entry, dict) or "rung" not in entry:
+        return None
+    entity_id = entry.get("entity_id")
+    return Resolution(
+        rung=str(entry.get("rung")),
+        tier=str(entry.get("tier") or ""),
+        kind=str(entry.get("kind") or ""),
+        source=str(entry.get("source") or ""),
+        entity_id=str(entity_id) if entity_id is not None else None,
+        entity_name=str(entry.get("entity_name") or ""),
+        payload=dict(entry.get("payload") or {}),
+        definition_version=entry.get("definition_version"),
+        definition_hash=entry.get("definition_hash"),
+    )
+
+
+async def frozen_definition_hash(run_id: UUID, kind: str, record_id: str) -> str | None:
+    """The hash the run's frozen catalog holds for one record, or None."""
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+        catalog = ((run.snapshot or {}) if run is not None else {}).get("catalog") or {}
+    for rec in catalog.get(kind) or []:
+        if isinstance(rec, dict) and str(rec.get("id")) == str(record_id):
+            value = rec.get("definition_hash") or rec.get("schema_hash")
+            return str(value) if value else None
+    return None
+
+
 async def write_snapshot(run_id: UUID, snapshot: dict[str, Any]) -> None:
+    """Merge `snapshot` onto the run's (top-level keys replace)."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is not None:
             run.snapshot = {**(run.snapshot or {}), **snapshot}
+            await session.commit()
+
+
+async def append_snapshot_list(run_id: UUID, key: str, *items: Any, cap: int = 200) -> None:
+    """Append to a list-valued snapshot key (context, catalog_calls,
+    resumes): a HITL resume's fresh context lands next to the pre-pause
+    half's, never over it. Bounded by `cap` entries, oldest kept."""
+    if not items:
+        return
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+        if run is not None:
+            current = (run.snapshot or {}).get(key)
+            existing = list(current) if isinstance(current, list) else []
+            room = max(cap - len(existing), 0)
+            run.snapshot = {**(run.snapshot or {}), key: existing + list(items)[:room]}
             await session.commit()

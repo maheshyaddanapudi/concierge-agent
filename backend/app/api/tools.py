@@ -40,21 +40,64 @@ async def patch_tool(tool_id: UUID, body: ToolPatch, session: SessionDep) -> Too
     changes = body.model_dump(exclude_unset=True)
     enforce_static_rules(tool, set(changes))
     if "tool_key" in changes and changes["tool_key"] != tool.tool_key:
-        collision = (
-            await session.execute(
-                select(Tool).where(Tool.tool_key == changes["tool_key"], Tool.id != tool.id)
-            )
-        ).scalar_one_or_none()
-        if collision is not None:
+        from app.factory.worker import sanitize_tool_name
+
+        new_key = str(changes["tool_key"])
+        others = (await session.execute(select(Tool).where(Tool.id != tool.id))).scalars()
+        for other in others:
+            if other.tool_key == new_key:
+                raise HTTPException(
+                    status_code=409, detail=f"tool_key {new_key!r} is already in use"
+                )
+            if sanitize_tool_name(other.tool_key) == sanitize_tool_name(new_key):
+                # the LLM-facing name is the sanitized key: two keys that
+                # sanitize alike would bind first-wins, the other silently
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"tool_key {new_key!r} binds under the same name as "
+                        f"{other.tool_key!r} ({sanitize_tool_name(new_key)!r})"
+                    ),
+                )
+        # spec §3.2: bindings survive a rename (they use the id) — the
+        # `{tool:old.key}` mentions in skill instructions do not, so a rename
+        # that would leave a skill naming a tool it no longer has is refused
+        # with the skills to fix first
+        mentioning = [
+            s.name
+            for s in await _skills_of_tool(session, tool.id)
+            if f"{{tool:{tool.tool_key}}}" in (s.instructions or "")
+        ]
+        if mentioning:
             raise HTTPException(
-                status_code=409, detail=f"tool_key {changes['tool_key']!r} is already in use"
+                status_code=409,
+                detail=(
+                    f"skills mention {{tool:{tool.tool_key}}} in their instructions: "
+                    f"{', '.join(sorted(mentioning))} — update the mentions first"
+                ),
             )
+    renamed = "tool_key" in changes and changes["tool_key"] != tool.tool_key
+    if "description" in changes and changes["description"] != tool.description:
+        # an operator's wording survives re-ingests (hardening wave)
+        from app.toolschema import apply_description
+
+        apply_description(tool, str(changes.pop("description")), source="operator")
+    if changes.get("description_source") == "server":
+        # the operator hands the wording back: the next ingest re-adopts the
+        # server's text as a first sighting (review round 2)
+        tool.description_source = "server"
+        tool.description_hash = None
+    changes.pop("description_source", None)
     for f, v in changes.items():
         setattr(tool, f, v)
     await session.commit()
     await session.refresh(tool)
     await get_cache().invalidate("tools")
     schedule_embedding("tools", str(tool.id))
+    if renamed:
+        from app.retrieval import schedule_dependents
+
+        schedule_dependents("tools", str(tool.id))  # skills embed their tool keys
     return tool
 
 

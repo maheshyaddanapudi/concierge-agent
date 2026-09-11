@@ -59,6 +59,10 @@ async def _clean_tables(_database: None) -> AsyncIterator[None]:
     # no §16.2 background task may cross a test boundary — settle them
     # BEFORE the truncate so none replays against the next test's world
     await memory_scheduler.drain()
+    # the same for the registry embedding backfill a settings change starts
+    from app.settings_store import drain_backfill
+
+    await drain_backfill()
     engine = get_engine()
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:

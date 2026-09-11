@@ -8,6 +8,7 @@ self-wake on failure. The reaper rescues orphans no supervisor owns.
 """
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -163,6 +164,9 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
         row = await session.get(Run, run.id)
         if row is None:  # pragma: no cover - just created
             return None
+        payload_hash = hashlib.sha256(
+            json.dumps(event.payload or {}, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:12]
         row.trigger = {
             "routine_id": str(routine.id) if routine else None,
             "intent_id": str(intent.id) if intent else None,
@@ -172,6 +176,23 @@ async def prepare_run(event: AmbientEvent) -> Run | None:
             "urgency": decision.get("urgency", 2),
             # §18.1: the routine's model override, honored by the runner
             "model_ref": routine.model_ref if routine else None,
+            # spec §3.6 (hardening wave): the lineage copied, not pointed at
+            # — the event's decision and the routine as it was are read
+            # live later and gone after a delete or a retention purge
+            "decision": dict(decision),
+            "payload_hash": payload_hash,
+            "routine": (
+                {
+                    "name": routine.name,
+                    "prompt_hash": hashlib.sha256(
+                        (routine.prompt or "").encode("utf-8")
+                    ).hexdigest()[:12],
+                    "allowlist": routine.allowlist,
+                    "updated_at": routine.updated_at.isoformat() if routine.updated_at else None,
+                }
+                if routine
+                else None
+            ),
         }
         row.last_heartbeat_at = datetime.now(UTC)
         await session.commit()

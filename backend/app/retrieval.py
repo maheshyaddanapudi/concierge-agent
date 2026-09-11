@@ -213,7 +213,40 @@ async def apply_retrieval(
     top_k = int(await cache.setting("retrieval_top_k"))
     pinned: set[str] = set(ctx.pinned_ids) if ctx is not None else set()
 
-    order = rank_records(query, records, query_vec=await _query_vector(query))
+    # hardening wave: a vector embedded by a different model than the one
+    # configured now is not comparable to the query vector (same dimension
+    # or not) — rank those records lexically only, and count them, until
+    # the backfill the settings write scheduled has re-embedded them
+    model = await cache.setting("embedding_model")
+    ranked_records = records
+    if model:
+        ranked_records = []
+        stale = 0
+        for record in records:
+            expected = text_hash(f"{model}:{embed_text_for(record, kind)}")
+            # a registry record always carries the hash its vector was
+            # built under (the write path sets both); a record built
+            # elsewhere without one is not judged
+            if (
+                record.get("embedding") is not None
+                and "embedding_hash" in record
+                and record["embedding_hash"] != expected
+            ):
+                stale += 1
+                ranked_records.append({**record, "embedding": None})
+                # self-healing: a stale vector (another model, or text that
+                # drifted through a dependency — a bound tool renamed) is
+                # re-embedded once, off this call (review round 2)
+                _schedule_once(kind, str(record.get("id")))
+            else:
+                ranked_records.append(record)
+        if stale:
+            from app import obs
+
+            obs.RETRIEVAL_STALE_VECTORS.labels(kind=kind).inc(stale)
+            logger.info("retrieval_stale_vectors_ignored", kind=kind, stale=stale)
+
+    order = rank_records(query, ranked_records, query_vec=await _query_vector(query))
     selected: list[int] = [i for i in order[:top_k]]
     # pins bypass ranking — entities already used in this run stay visible
     selected_set = set(selected)
@@ -245,6 +278,7 @@ def catalog_footer(kind: str, shown: int, total: int) -> str:
 # ── write-path embedding maintenance ─────────────────────────────
 
 _EMBED_TASKS: set[Any] = set()
+_INFLIGHT: set[tuple[str, str]] = set()
 
 
 def schedule_embedding(kind: str, record_id: str) -> None:
@@ -253,6 +287,55 @@ def schedule_embedding(kind: str, record_id: str) -> None:
     import asyncio
 
     task = asyncio.create_task(refresh_record_embedding(kind, record_id))
+    _EMBED_TASKS.add(task)
+    task.add_done_callback(_EMBED_TASKS.discard)
+
+
+def _schedule_once(kind: str, record_id: str) -> None:
+    """`schedule_embedding` debounced per record while one is in flight —
+    rank time may see the same stale record on every call until it lands."""
+    import asyncio
+
+    key = (kind, record_id)
+    if key in _INFLIGHT:
+        return
+    _INFLIGHT.add(key)
+    task = asyncio.create_task(refresh_record_embedding(kind, record_id))
+    _EMBED_TASKS.add(task)
+
+    def _done(t: Any) -> None:
+        _EMBED_TASKS.discard(t)
+        _INFLIGHT.discard(key)
+
+    task.add_done_callback(_done)
+
+
+def schedule_dependents(kind: str, record_id: str) -> None:
+    """Records whose embed text includes another's name re-embed when it is
+    renamed: skills carry their bound tool keys, sub agents their skill
+    names (review round 2 — a tool rename left every binding skill's vector
+    stale until the next restart)."""
+    import asyncio
+
+    async def _go() -> None:
+        try:
+            from app.registry_cache import get_cache
+
+            cache = get_cache()
+            if kind == "tools":
+                for skill in await cache.skills(exposed_only=False):
+                    if any(str(t.get("id")) == record_id for t in skill.get("tools", [])):
+                        await refresh_record_embedding("skills", str(skill["id"]))
+            elif kind == "skills":
+                for agent in await cache.sub_agents():
+                    if record_id in (agent.get("skill_ids") or []):
+                        await refresh_record_embedding("sub_agents", str(agent["id"]))
+        except Exception as exc:  # noqa: BLE001 — never fails the save
+            logger.warning(
+                "dependent_embedding_failed", kind=kind, record_id=record_id, error=str(exc)
+            )
+
+    task = asyncio.create_task(_go())
     _EMBED_TASKS.add(task)
     task.add_done_callback(_EMBED_TASKS.discard)
 

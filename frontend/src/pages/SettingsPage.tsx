@@ -608,6 +608,11 @@ export function SettingsPage() {
             min={0}
             hint="saves at or above this overlap raise the confirm dialog — 100 effectively disables it, 0 flags every save (§4, M40)"
           />
+          <BoolSetting
+            label="Registry overlap audit"
+            k="registry_overlap_audit_enabled"
+            hint="§4 after save time: every 6 h the overlap judge re-reads each active skill and sub agent whose definition changed since it was last judged — API edits, re-ingested tool descriptions, learned proposals — and posts an inbox item per flagged pair (the Ambient inbox; with ambient off the flag is the registry_overlap_flagged log line). Runs with or without the memory layer"
+          />
           <IntSetting
             label="Agentic recursion limit"
             k="agentic_recursion_limit"
@@ -1064,6 +1069,11 @@ export function SettingsPage() {
                   paramsKey="ambient_salience_model_params"
                   allowInherit
                 />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {settings.ambient_salience_model
+                    ? 'The judge that decides what reaches you is a different model from the one writing the answers.'
+                    : 'Inheriting the default: the model that writes the answers also judges whether they matter. Point this at a different model so the judge does not share its blind spots.'}
+                </p>
               </div>
             </Field>
             <Field
@@ -1157,6 +1167,21 @@ export function SettingsPage() {
           k="evals_enabled"
           hint="§15 — dataset upload and graded batch runs on skill and sub-agent pages. Nothing runs on its own; off removes the routes entirely, leaving datasets and past results intact for when it is turned back on"
         />
+        {Boolean(settings.evals_enabled) && (
+          <div className="mt-3">
+            <ModelSelect
+              label="Eval judge model"
+              refKey="eval_judge_model"
+              paramsKey="eval_judge_model_params"
+              allowInherit
+            />
+            <p className="-mt-2 text-[11px] text-slate-500">
+              The llm_judge grader. Inheriting falls back to the extraction role, then the default —
+              the model under test grading itself. Point this elsewhere when scoring your default
+              model.
+            </p>
+          </div>
+        )}
       </Section>
 
       <CostSection />

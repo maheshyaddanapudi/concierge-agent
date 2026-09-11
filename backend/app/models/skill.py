@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sqlalchemy import Boolean, Column, ForeignKey, Table, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, RegistryRecord
@@ -32,5 +32,17 @@ class Skill(RegistryRecord):
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
     embedding_hash: Mapped[str | None] = mapped_column(Text, default=None)
+    # the definition's version (spec §3.6): a hash of what the skill DOES
+    # (description, persona, instructions, model, tools), bumped on every
+    # change of those and never on a status or exposure toggle — what a run
+    # step and the catalog snapshot pin; overlap_audited_hash is the last
+    # definition the registry overlap audit (§4) judged
+    definition_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    overlap_audited_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # who authored the definition: 'human' (UI/API/seed) or 'mined' (§16.5
+    # fallback mining) — not patchable, so the activation guard keys off
+    # it rather than off an editable description prefix
+    origin: Mapped[str] = mapped_column(String(16), default="human", server_default="human")
 
     tools: Mapped[list[Tool]] = relationship(secondary=skill_tools, lazy="selectin")

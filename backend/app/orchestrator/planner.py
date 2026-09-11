@@ -204,6 +204,23 @@ async def run_planner(
     prompt = build_planner_prompt(
         task, history, summaries, max_plan_steps, memory_block + exemplars
     )
+    if ctx is not None:
+        # spec §3.6: what the planner was told, pinned on the run — the
+        # few-shots and the history window are read live and gone later
+        import hashlib
+        import json
+
+        ctx.log_context(
+            "planner",
+            exemplar_ids=[str(e) for e in exemplar_ids],
+            exemplars=exemplars[:4000],
+            history_chars=len(history),
+            history_hash=hashlib.sha256(history.encode("utf-8")).hexdigest()[:12],
+            catalog_hash=hashlib.sha256(
+                json.dumps(summaries, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:12],
+            prompt_hash=hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+        )
     structured = model.with_structured_output(PlannerOutput, include_raw=True)
     raw_outputs: list[Any] = []
     usage = {"input_tokens": 0, "output_tokens": 0}

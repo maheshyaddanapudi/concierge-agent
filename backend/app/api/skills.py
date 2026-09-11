@@ -88,12 +88,35 @@ async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
         source="dynamic",
         tools=tools,
     )
+    stamp_skill(skill, tools)
     session.add(skill)
     await session.commit()
     await session.refresh(skill)
     await get_cache().invalidate("skills")
     schedule_embedding("skills", str(skill.id))
     return skill
+
+
+def stamp_skill(skill: Skill, tools: list[Tool]) -> bool:
+    """The definition's version (spec §3.6): hash the fields that change
+    what the skill does; a status or exposure toggle is not a new version."""
+    from app.toolschema import skill_definition_fields, stamp_definition
+
+    return stamp_definition(
+        skill,
+        skill_definition_fields(
+            description=skill.description,
+            persona=skill.persona,
+            instructions=skill.instructions,
+            model=skill.model,
+            model_params=skill.model_params,
+            max_tool_iterations=skill.max_tool_iterations,
+            # the ONE rule for the bound set: a soft-deleted binding is not
+            # part of the definition (the seed, the cache and the audit all
+            # hash the same set — review round 2)
+            tool_ids=[t.id for t in tools if t.deleted_at is None],
+        ),
+    )
 
 
 class OverlapAck(ApiModel):
@@ -144,10 +167,46 @@ async def get_skill(skill_id: UUID, session: SessionDep) -> Skill:
 
 
 @router.patch("/{skill_id}", response_model=SkillOut)
-async def patch_skill(skill_id: UUID, body: SkillPatch, session: SessionDep) -> Skill:
+async def patch_skill(
+    skill_id: UUID, body: SkillPatch, session: SessionDep, force: bool = False
+) -> Skill:
     skill = await fetch_or_404(session, Skill, skill_id)
     changes = body.model_dump(exclude_unset=True)
     enforce_static_rules(skill, set(changes))
+
+    if (
+        changes.get("status") == "active"
+        and skill.status != "active"
+        and skill.origin == "mined"  # not the editable description prefix (review round 2)
+        and not force
+    ):
+        # spec §16.5: activating a machine-authored proposal is the save
+        # the §4 judge guards for a human — judged now, under the judge's
+        # own model role; `?force=true` is the "Save anyway"
+        verdict = await check_skill_overlap(
+            name=skill.name,
+            description=skill.description,
+            instructions=skill.instructions,
+            tool_keys=sorted(t.tool_key for t in skill.tools),
+            exclude_id=skill.id,
+        )
+        if not verdict.judge_available:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"overlap judge unavailable ({verdict.reasoning[:120]}) — a machine-authored "
+                    "proposal is not activated unjudged; retry, or PATCH with ?force=true"
+                ),
+            )
+        if verdict.overlap:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"overlap judge: {verdict.overlap_percent}% with "
+                    f"{verdict.match_type} {verdict.match_name!r} — {verdict.reasoning[:200]} "
+                    "(PATCH with ?force=true to activate anyway)"
+                ),
+            )
 
     new_tools = skill.tools
     if "tool_ids" in changes:
@@ -165,6 +224,7 @@ async def patch_skill(skill_id: UUID, body: SkillPatch, session: SessionDep) -> 
             skill.tools = new_tools
         else:
             setattr(skill, f, v)
+    stamp_skill(skill, new_tools)
     await session.commit()
     await session.refresh(skill)
     await get_cache().invalidate("skills")

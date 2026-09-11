@@ -100,8 +100,11 @@ def register_judge_usage_hook(fn: Any | None) -> None:
 
 
 async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> SignificanceOutput:
-    """Tier 2: ONE structured call, extraction role unless the intent
-    overrides. Any failure means held — silence is the default. Runs with
+    """Tier 2: ONE structured call — the intent's own judge model, else the
+    salience judge role (`ambient_salience_model`: the reader that decides
+    what reaches the human, so the model that COMPILED the predicate is not
+    the one applying it — review round 2), else the extraction role, else
+    the default. Any failure means held — silence is the default. Runs with
     include_raw so real token usage feeds the cost accounting (§18.1)."""
     from app.llm import ModelParams, get_model
     from app.registry_cache import get_cache
@@ -109,6 +112,7 @@ async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> Si
     cache = get_cache()
     ref = (
         intent.judge_model_ref
+        or await cache.setting("ambient_salience_model")
         or await cache.setting("memory_extraction_model")
         or await cache.setting("default_model")
     )

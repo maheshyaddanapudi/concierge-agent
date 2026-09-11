@@ -13,6 +13,9 @@ class ToolPatch(ApiModel):
     status: Status | None = None
     direct_exposure: bool | None = None
     tool_key: str | None = None
+    # 'server' hands an operator-edited description back to the server:
+    # the next ingest adopts its wording again (§3.2)
+    description_source: Literal["server"] | None = None
 
 
 class ToolOut(RegistryOut):
@@ -30,3 +33,8 @@ class ToolOut(RegistryOut):
     schema_hash: str | None = None
     schema_version: int = 1
     schema_changed_at: datetime | None = None
+    # description fingerprint (hardening wave): 'server' while the text is
+    # whatever the MCP server / A2A card last said; 'operator' once an
+    # operator edited it, after which a re-ingest never overwrites it
+    description_hash: str | None = None
+    description_source: str = "server"

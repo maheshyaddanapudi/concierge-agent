@@ -60,6 +60,7 @@ class RunRecorder:
         emit_dispatch: bool = False,
         entity_version: int | None = None,
         entity_hash: str | None = None,
+        model_params: dict[str, Any] | None = None,
     ) -> UUID:
         async with get_session_factory()() as session:
             step = RunStep(
@@ -70,6 +71,10 @@ class RunRecorder:
                 step_type=step_type,
                 input=input,
                 model=model,
+                # the name at run time and the params the step ran with —
+                # on the row, so a trace never resolves either live
+                entity_name=entity_name,
+                model_params=model_params,
                 # the entity's version pinned into the record (a tool's
                 # schema version and hash): the trace reads against the
                 # registry as it was when the step ran
@@ -232,7 +237,9 @@ class RunRecorder:
         kind: str | None = None,
         source: str | None = None,
     ) -> None:
-        """The ladder is deterministic and logged as a `route` step (spec §7.1)."""
+        """The ladder is deterministic and logged as a `route` step (spec §7.1).
+        The definition version the ladder resolved rides on the step when
+        `resolved_to` carries it (a Resolution.as_route())."""
         step_id = await self.start_step(
             "route",
             tier="orchestrator",
@@ -241,6 +248,8 @@ class RunRecorder:
             entity_id=resolved_to.get("entity_id"),
             entity_name=resolved_to.get("entity_name"),
             input={"capability": capability},
+            entity_version=resolved_to.get("definition_version"),
+            entity_hash=resolved_to.get("definition_hash"),
         )
         await self.finish_step(step_id, output={"rung": rung, "resolved_to": resolved_to})
         self.emit(

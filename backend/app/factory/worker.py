@@ -81,12 +81,15 @@ async def snapshot_skill(session: AsyncSession, skill: Skill) -> dict[str, Any]:
     return {
         "id": str(skill.id),
         "name": skill.name,
+        "status": skill.status,
         "persona": skill.persona,
         "instructions": skill.instructions,
         "model": skill.model,
         "model_params": skill.model_params,
         "direct_exposure": skill.direct_exposure,
         "max_tool_iterations": skill.max_tool_iterations,
+        "definition_hash": skill.definition_hash,
+        "definition_version": skill.definition_version or 1,
         "tools": [
             {
                 "id": str(t.id),
@@ -128,6 +131,8 @@ async def snapshot_sub_agent(session: AsyncSession, agent: SubAgent) -> dict[str
             "kind": agent.kind,
             "source": agent.source,
             "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
+            "definition_hash": agent.definition_hash,
+            "definition_version": agent.definition_version or 1,
         },
         "workflow": workflow,
         "skills": skills,
@@ -356,6 +361,33 @@ def _make_skill_node(
     async def run_skill(state: WorkerState, config: RunnableConfig) -> dict[str, Any]:
         from app.orchestrator.middleware import SkillLoopContext, build_middleware_stack
 
+        if skill_snapshot.get("status", "active") != "active":
+            # spec §3.3: a skill toggled off since the workflow was saved is
+            # not a skill the node may run — the error edge, counted and
+            # logged, never a silent run of a disabled definition (review
+            # round 2)
+            from app import obs
+
+            obs.SKILL_TOOL_UNAVAILABLE.labels(reason="skill_inactive").inc()
+            logger.warning(
+                "workflow_skill_inactive",
+                node_id=node_id,
+                skill_id=skill_snapshot.get("id"),
+                skill_name=skill_snapshot.get("name"),
+            )
+            return {
+                "node_outputs": {
+                    node_id: {
+                        "status": "error",
+                        "error": f"skill {skill_snapshot.get('name')!r} is "
+                        f"{skill_snapshot.get('status')} — the workflow names a disabled skill",
+                        "skill_id": skill_snapshot["id"],
+                        "skill_name": skill_snapshot.get("name"),
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
+                    }
+                }
+            }
         try:
             model_ref, params = await resolve_node_model(
                 skill_snapshot, agent_snapshot["sub_agent"]
@@ -395,6 +427,10 @@ def _make_skill_node(
                         "skill_name": skill_snapshot["name"],
                         "model": model_ref,
                         "effort": params.effort if params else None,
+                        # pinned onto the node's step (spec §3.6)
+                        "model_params": params.model_dump(exclude_none=True) if params else None,
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
                         "usage": _usage_from_messages(messages),
                     }
                 },
@@ -415,6 +451,12 @@ def _make_skill_node(
                         "error": f"{type(exc).__name__}: {exc}",
                         "skill_id": skill_snapshot["id"],
                         "skill_name": skill_snapshot.get("name"),
+                        # a failed node pins the same definition as a
+                        # completed one (review round 2)
+                        "model": skill_snapshot.get("model"),
+                        "model_params": skill_snapshot.get("model_params"),
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
                     }
                 }
             }

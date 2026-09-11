@@ -112,11 +112,30 @@ async def invoke_node(state: DirectState) -> dict[str, Any]:
     # graph mode freezes a routed dispatch — a direct run was the one mode
     # whose trace referenced a definition that could change under it
     from app.orchestrator.context import require_run_context
-    from app.orchestrator.snapshot import resolution_snapshot, write_snapshot
+    from app.orchestrator.snapshot import (
+        pinned_resolution,
+        resolution_snapshot,
+        write_snapshot,
+    )
 
     ctx = require_run_context()
     if await _first_dispatch(ctx.run_id):
         await write_snapshot(ctx.run_id, {DIRECT_ENTRY_ID: resolution_snapshot(resolution)})
+    else:
+        # a HITL replay executes the definition the run FROZE, not the one
+        # the registry holds now (review round 2: the record and the
+        # execution used to disagree after an edit during the pause)
+        pinned = await pinned_resolution(ctx.run_id, DIRECT_ENTRY_ID)
+        if pinned is not None:
+            if pinned.definition_hash != resolution.definition_hash:
+                logger.warning(
+                    "definition_changed_during_pause",
+                    run_id=str(ctx.run_id),
+                    entity=resolution.entity_name,
+                    paused_version=pinned.definition_version,
+                    current_version=resolution.definition_version,
+                )
+            resolution = pinned
     result = await execute_resolution(resolution, state["task"], DIRECT_ENTRY_ID)
     if result.get("status") == "error":
         raise RunFailed(
@@ -192,7 +211,7 @@ async def record_direct_route(sub_agent_id: str) -> None:
     await ctx.recorder.record_route(
         capability={"type": "sub_agent", "id": sub_agent_id, "pinned": True},
         rung=resolution.rung,
-        resolved_to={"entity_id": resolution.entity_id, "entity_name": resolution.entity_name},
+        resolved_to=resolution.as_route(),
         kind=resolution.kind,
         source=resolution.source,
     )

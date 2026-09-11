@@ -38,6 +38,25 @@ def render_judge_prompt(*, expected: str, judge_notes: str, answer: str, input_h
     )
 
 
+async def _judge_model() -> tuple[str, Any]:
+    """The eval judge's own model role (`eval_judge_model`): null falls back
+    to the extraction role, then the default — but a judge that is not the
+    model under test does not share its blind spots, so a deployment that
+    scores its default model should point this elsewhere."""
+    from app.llm import ModelParams, get_model
+    from app.registry_cache import get_cache
+
+    cache = get_cache()
+    ref = await cache.setting("eval_judge_model")
+    if ref:
+        raw = await cache.setting("eval_judge_model_params")
+        params = ModelParams.model_validate(raw) if raw else None
+        return str(ref), get_model(str(ref), params)
+    from app.memory.extract import _extraction_model
+
+    return await _extraction_model()
+
+
 async def grade_case(
     *, grader: str, answer: str, expected: str, judge_notes: str
 ) -> dict[str, Any]:
@@ -60,13 +79,11 @@ async def grade_case(
         }
     # llm_judge
     try:
-        from app.memory.extract import _extraction_model
-
         prompt = render_judge_prompt(
             expected=expected, judge_notes=judge_notes, answer=answer, input_hint=""
         )
-        _, model = await _extraction_model()
-        out = await model.with_structured_output(EvalVerdict).ainvoke(prompt)  # type: ignore[attr-defined]
+        _, model = await _judge_model()
+        out = await model.with_structured_output(EvalVerdict).ainvoke(prompt)
         if not isinstance(out, EvalVerdict):
             raise TypeError(f"expected EvalVerdict, got {type(out).__name__}")
         return {

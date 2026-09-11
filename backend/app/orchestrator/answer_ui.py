@@ -421,10 +421,13 @@ async def generate_answer_ui(
         structured = model.with_structured_output(AnswerUi, include_raw=True)
         parsed: AnswerUi | None = None
         attempt_prompt = prompt
+        attempts = 0
+        repair_reason: str | None = None
         # the repair attempt runs WITHOUT thinking: forced tool calls are
         # far more reliable that way, and the repair is a mechanical edit
         repair_params = (model_params or ModelParams()).model_copy(update={"effort": "none"})
         for attempt in range(2):
+            attempts += 1
             result: dict[str, Any] = await structured.ainvoke(  # type: ignore[assignment]
                 attempt_prompt, config={"callbacks": callbacks}
             )
@@ -450,6 +453,7 @@ async def generate_answer_ui(
             if deficiency is None or attempt == 1:
                 break
             logger.info("formatter_chart_repair", reason=deficiency)
+            repair_reason = deficiency
             structured = get_model(model_ref, repair_params).with_structured_output(
                 AnswerUi, include_raw=True
             )
@@ -473,6 +477,8 @@ async def generate_answer_ui(
             "a2ui": to_a2ui_messages(parsed),
             "presentation": presentation,
             "coverage": compute_coverage(answer, parsed),
+            # what produced the artifact (the formatter step records it)
+            "formatter": {"model": model_ref, "attempts": attempts, "repair": repair_reason},
         }
         charts = extract_charts(parsed) if charts_enabled else []
         if charts:

@@ -8,11 +8,12 @@ capped at 10, at most once per run); injected-but-uncited memories get
 nothing and cool toward decay naturally. Fail-open like all consolidation.
 """
 
+import contextlib
 from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, update
+from sqlalchemy import select, update
 
 from app.db import get_session_factory
 from app.models import Memory, Run
@@ -50,15 +51,29 @@ async def post_run_citation(run_id: UUID) -> int:
         answer = (run.final_answer or "") if run is not None else ""
         cited = cited_ids(answer, injected)
         if cited:
+            now = datetime.now(UTC)
+            # hardening wave: a citation is an access, always; it raises
+            # importance at most once a day per memory and never for an
+            # inferred one — injection → citation → rank → injection was a
+            # loop with no external signal in it
             await session.execute(
                 update(Memory)
                 .where(Memory.id.in_(cited))
-                .values(
-                    last_accessed_at=datetime.now(UTC),
-                    access_count=Memory.access_count + 1,
-                    importance=func.least(Memory.importance + 1, 10),
-                )
+                .values(last_accessed_at=now, access_count=Memory.access_count + 1)
             )
+            rows = (await session.execute(select(Memory).where(Memory.id.in_(cited)))).scalars()
+            for memory in rows:
+                payload = dict(memory.payload or {})
+                last = payload.get("last_cited_at")
+                recently = False
+                if isinstance(last, str):
+                    with contextlib.suppress(ValueError):
+                        recently = (now - datetime.fromisoformat(last)).total_seconds() < 86400
+                if memory.source == "inferred" or recently:
+                    continue
+                memory.importance = min(int(memory.importance or 0) + 1, 10)
+                payload["last_cited_at"] = now.isoformat()
+                memory.payload = payload
             await session.commit()
     from app import obs
 
