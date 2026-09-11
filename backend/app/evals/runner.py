@@ -108,6 +108,15 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
             or settings.get("default_model")
             or ""
         )
+        # every model the target can resolve to: a workflow skill with its
+        # own model runs under it (review round 3 — the flag looked only at
+        # the sub agent's), so the judge is "the model under test" when it
+        # is any of them
+        target_models = {target_model} | {
+            str(s.get("model"))
+            for s in (target_snapshot.get("skills") or {}).values()
+            if isinstance(s, dict) and s.get("model")
+        }
         eval_run.config_snapshot = {
             # every setting, structured ones included (model params, prices,
             # quarantine kinds): the knobs that shaped the scores
@@ -118,7 +127,7 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
             # grading itself (review round 2: said on the record, not only
             # in the Settings hint)
             "judge_model": judge_ref,
-            "judge_is_target_model": judge_ref == target_model,
+            "judge_is_target_model": judge_ref in target_models,
             "level": dataset.level,
             "target_id": str(dataset.target_id),
         }

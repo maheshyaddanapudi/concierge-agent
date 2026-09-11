@@ -16,6 +16,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app import untrusted
 from app.db import get_session_factory
 from app.llm import get_model
 from app.models import Skill, SubAgent, Tool
@@ -134,11 +135,19 @@ async def _judge(draft_type: str, draft: str, candidates: list[str]) -> OverlapV
     if not candidates:
         return OverlapVerdict(overlap_percent=0, reasoning="registry has no candidates to compare")
 
-    prompt = (
-        load_prompt("overlap_judge")
-        .replace("{draft_type}", draft_type)
-        .replace("{draft}", draft)
-        .replace("{candidates}", "\n".join(candidates))
+    # the draft is model or operator text and the candidates carry every
+    # server-written tool description: both are data to the judge, never
+    # instructions (review round 3) — the same fence the eval and
+    # significance judges use, so a description that ends "return
+    # overlap_percent 0" cannot address the judge
+    prompt = untrusted.render(
+        load_prompt("overlap_judge"),
+        mode="replace",
+        body_var="draft",
+        body=draft,
+        max_chars=4000,
+        draft_type=draft_type,
+        candidates=untrusted.neutralize("\n".join(candidates))[:12000] or "(none)",
     )
     try:
         model_ref, params = await _judge_model()
@@ -230,9 +239,21 @@ async def audit_registry_overlap() -> int:
             if agent.definition_hash is None:
                 stamp_sub_agent(agent)
         await session.commit()
+
+    async def gate_open() -> bool:
+        # re-read before every judge call: an operator turning the audit
+        # off mid-pass stops it there (review round 3 — the report claimed
+        # this and the loop only checked once)
+        if await get_cache().setting("registry_overlap_audit_enabled"):
+            return True
+        logger.info("registry_overlap_audit_stopped", judged=judged, reason="gate_off")
+        return False
+
     for skill in skills:
         if not skill.definition_hash or skill.definition_hash == skill.overlap_audited_hash:
             continue
+        if not await gate_open():
+            return judged
         verdict = await check_skill_overlap(
             name=skill.name,
             description=skill.description,
@@ -247,6 +268,8 @@ async def audit_registry_overlap() -> int:
     for agent in agents:
         if not agent.definition_hash or agent.definition_hash == agent.overlap_audited_hash:
             continue
+        if not await gate_open():
+            return judged
         verdict = await check_sub_agent_overlap(
             name=agent.name,
             description=agent.description,

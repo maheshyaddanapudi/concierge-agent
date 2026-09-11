@@ -136,10 +136,31 @@ async def frozen_definition_hash(run_id: UUID, kind: str, record_id: str) -> str
     return None
 
 
+# the top-level keys the run's pins live under — a plan entry id may not
+# be one of them (validate_plan refuses it): `direct` is the direct-mode
+# entry, `exemplar_vote` the deferred reuse vote (memory/procedural.py)
+RESERVED_SNAPSHOT_KEYS = frozenset(
+    {
+        "settings",
+        "prompts",
+        "build",
+        "context",
+        "catalog_calls",
+        "catalog",
+        "resumes",
+        "direct",
+        "exemplar_vote",
+    }
+)
+
+
 async def write_snapshot(run_id: UUID, snapshot: dict[str, Any]) -> None:
-    """Merge `snapshot` onto the run's (top-level keys replace)."""
+    """Merge `snapshot` onto the run's (top-level keys replace). The row is
+    locked for the read-modify-write: two writers interleaving on the
+    JSON column would otherwise drop one merge (review round 3 — no
+    concurrent writer exists inside one run today; the lock keeps it so)."""
     async with get_session_factory()() as session:
-        run = await session.get(Run, run_id)
+        run = await session.get(Run, run_id, with_for_update=True)
         if run is not None:
             run.snapshot = {**(run.snapshot or {}), **snapshot}
             await session.commit()
@@ -152,7 +173,7 @@ async def append_snapshot_list(run_id: UUID, key: str, *items: Any, cap: int = 2
     if not items:
         return
     async with get_session_factory()() as session:
-        run = await session.get(Run, run_id)
+        run = await session.get(Run, run_id, with_for_update=True)
         if run is not None:
             current = (run.snapshot or {}).get(key)
             existing = list(current) if isinstance(current, list) else []

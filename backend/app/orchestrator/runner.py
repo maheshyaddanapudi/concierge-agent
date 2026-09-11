@@ -486,20 +486,26 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             (datetime.now(UTC) - started).total_seconds()
         )
     except asyncio.CancelledError:
+        # a stopped or wall-clocked run pins what it was shown too (review
+        # round 3: the cancel branch was the one terminal path without it)
+        await _pin_context(ctx)
         await _finalize_failure(
             run_id,
             mode,
             "cancelled",
             _SHUTDOWN_REASON or _CANCEL_REASON.pop(run_id, None) or "run cancelled",
+            settings=settings,
         )
         raise
     except RunFailed as exc:
         await _pin_context(ctx)
-        await _finalize_failure(run_id, mode, "failed", str(exc))
+        await _finalize_failure(run_id, mode, "failed", str(exc), settings=settings)
     except Exception as exc:  # noqa: BLE001 - all failures surface in chat
         logger.exception("run_failed", run_id=str(run_id))
         await _pin_context(ctx)
-        await _finalize_failure(run_id, mode, "failed", _describe_failure(exc, settings))
+        await _finalize_failure(
+            run_id, mode, "failed", _describe_failure(exc, settings), settings=settings
+        )
 
 
 async def _pin_context(ctx: RunContext) -> None:
@@ -516,8 +522,10 @@ async def _pin_context(ctx: RunContext) -> None:
         # whose lists must land NEXT TO what the pre-pause half recorded
         if ctx.context_log:
             await append_snapshot_list(ctx.run_id, "context", *ctx.context_log, cap=100)
-        if ctx.catalog_calls:
+            ctx.context_log.clear()  # pinned once: a second pass (a failure after
+        if ctx.catalog_calls:  # the success pin) must not append it again
             await append_snapshot_list(ctx.run_id, "catalog_calls", *ctx.catalog_calls, cap=200)
+            ctx.catalog_calls.clear()
     except Exception as exc:  # noqa: BLE001 — the record must never fail the run
         logger.warning("context_snapshot_failed", run_id=str(ctx.run_id), error=str(exc))
 
@@ -632,7 +640,17 @@ def _describe_failure(exc: BaseException, settings: dict[str, Any]) -> str:
     return f"{_PROVIDER_LABELS[kind]} — {base} (model settings in play: {where})"
 
 
-async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) -> None:
+async def _finalize_failure(
+    run_id: UUID,
+    mode: str,
+    status: str,
+    message: str,
+    *,
+    settings: dict[str, Any] | None = None,
+) -> None:
+    """`settings`: the run's own (its start-time snapshot, ambient overlay
+    included) so a failed run is priced like a completed one — the live
+    snapshot only when the caller has none (review round 3)."""
     from app.sanitize import sanitize_error
 
     message = sanitize_error(message) or message  # M52: nothing secret is ever persisted
@@ -648,7 +666,11 @@ async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) 
             try:
                 from app.cost import stamp_run_cost
 
-                await stamp_run_cost(session, run, await load_settings_snapshot())
+                await stamp_run_cost(
+                    session,
+                    run,
+                    settings if settings is not None else await load_settings_snapshot(),
+                )
             except Exception as exc:  # noqa: BLE001 — the stamp never blocks the failure
                 logger.warning("cost_stamp_failed", run_id=str(run_id), error=str(exc))
             await session.commit()
@@ -890,7 +912,10 @@ async def _run_agentic(
         # no longer exist
         from app.orchestrator.snapshot import catalog_snapshot, write_snapshot
 
-        await write_snapshot(ctx.run_id, {"catalog": await catalog_snapshot()})
+        try:  # best-effort like every pin: the record never fails the run
+            await write_snapshot(ctx.run_id, {"catalog": await catalog_snapshot()})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("catalog_snapshot_failed", run_id=str(ctx.run_id), error=str(exc))
 
     last_todos: list[dict[str, Any]] | None = None
     interrupted = False

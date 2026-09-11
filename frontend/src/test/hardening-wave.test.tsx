@@ -366,12 +366,15 @@ describe('Skills — a bound tool the loop cannot call is flagged on the list', 
       tool({ id: 'd', tool_key: 'stub.d', deleted_at: '2026-09-02T00:00:00Z' }),
       tool({ id: 'm', tool_key: 'stub.m', ingest_state: 'missing' }),
       tool({ id: 'i', tool_key: 'stub.i', status: 'inactive' }),
+      // third reading: an A2A tool taken out with its disabled remote agent
+      tool({ id: 'a', tool_key: 'agent.a', status: 'inactive', ingest_state: 'agentoff' }),
     ] as never)
     expect(rows.map((r) => `${r.tool.tool_key}:${r.reason}`)).toEqual([
       'stub.q:quarantined',
       'stub.d:deleted',
       'stub.m:missing from server',
       'stub.i:inactive',
+      'agent.a:remote agent disabled',
     ])
   })
 

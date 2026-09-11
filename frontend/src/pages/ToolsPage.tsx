@@ -137,6 +137,7 @@ function ToolDetail({ tool }: { tool: Tool }) {
         <SourceBadge source={tool.source} />
         <StatusPill status={tool.status} />
         {tool.ingest_state === 'missing' && <Chip tone="muted">server dropped it</Chip>}
+        {tool.ingest_state === 'agentoff' && <Chip tone="muted">remote agent disabled</Chip>}
         {schemaChanged && <Chip tone="direct">schema changed</Chip>}
       </div>
       <Field label="Tool key">

@@ -443,6 +443,7 @@ export function unavailableBoundTools(tools: Tool[]): { tool: Tool; reason: stri
     if (t.deleted_at) return [{ tool: t, reason: 'deleted' }]
     if (t.ingest_state === 'changed') return [{ tool: t, reason: 'quarantined' }]
     if (t.ingest_state === 'missing') return [{ tool: t, reason: 'missing from server' }]
+    if (t.ingest_state === 'agentoff') return [{ tool: t, reason: 'remote agent disabled' }]
     if (t.status !== 'active') return [{ tool: t, reason: t.status }]
     return []
   })

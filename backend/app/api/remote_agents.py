@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
@@ -30,7 +31,9 @@ from app.schemas.remote_agent import (
     RemoteAgentOut,
     RemoteAgentPatch,
 )
+from app.toolschema import AGENT_INACTIVE
 
+logger = structlog.get_logger("remote_agents")
 router = APIRouter(prefix="/remote-agents", tags=["remote-agents"])
 
 
@@ -138,10 +141,51 @@ async def patch_agent(
             else:
                 merged[scheme] = value
         agent.credentials = merged
+    was_active = agent.status == "active"
     for field, value in changes.items():
         setattr(agent, field, value)
+    # the agent's tools follow its status (review round 3): a disabled
+    # agent's tools stayed `active` in the catalog, advertised to the
+    # planner and failing only at the call. Off takes every active tool
+    # out of service under its own ingest_state; on brings back exactly
+    # those, never a tool the operator disabled on its own
+    tools_touched = False
+    if was_active and agent.status != "active":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.remote_agent_id == agent.id,
+                Tool.deleted_at.is_(None),
+                Tool.status == "active",
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "inactive"
+            tool.ingest_state = AGENT_INACTIVE
+            tools_touched = True
+    elif not was_active and agent.status == "active":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.remote_agent_id == agent.id,
+                Tool.deleted_at.is_(None),
+                Tool.ingest_state == AGENT_INACTIVE,
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "active"
+            tool.ingest_state = "present"
+            tools_touched = True
     await session.commit()
     await session.refresh(agent)
+    if tools_touched:
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
+        logger.info(
+            "a2a_agent_tools_cascaded",
+            agent_id=str(agent.id),
+            name=agent.name,
+            status=agent.status,
+        )
     counts = await _tool_counts(session, [agent.id])
     return _to_out(agent, counts.get(agent.id, 0))
 

@@ -98,16 +98,6 @@ async def invoke_node(state: DirectState) -> dict[str, Any]:
             raise RunFailed(f"skill eval failed: {result.get('error')}")
         return {"answer": str(result.get("output") or "")}
 
-    # defense in depth: re-check the gate at execution start — a toggle
-    # flipped between request and execution fails the run cleanly
-    try:
-        await check_direct_invokable(
-            state["sub_agent_id"], allow_unexposed=bool(state.get("is_eval"))
-        )
-    except DirectInvokeError as exc:
-        raise RunFailed(str(exc)) from exc
-
-    resolution = await resolve_capability({"type": "sub_agent", "id": state["sub_agent_id"]})
     # spec §3.6: the pinned agent's definition frozen on the run, exactly as
     # graph mode freezes a routed dispatch — a direct run was the one mode
     # whose trace referenced a definition that could change under it
@@ -119,23 +109,51 @@ async def invoke_node(state: DirectState) -> dict[str, Any]:
     )
 
     ctx = require_run_context()
-    if await _first_dispatch(ctx.run_id):
+    pinned = (
+        None
+        if await _first_dispatch(ctx.run_id)
+        else await pinned_resolution(ctx.run_id, DIRECT_ENTRY_ID)
+    )
+    if pinned is None:
+        # defense in depth: re-check the gate at execution start — a toggle
+        # flipped between request and execution fails the run cleanly
+        try:
+            await check_direct_invokable(
+                state["sub_agent_id"], allow_unexposed=bool(state.get("is_eval"))
+            )
+        except DirectInvokeError as exc:
+            raise RunFailed(str(exc)) from exc
+        resolution = await resolve_capability({"type": "sub_agent", "id": state["sub_agent_id"]})
         await write_snapshot(ctx.run_id, {DIRECT_ENTRY_ID: resolution_snapshot(resolution)})
     else:
         # a HITL replay executes the definition the run FROZE, not the one
         # the registry holds now (review round 2: the record and the
-        # execution used to disagree after an edit during the pause)
-        pinned = await pinned_resolution(ctx.run_id, DIRECT_ENTRY_ID)
-        if pinned is not None:
-            if pinned.definition_hash != resolution.definition_hash:
-                logger.warning(
-                    "definition_changed_during_pause",
-                    run_id=str(ctx.run_id),
-                    entity=resolution.entity_name,
-                    paused_version=pinned.definition_version,
-                    current_version=resolution.definition_version,
-                )
-            resolution = pinned
+        # execution used to disagree after an edit during the pause) — and
+        # the pin is read BEFORE the live gate (review round 3: an agent
+        # deleted, deactivated or unexposed during the pause failed the
+        # approved run before its frozen definition was ever consulted;
+        # what the registry holds now is on the log, not in the way)
+        resolution = pinned
+        try:
+            live = await resolve_capability({"type": "sub_agent", "id": state["sub_agent_id"]})
+            live_hash, live_version = live.definition_hash, live.definition_version
+        except Exception as exc:  # noqa: BLE001 — gone or inactive now: still the frozen run
+            live_hash, live_version = None, None
+            logger.warning(
+                "definition_unavailable_during_pause",
+                run_id=str(ctx.run_id),
+                entity=pinned.entity_name,
+                paused_version=pinned.definition_version,
+                error=str(exc)[:200],
+            )
+        if live_hash is not None and pinned.definition_hash != live_hash:
+            logger.warning(
+                "definition_changed_during_pause",
+                run_id=str(ctx.run_id),
+                entity=pinned.entity_name,
+                paused_version=pinned.definition_version,
+                current_version=live_version,
+            )
     result = await execute_resolution(resolution, state["task"], DIRECT_ENTRY_ID)
     if result.get("status") == "error":
         raise RunFailed(

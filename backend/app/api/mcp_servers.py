@@ -124,7 +124,12 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
     # a row never stamped (from before the hash) counts as changed; so does
     # a secret rotation — its VALUE is not in the fingerprint by design, but
     # the running process holds the old one (review round 2)
-    secrets_written = body.env is not None or body.headers is not None
+    # a keep-mask (`***`) entry rewrites nothing — only a new value or a
+    # removal is a rotation worth a reconnect (review round 3: a masked
+    # round-trip from the form tore a live session down mid-run)
+    secrets_written = any(
+        value != "***" for value in {**(body.env or {}), **(body.headers or {})}.values()
+    )
     config_changed = server.config_hash is None or new_hash != server.config_hash
     server.config_hash = new_hash
     await session.commit()

@@ -80,7 +80,14 @@ async def validate_plan(session: AsyncSession, plan: PlannerOutput, max_steps: i
     seen_ids = {e.id for e in plan.entries}
     if len(seen_ids) != len(plan.entries):
         errors.append("entry ids must be unique")
+    from app.orchestrator.snapshot import RESERVED_SNAPSHOT_KEYS
+
     for entry in plan.entries:
+        if entry.id in RESERVED_SNAPSHOT_KEYS:
+            # entries are frozen on the run's snapshot under their id: a
+            # model-chosen id that names a pin would replace it (review
+            # round 3) — a repair retry the planner can act on
+            errors.append(f"entry id {entry.id!r} is reserved; use a short label like 's1'")
         for dep in entry.depends_on:
             if dep not in seen_ids:
                 errors.append(f"entry {entry.id!r} depends on unknown entry {dep!r}")

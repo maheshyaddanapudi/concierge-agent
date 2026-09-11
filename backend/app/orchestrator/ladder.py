@@ -638,6 +638,18 @@ async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
         return row.id if row is not None else None
 
 
+async def dispatch_step_pin(step_id: UUID) -> tuple[str | None, int | None]:
+    """The definition (hash, version) a dispatch step pinned when it ran —
+    the reference a HITL replay compares the live definition against."""
+    from app.models import RunStep
+
+    async with get_session_factory()() as session:
+        row = await session.get(RunStep, step_id)
+        if row is None:
+            return None, None
+        return row.entity_hash, row.entity_version
+
+
 async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -> dict[str, Any]:
     """Execute a resolved capability, recording a dispatch step (spec §7.1)."""
     ctx = require_run_context()

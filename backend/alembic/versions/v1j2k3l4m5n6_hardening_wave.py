@@ -49,9 +49,12 @@ def upgrade() -> None:
     # same sha256 over the stripped UTF-8 text `apply_description` uses),
     # so the first post-upgrade ingest judges a change instead of adopting
     # whatever the server says now as a first sighting
+    # (every whitespace character trimmed, as `str.strip` does — a bare
+    # `btrim` trims spaces only, review round 3)
     op.execute(
-        "UPDATE tools SET description_hash = encode(sha256(convert_to(btrim(description), "
-        "'UTF8')), 'hex') WHERE description IS NOT NULL"
+        "UPDATE tools SET description_hash = encode(sha256(convert_to("
+        "btrim(description, E' \\t\\n\\r\\x0b\\x0c'), 'UTF8')), 'hex') "
+        "WHERE description IS NOT NULL"
     )
     for table in ("skills", "sub_agents"):
         op.add_column(table, sa.Column("definition_hash", sa.String(length=64), nullable=True))

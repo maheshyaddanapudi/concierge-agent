@@ -31,6 +31,7 @@ from app.a2a.auth import AgentCredentialService, ConciergeAuthInterceptor, schem
 from app.db import get_session_factory
 from app.models import RemoteAgent, Tool
 from app.toolschema import (
+    AGENT_INACTIVE,
     apply_description,
     apply_schema,
     definition_fingerprint,
@@ -277,7 +278,8 @@ class A2AManager:
                     apply_schema(row, A2A_TOOL_INPUT_SCHEMA, policy="warn")
                     if row.ingest_state == "missing" and row.deleted_at is None:
                         row.status = "active"
-                    row.ingest_state = "present"
+                    if row.ingest_state != AGENT_INACTIVE:  # the agent's re-enable undoes that
+                        row.ingest_state = "present"
             for skill_id, row in existing.items():
                 if skill_id not in seen:
                     if row.status == "active":

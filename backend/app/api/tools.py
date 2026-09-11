@@ -77,6 +77,10 @@ async def patch_tool(tool_id: UUID, body: ToolPatch, session: SessionDep) -> Too
                 ),
             )
     renamed = "tool_key" in changes and changes["tool_key"] != tool.tool_key
+    if changes.get("description") is None:
+        # an explicit null is not a description (review round 3: it was
+        # stored as the text "None" and locked as operator-owned)
+        changes.pop("description", None)
     if "description" in changes and changes["description"] != tool.description:
         # an operator's wording survives re-ingests (hardening wave)
         from app.toolschema import apply_description

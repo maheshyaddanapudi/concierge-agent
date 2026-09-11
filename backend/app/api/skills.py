@@ -174,6 +174,9 @@ async def patch_skill(
     changes = body.model_dump(exclude_unset=True)
     enforce_static_rules(skill, set(changes))
 
+    new_tools = skill.tools
+    if "tool_ids" in changes:
+        new_tools = await _resolve_tools(session, body.tool_ids or [])
     if (
         changes.get("status") == "active"
         and skill.status != "active"
@@ -182,12 +185,14 @@ async def patch_skill(
     ):
         # spec §16.5: activating a machine-authored proposal is the save
         # the §4 judge guards for a human — judged now, under the judge's
-        # own model role; `?force=true` is the "Save anyway"
+        # own model role; `?force=true` is the "Save anyway". Judged as it
+        # will be saved: a PATCH that rewrites the definition in the same
+        # request used to be judged on the mined text (review round 3)
         verdict = await check_skill_overlap(
-            name=skill.name,
-            description=skill.description,
-            instructions=skill.instructions,
-            tool_keys=sorted(t.tool_key for t in skill.tools),
+            name=str(changes.get("name", skill.name)),
+            description=str(changes.get("description", skill.description)),
+            instructions=str(changes.get("instructions", skill.instructions)),
+            tool_keys=sorted(t.tool_key for t in new_tools),
             exclude_id=skill.id,
         )
         if not verdict.judge_available:
@@ -208,9 +213,6 @@ async def patch_skill(
                 ),
             )
 
-    new_tools = skill.tools
-    if "tool_ids" in changes:
-        new_tools = await _resolve_tools(session, body.tool_ids or [])
     if "model" in changes or "model_params" in changes:
         model = changes.get("model", skill.model)
         model_params = changes.get("model_params", skill.model_params)

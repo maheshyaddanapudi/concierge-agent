@@ -1,12 +1,12 @@
-# acceptance ceremony — spec §14 steps 1–11 — 2026-09-10T22:21:41Z
+# acceptance ceremony — spec §14 steps 1–11 — 2026-09-11T22:24:49Z
 
 $ fresh slate: docker compose down -v; docker compose up -d
  Network concierge-agent_default Removed 
  Container concierge-agent-frontend-1 Starting 
  Container concierge-agent-frontend-1 Started 
 backend /ready 200 after 1s at http://localhost:8000
-concierge-agent-frontend:latest d6c0a08281f8
-concierge-agent-backend:latest ba6942fd566d
+concierge-agent-backend:latest 28f57ea17cd6
+concierge-agent-frontend:latest 89fbe59b7888
 default_model at first boot: anthropic:claude-sonnet-4-6
 PATCH /settings → openrouter:qwen/qwen3.8-max graph
 
@@ -18,8 +18,8 @@ sub agents: [('research-concierge', 'custom'), ('workspace-reporter', 'custom'),
 shot 01-seed-tools.png
 
 $ step 2 — register a new stdio MCP server → its tools appear with {server}.{tool} keys
-server: demo-stub active tools 4
-new tool keys: ['demo-stub.add', 'demo-stub.die', 'demo-stub.echo', 'demo-stub.mutate_toolset']
+server: demo-stub active tools 5
+new tool keys: ['demo-stub.add', 'demo-stub.die', 'demo-stub.echo', 'demo-stub.mutate_schema', 'demo-stub.mutate_toolset']
 shot 02-mcp-registered.png
 
 $ step 3 — custom skill summarize-site from those tools + persona; badges on Tools and Skills
@@ -29,8 +29,8 @@ shot 03-skill-created.png
 
 $ step 4 — toggle direct_exposure on one tool; the next chat's trace shows a rung-1 route step
 PATCH → demo-stub.echo direct_exposure True
-run 93ae84c1-c936-401c-8ac8-65cf10b0fbb6 → completed
-[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('tool_call', '', 'completed', ''), ('aggregate', '', 'completed', '')]
+run a4c048af-c1dc-430a-ac6a-ac0912f8cda9 → completed
+[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('aggregate', '', 'completed', '')]
 shot 04-direct-exposure-run.png
 
 $ step 5 — sub agent with a branch, an error edge and an HITL node; a validation error is rejected inline, then fixed
@@ -40,57 +40,71 @@ sub agent: site-reporter custom nodes ['sum:skill', 'approve:hitl', 'recover:ski
 shot 05-sub-agent.png
 
 $ step 6 — multi-turn chat: message 1 invokes the new sub agent (HITL approved mid-run); message 2 follows up on message 1's result
-run a1a9eef3-9561-46ae-8695-4cffdbe32f8c paused at the HITL gate after 18s
+run 25f5cd4a-2e69-4665-bb39-2b659b5c97a6 paused at the HITL gate after 22s
 shot 06a-hitl-card.png
 hitl → {'status': 'resuming', 'decision': 'approve'}
-run a1a9eef3-9561-46ae-8695-4cffdbe32f8c → completed
+run 25f5cd4a-2e69-4665-bb39-2b659b5c97a6 → completed
 [('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('skill', 's1', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('tool_call', 'demo-stub_add', 'completed', ''), ('route', 'route:sum', 'completed', 'router model selected condition'), ('skill', 'sum', 'completed', ''), ('hitl', 'approve', 'completed', ''), ('route', 'route:approve', 'completed', ''), ('aggregate', '', 'completed', '')]
-answer: The summary is: **21 + 21 = 42 makes the answer**.
+answer: The summary is: **“The demo site says 21 and 21 make 42.”**
 
-It was approved, but publication could not be completed because no publish tool was available.
-run 9304c414-8d6c-4591-b642-93f87b799085 → completed
+It was **not published**, because no publishing tool was available, so no published link exists.
+run 53827a4c-2b1f-4906-9e90-e86d4274faae → completed
 follow-up answer: 42
 shot 06b-multi-turn.png
 
 $ step 7 — something no capability covers → the planner reports no confident match; the trace shows the fallback route rung
-run 744246dc-f43e-495f-a40e-54dec236e5b2 → completed
-[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('skill', '', 'completed', ''), ('tool_call', 'filesystem_list_allowed_directories', 'completed', ''), ('tool_call', 'filesystem_directory_tree', 'completed', ''), ('aggregate', '', 'completed', '')]
-answer: I couldn’t complete the reconciliation or list mismatches.
+run 81ea27e4-53ab-4157-b94e-0a64a5bddb55 → completed
+[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('skill', '', 'completed', ''), ('tool_call', 'filesystem_search_files', 'completed', ''), ('tool_call', 'filesystem_list_allowed_directories', 'completed', ''), ('tool_call', 'filesystem_directory_tree', 'completed', ''), ('tool_call', 'filesystem_search_files', 'completed', ''), ('tool_call', 'memory_recall', 'completed', ''), ('tool_call', 'filesystem_list_directory_with_sizes', 'completed', ''), ('aggregate', '', 'completed', '')]
+answer: I couldn’t complete the reconciliation or produce a mismatch list.
 
-Concrete result from the check:
+Two concrete blockers were found:
 
-- The workspace is empty — there are no supplie
+1. **The requested invoice-reconcilia
 
 $ step 8 — kill the new MCP server process → invoke again → the server shows error; reconnect from the API
-run 43835985-11c4-4a1b-a7e0-35a2760e27d9 → completed
-[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('skill', 's1', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('tool_call', 'demo-stub_add', 'completed', ''), ('route', 'route:sum', 'completed', 'router model selected condition'), ('skill', 'sum', 'completed', ''), ('hitl', 'approve', 'completed', ''), ('route', 'route:approve', 'completed', ''), ('aggregate', '', 'completed', '')]
+run e2bdeb3e-c868-43d9-a2e6-144f58463556 → completed
+[('plan', '', 'completed', ''), ('route', '', 'completed', ''), ('skill', 's1', 'completed', ''), ('tool_call', 'demo-stub_add', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('route', 'route:sum', 'completed', 'router model selected condition'), ('skill', 'sum', 'completed', ''), ('hitl', 'approve', 'completed', ''), ('route', 'route:approve', 'completed', ''), ('aggregate', '', 'completed', '')]
 server after the kill (a stdio server respawns on next use): active | 
 (the visible error state: point the server at a binary that does not exist, reconnect, then restore — the same lifecycle the UI drives)
 reconnect with a broken command → error | FileNotFoundError: [Errno 2] No such file or directory
-reconnect restored → active tools 4
+reconnect restored → active tools 5
 shot 08-server-reconnected.png
 
 $ step 9 — Runs page: full trace with nested steps, tokens, route reasons; cancel a running run; retry a failed one
-trace: 10 steps; tokens 3446 → 911 ; nested: 6
+trace: 10 steps; tokens 3529 → 926 ; nested: 6
 cancel → {'status': 'cancelled'}
 cancelled run cancelled
 (a run that fails truthfully: run_wall_clock_s=30 — the admission ceiling — under a long essay)
 run_wall_clock_s → 30
-run under the 30 s wall clock 66ba327e-27aa-4fdf-ba3b-74f81a6d6d9f → failed
+run under the 30 s wall clock 78dd3ae0-dc1e-46b3-aac1-1736a174d16f → failed
 failed exceeded the run wall clock (30s, run_wall_clock_s) — terminated
-retry → run 0b919354-bca2-4648-b0d4-b8b841a71fc8 → timeout
+retry → run acfc2052-1405-4fc0-865b-362adc22d578 → completed
 shot 09-runs.png
 
 $ step 10 — Settings: change the planner model → the next run's trace labels show it
 planner_model → openrouter:qwen/qwen3.8-max
-run 7b70d58e-3f9e-42f2-becb-e7dd9f9e9135 → completed
-step models: [('plan', 'openrouter:qwen/qwen3.8-max'), ('aggregate', 'openrouter:qwen/qwen3.8-max')]
+run 09798408-1958-4865-8ec5-b747a57088c5 → completed
+step models: [('plan', 'openrouter:qwen/qwen3.8-max')]
 shot 10-settings.png
 
 $ step 11 — orchestrator_mode=agentic: repeat step 6's first message; the sub agent is a dispatch tool, the HITL card still gates
 orchestrator_mode → agentic
-run 89910aa2-c151-49f3-a5a6-86177f329898 → completed
-     18 event: activity       1 event: dispatch_end       1 event: dispatch_start       1 event: done       2 event: hitl_request       1 event: route       4 event: run_status       1 event: token 
-[('route', '', 'completed', ''), ('skill', 'agentic:site-reporter', 'completed', ''), ('tool_call', 'demo-stub_add', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('route', 'route:sum', 'completed', 'router model selected condition'), ('skill', 'sum', 'completed', ''), ('hitl', 'approve', 'completed', ''), ('route', 'route:approve', 'completed', ''), ('aggregate', '', 'completed', '')]
+run ff0569f3-16cf-421b-81cf-f9a0c34b1202 → completed
+     20 event: activity
+       1 event: dispatch_end
+       1 event: dispatch_start
+       1 event: done
+       2 event: hitl_request
+       1 event: route
+       4 event: run_status
+       1 event: token
+ 
+[('route', '', 'completed', ''), ('skill', 'agentic:site-reporter', 'completed', ''), ('tool_call', 'demo-stub_add', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('route', 'route:sum', 'completed', 'router model selected condition'), ('skill', 'sum', 'completed', ''), ('hitl', 'approve', 'completed', ''), ('route', 'route:approve', 'completed', ''), ('tool_call', 'demo-stub_echo', 'completed', ''), ('aggregate', '', 'completed', '')]
 shot 11-agentic.png
-# end — 2026-09-10T22:31:09Z
+# end — 2026-09-11T22:31:17Z
+
+## alembic current on the fresh volume
+w2k3l4m5n6o7 (head)
+w2k3l4m5n6o7
+30|30
+human|6

@@ -30,6 +30,10 @@ SCHEMA_CHANGE_POLICIES = {"warn", "quarantine"}
 # on a schema change: a re-ingest must not reactivate it (only the operator's
 # acknowledgement does), unlike a 'missing' tool the server merely dropped
 QUARANTINED = "changed"
+# an A2A tool taken out of service because its remote agent was disabled
+# (review round 3): brought back by the agent's re-enable, never by a
+# card refresh — `ingest_state` is 8 characters wide
+AGENT_INACTIVE = "agentoff"
 
 
 def schema_fingerprint(schema: dict[str, Any] | None) -> str | None:
@@ -66,7 +70,12 @@ def apply_schema(
     row.schema_hash = new_hash
     row.schema_version = int(row.schema_version or 1) + 1
     row.schema_changed_at = now or datetime.now(UTC)
-    quarantined = policy == "quarantine" and row.status == "active"
+    # an active row, or one the server is bringing back from `missing`
+    # (review round 3: a tool that vanished and returned with a renamed
+    # parameter used to be reactivated at once, past the policy)
+    quarantined = policy == "quarantine" and (
+        row.status == "active" or (row.ingest_state == "missing" and row.deleted_at is None)
+    )
     if quarantined:
         row.status = "inactive"
         row.ingest_state = QUARANTINED

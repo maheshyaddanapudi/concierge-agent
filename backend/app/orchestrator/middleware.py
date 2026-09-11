@@ -349,11 +349,14 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             await self._resolve()
             tool = self._current.get(name)
         if tool is None:
-            if (
+            bound_reason = self._missing_names.get(name)
+            if bound_reason is None and (
                 request.tool is not None
                 or name in KNOWN_LOOP_TOOLS
                 or name.startswith(SIBLING_TOOL_PREFIXES)
             ):
+                # (a BOUND name is judged first: a server called `dispatch`
+                # whose tool went inactive is not a sibling — review round 3)
                 # a tool the loop itself registered with its ToolNode (the
                 # agentic loop's spin_worker / use_full_catalog, a native
                 # HITL gate) or one a sibling projection attaches per model
@@ -370,7 +373,6 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             # node's error edge (spec §3.5); a name the loop never had (a
             # hallucination, an unsanitized key) is the model's own slip and
             # gets the error message back to correct itself, as before
-            bound_reason = self._missing_names.get(name)
             obs.SKILL_TOOL_UNAVAILABLE.labels(
                 reason=f"called:{bound_reason}" if bound_reason else "called:unknown"
             ).inc()
@@ -393,7 +395,11 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
         ctx_now = get_run_context()
         if ctx_now is not None and ctx_now.resumed:
             # only a resumed run can be replaying arguments made against an
-            # older schema — no query per call otherwise
+            # older schema — no query per call otherwise, and only for the
+            # replayed call itself: the first registry tool call after a
+            # resume IS the replay (review round 3: the interrupted step
+            # stays `running`, so every later call re-matched it)
+            ctx_now.resumed = False
             await self._check_paused_schema(name, meta)
         step_id = await _record_tool_call(
             name,
@@ -624,16 +630,20 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             # recorded before the pause when the dispatch step is still open
             replay = ctx is not None and await find_running_dispatch(ctx.run_id, node_id)
             if replay and ctx is not None:
-                # the replay runs the agent as it is NOW; the catalog the run
-                # froze says what it was — a difference is on the log
-                from app.orchestrator.snapshot import frozen_definition_hash
+                # the replay runs the agent as it is NOW; the dispatch step
+                # that paused pinned what it was — a difference is on the
+                # log (review round 3: the run-START catalog was compared
+                # before, a false alarm for an agent edited between start
+                # and dispatch; the step's own pin is the reference)
+                from app.orchestrator.ladder import dispatch_step_pin
 
-                was = await frozen_definition_hash(ctx.run_id, "sub_agents", card["id"])
-                if was is not None and was != resolution.definition_hash:
+                was_hash, was_version = await dispatch_step_pin(replay)
+                if was_hash is not None and was_hash != resolution.definition_hash:
                     logger.warning(
                         "definition_changed_during_pause",
                         run_id=str(ctx.run_id),
                         entity=card["name"],
+                        paused_version=was_version,
                         current_version=resolution.definition_version,
                     )
             if ctx is not None and not replay:

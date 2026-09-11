@@ -18,7 +18,7 @@ from app.config import get_config
 from app.models import McpServer, Skill, SubAgent, Tool
 from app.native.provider import native_sub_agents, native_tools, scan_native
 from app.skilldoc import scan_skill_files
-from app.toolschema import apply_schema, schema_fingerprint
+from app.toolschema import apply_description, apply_schema, schema_fingerprint, text_fingerprint
 
 logger = structlog.get_logger("seed")
 
@@ -89,6 +89,7 @@ async def upsert_native_tools(session: AsyncSession) -> None:
                 Tool(
                     name=name,
                     description=entry.description,
+                    description_hash=text_fingerprint(entry.description),
                     kind="native",
                     source="static",
                     tool_name=name,
@@ -100,7 +101,10 @@ async def upsert_native_tools(session: AsyncSession) -> None:
                 )
             )
         else:
-            tool.description = entry.description
+            # a native description changes only with a deploy — fingerprinted
+            # like an MCP one so the row's hash matches its text after an
+            # upgrade (review round 3); a change is logged, never suppressed
+            apply_description(tool, entry.description, source="server")
             tool.native_ref = entry.native_ref
             # a native schema changes only with a deploy — fingerprinted and
             # versioned like an MCP one so the trace pins it; never quarantined

@@ -8,6 +8,7 @@ zero), and mined skill proposals pass doclint + the overlap judge and land
 INACTIVE for human review — no autonomous registry mutation.
 """
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -407,10 +408,11 @@ async def post_run_procedural(run_id: UUID) -> None:
 # that, thanks!"), so the heuristic errs toward NO vote rather than a
 # false downvote
 _CORRECTION_OPENERS = (
+    # a bare "no " / "nope" opened "No thanks, that's all" (review round 3):
+    # only the punctuated refusal and the explicit forms remain
     "no,",
     "no.",
-    "no ",
-    "nope",
+    "no!",
     "not what",
     "that's wrong",
     "that is wrong",
@@ -453,12 +455,13 @@ def looks_like_correction(previous_ask: str, next_ask: str) -> bool:
 async def judge_pending_vote(conversation_id: UUID, next_message: str) -> str | None:
     """The next turn in a conversation settles EVERY pending exemplar vote
     in it: the newest pending run against the new message (a correction
-    downvotes, anything else upvotes); older pending runs — a run that was
-    still executing when the next turn arrived, a direct invocation, a
-    retry sitting after it — were followed by turns that were not judged
-    corrections of them and are confirmed (review round 2: only the newest
-    run used to be looked at, so those stayed pending forever). Returns the
-    newest decision, or None when nothing was pending."""
+    downvotes, anything else upvotes); an older pending run — a run that
+    was still executing when the next turn arrived, a direct invocation, a
+    retry sitting after it — is judged against the first turn that
+    followed it, exactly as the sweep does (review round 2 confirmed those
+    blindly: a slow run corrected by the very next turn was upvoted;
+    round 3 judges it). Returns the newest decision, or None when nothing
+    was pending."""
     if not await _enabled():
         return None
     settled: list[tuple[dict[str, Any], bool, UUID]] = []
@@ -478,11 +481,27 @@ async def judge_pending_vote(conversation_id: UUID, next_message: str) -> str | 
         )
         for i, run in enumerate(runs):
             pending = dict((run.snapshot or {}).get("exemplar_vote") or {})
-            corrected = i == 0 and looks_like_correction(run.chat_message, next_message)
+            if i == 0:
+                judged_against, settled_by = next_message, "next_turn"
+            else:
+                later = (
+                    await session.execute(
+                        select(Run.chat_message)
+                        .where(
+                            Run.conversation_id == conversation_id,
+                            Run.started_at > run.started_at,
+                        )
+                        .order_by(Run.started_at.asc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                judged_against = later if later is not None else next_message
+                settled_by = "later_turn"
+            corrected = looks_like_correction(run.chat_message, judged_against)
             decision = "corrected" if corrected else "confirmed"
             run.snapshot = {
                 **(run.snapshot or {}),
-                "exemplar_vote": {**pending, "status": decision, "settled_by": "next_turn"},
+                "exemplar_vote": {**pending, "status": decision, "settled_by": settled_by},
             }
             settled.append((pending, corrected, run.id))
         await session.commit()
@@ -654,7 +673,10 @@ async def mine_fallback_skills() -> list[str]:
             ]
             if not bound_ids:
                 continue
-            name = f"mined-{abs(hash(cluster[0][2])) % 10_000:04d}"
+            # a stable name: Python's hash() is salted per process, so a
+            # restart re-proposed every cluster under a new name (review
+            # round 3) — sha256 of the representative ask instead
+            name = f"mined-{hashlib.sha256(cluster[0][2].encode('utf-8')).hexdigest()[:6]}"
             exists = (
                 await session.execute(select(Skill).where(Skill.name == name))
             ).scalar_one_or_none()
