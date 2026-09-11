@@ -58,6 +58,8 @@ class RunRecorder:
         effort: str | None = None,
         input: dict[str, Any] | None = None,
         emit_dispatch: bool = False,
+        entity_version: int | None = None,
+        entity_hash: str | None = None,
     ) -> UUID:
         async with get_session_factory()() as session:
             step = RunStep(
@@ -68,6 +70,11 @@ class RunRecorder:
                 step_type=step_type,
                 input=input,
                 model=model,
+                # the entity's version pinned into the record (a tool's
+                # schema version and hash): the trace reads against the
+                # registry as it was when the step ran
+                entity_version=entity_version,
+                entity_hash=entity_hash,
                 status="running",
             )
             session.add(step)
@@ -100,6 +107,12 @@ class RunRecorder:
         for key, value in labels.items():
             if value is not None:
                 span.set_attribute(f"concierge.{key}", str(value))
+        # span attributes, not metric labels: the §10 label set (and its
+        # cardinality) stays as specified, the span still names the version
+        if entity_version is not None:
+            span.set_attribute("concierge.entity_version", int(entity_version))
+        if entity_hash:
+            span.set_attribute("concierge.entity_hash", entity_hash)
         self._spans[step_id] = span
         # live activity feed (spec §7.1): every step transition, so the chat
         # can show what the run is doing right now without exposing payloads

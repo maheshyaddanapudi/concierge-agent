@@ -51,6 +51,11 @@ def _step_out(step: RunStep) -> dict[str, Any]:
         "input": step.input,
         "output": step.output,
         "model": step.model,
+        # the entity version the step ran against (a tool's schema version
+        # and hash on tool_call steps) — the trace reads against the
+        # registry as it was, not as it is
+        "entity_version": step.entity_version,
+        "entity_hash": step.entity_hash,
         "input_tokens": step.input_tokens,
         "output_tokens": step.output_tokens,
         "status": step.status,

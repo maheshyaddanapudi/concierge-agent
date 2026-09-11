@@ -11,6 +11,17 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 
 > **Reconstruction note (M56).** Entries M13–M55 below were reconstructed from the README milestone table when the project was tagged `v1.0.0`; each entry's text is that milestone's row, its date the newest commit in the history that names the milestone. Entries M1–M12 are the original hand-written ones.
 
+## Schema drift, the pinned registry and the judge's own model — 2026-09-11
+
+Three points raised on the release announcement, each answered in code (spec §3.2, §3.6, §3.7 and §8.2 amended), with regression tests on the fake provider and the stub MCP server, and live evidence in `docs/acceptance/35-schema-drift/` and `docs/acceptance/prod/DRIFT/`.
+
+### Added
+
+- **Tool schema drift is loud.** Every write of a tool's `input_schema` (MCP ingest, the native scan, an A2A card refresh) goes through one rule (`app/toolschema.py`): the schema is fingerprinted (`schema_hash`, key order and whitespace do not count), versioned (`schema_version`, 1 at first sighting, +1 per change) and, on a change, logged (`tool_schema_changed`), counted (`concierge_tool_schema_changes_total{kind, policy}`) and flagged (`schema_changed_at`) until an operator acknowledges it (`POST /tools/{id}/acknowledge-schema`). The new `mcp_schema_change_policy` setting (`warn`, the default, or `quarantine`) decides whether a changed MCP tool also goes out of service — `status='inactive'`, `ingest_state='changed'` — which a re-ingest never undoes. The Tools page badges a changed tool with its new version in the table and, in the drawer, shows a banner with one Acknowledge action (Acknowledge & re-enable when quarantined) and the schema version next to the tool key. Rows from before the rule carry no hash and are recorded as first sightings on their next ingest, never flagged wholesale. Migration `u0i1j2k3l4m5`.
+- **The registry version is pinned into the run.** Every `tool_call` step records the tool's schema version and hash (`run_steps.entity_version` / `entity_hash`, shown as `schema v{n} · hash` in the Runs trace) and the span carries them as attributes, not §10 metric labels. A `direct_tool` plan entry's frozen payload now holds the tool's schema, version and hash, not only its id. A `direct` run freezes the pinned sub agent's resolution on the run (once, never on a HITL replay), and an `agentic` run freezes the catalog it could see at start — exposed tools with their versions, exposed skills and active sub agents with their `updated_at` — so a trace reads against the registry as it was in all three modes.
+- **The overlap judge has its own model role.** `overlap_judge_model` / `overlap_judge_model_params`, null falling back to `default_model` like every other role, threaded into the §4 judge and offered in Settings → Models. A judge that is not the model writing the skills (the operator's, or the §17.7 learner's) does not share the generator's blind spots.
+- The test stub MCP server gains `mutate_schema`, which renames `echo`'s parameter (`text` ⇄ `message`) and notifies listChanged, so the drift path is exercised end to end by tests and by the live stage.
+
 ## Fixes from campaign v1 — 2026-09-11
 
 The three product findings of the acceptance campaign on the `dev` images (`docs/acceptance/report.md`, findings 1, 2 and 4), each with a regression test on the fake provider and a live re-verification under `docs/acceptance/prod/FIXES/`.

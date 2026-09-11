@@ -38,6 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app import obs
 from app.db import get_session_factory
 from app.models import McpServer, Tool
+from app.toolschema import QUARANTINED, apply_schema, schema_fingerprint
 
 logger = structlog.get_logger("mcp.manager")
 
@@ -368,6 +369,16 @@ class McpManager:
             }
             taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
             seen: set[str] = set()
+            # spec §3.2 drift: what a changed input schema does to the row —
+            # 'warn' flags it for acknowledgement, 'quarantine' also takes
+            # it out of service until an operator acknowledges the change
+            from app.registry_cache import get_cache
+
+            try:
+                policy = str(await get_cache().setting("mcp_schema_change_policy") or "warn")
+            except Exception:  # noqa: BLE001 — a settings hiccup must not block an ingest
+                policy = "warn"
+            changed: list[str] = []
             for spec in result.tools:
                 seen.add(spec.name)
                 row = existing.get(spec.name)
@@ -389,6 +400,8 @@ class McpManager:
                         direct_exposure=False,
                         input_schema=spec.inputSchema,
                         ingest_state="present",
+                        schema_hash=schema_fingerprint(spec.inputSchema),
+                        schema_version=1,
                     )
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["mcp_server_id", "tool_name"],
@@ -397,17 +410,22 @@ class McpManager:
                             "description": stmt.excluded.description,
                             "input_schema": stmt.excluded.input_schema,
                             "ingest_state": "present",
+                            "schema_hash": stmt.excluded.schema_hash,
                         },
                     )
                     await db.execute(stmt)
                 else:
                     row.description = spec.description or ""
-                    row.input_schema = spec.inputSchema
+                    if apply_schema(row, spec.inputSchema, policy=policy):
+                        changed.append(row.tool_key)
                     # M53: only the SERVER's absence is undone by its return;
-                    # an operator's inactive (or deleted) row stays as set
+                    # an operator's inactive (or deleted) row stays as set —
+                    # and so does a row the quarantine policy took out of
+                    # service on a schema change (until acknowledged)
                     if row.ingest_state == "missing" and row.deleted_at is None:
                         row.status = "active"
-                    row.ingest_state = "present"
+                    if row.ingest_state != QUARANTINED:
+                        row.ingest_state = "present"
             for name, row in existing.items():
                 if name not in seen:
                     if row.status == "active":
@@ -425,6 +443,7 @@ class McpManager:
             "mcp_tools_ingested",
             server_id=str(server_id),
             tool_count=len(result.tools),
+            schema_changed=changed,
         )
 
     def _handle_notification(self, server_id: UUID, message: Any) -> None:

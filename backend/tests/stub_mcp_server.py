@@ -44,9 +44,30 @@ def die() -> str:
     os._exit(1)
 
 
+def echo_v2(message: str) -> str:
+    """Echo the given text back."""
+    return f"echo:{message}"
+
+
+_ECHO_V2 = False
+
+
+async def mutate_schema(ctx: Context) -> str:  # type: ignore[type-arg]
+    """Rename `echo`'s parameter (text ⇄ message) — the same tool name with
+    a different input schema — and notify listChanged (spec §3.2 drift).
+    Each call flips between the two shapes, so a drill can change it back."""
+    global _ECHO_V2
+    _ECHO_V2 = not _ECHO_V2
+    mcp._tool_manager.remove_tool("echo")
+    mcp.add_tool(echo_v2 if _ECHO_V2 else echo, name="echo")
+    await ctx.session.send_tool_list_changed()
+    return f"schema mutated: echo now takes {'message' if _ECHO_V2 else 'text'}"
+
+
 mcp.add_tool(echo)
 mcp.add_tool(add)
 mcp.add_tool(mutate_toolset)
+mcp.add_tool(mutate_schema)
 mcp.add_tool(die)
 
 

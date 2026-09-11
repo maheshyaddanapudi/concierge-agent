@@ -70,6 +70,10 @@ def _tool_record(t: Tool) -> dict[str, Any]:
         "tool_key": t.tool_key,
         "direct_exposure": t.direct_exposure,
         "input_schema": t.input_schema,
+        "ingest_state": t.ingest_state,
+        "schema_hash": t.schema_hash,
+        "schema_version": t.schema_version,
+        "schema_changed_at": _iso(t.schema_changed_at),
         "embedding": getattr(t, "embedding", None),
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),
@@ -106,6 +110,8 @@ def _skill_record(s: Skill) -> dict[str, Any]:
                 "status": t.status,
                 "description": t.description,
                 "input_schema": t.input_schema,
+                "schema_hash": t.schema_hash,
+                "schema_version": t.schema_version,
             }
             for t in s.tools
             if t.deleted_at is None

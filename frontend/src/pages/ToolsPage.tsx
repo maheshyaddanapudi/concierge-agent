@@ -87,9 +87,41 @@ function ToolDetail({ tool }: { tool: Tool }) {
     }
   }
 
+  const acknowledge = async () => {
+    setError(null)
+    try {
+      await api.post(`/tools/${tool.id}/acknowledge-schema`)
+      invalidate('tools')
+    } catch (e) {
+      setError(e)
+    }
+  }
+  const quarantined = tool.ingest_state === 'changed'
+  const schemaChanged = Boolean(tool.schema_changed_at) || quarantined
+
   return (
     <div className="space-y-4">
       {isStatic && <StaticNotice />}
+      {schemaChanged && (
+        // spec §3.2 drift: the server changed this tool's input schema under
+        // a re-ingest — loud, versioned, and held until read
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300"
+        >
+          <span>
+            Input schema changed — now v{tool.schema_version ?? 1}
+            {tool.schema_changed_at
+              ? ` (${new Date(tool.schema_changed_at).toLocaleString()})`
+              : ''}
+            . Skills whose instructions name its parameters may need updating.
+            {quarantined ? ' Quarantined: out of service until acknowledged.' : ''}
+          </span>
+          <Button variant="secondary" onClick={() => void acknowledge()}>
+            {quarantined ? 'Acknowledge & re-enable' : 'Acknowledge'}
+          </Button>
+        </div>
+      )}
       {tool.deleted_at && (
         // M53: a re-ingest no longer resurrects a deleted MCP tool, so
         // bringing it back is an explicit act
@@ -105,9 +137,21 @@ function ToolDetail({ tool }: { tool: Tool }) {
         <SourceBadge source={tool.source} />
         <StatusPill status={tool.status} />
         {tool.ingest_state === 'missing' && <Chip tone="muted">server dropped it</Chip>}
+        {schemaChanged && <Chip tone="direct">schema changed</Chip>}
       </div>
       <Field label="Tool key">
         <code className="text-xs text-indigo-300">{tool.tool_key}</code>
+      </Field>
+      <Field
+        label="Schema version"
+        hint="bumps on every ingest that changes the input schema; each tool call records the version it ran against"
+      >
+        <code className="text-xs text-slate-300">
+          v{tool.schema_version ?? 1}
+          {tool.schema_hash ? (
+            <span className="text-slate-500"> · {tool.schema_hash.slice(0, 12)}</span>
+          ) : null}
+        </code>
       </Field>
       {server && (
         <Field label="Server">
@@ -183,6 +227,9 @@ export function ToolsPage() {
                 <SourceBadge source={t.source} />
                 {t.direct_exposure && <Chip tone="direct">direct</Chip>}
                 {t.deleted_at && <Chip tone="muted">deleted</Chip>}
+                {(t.schema_changed_at || t.ingest_state === 'changed') && (
+                  <Chip tone="direct">schema changed · v{t.schema_version ?? 1}</Chip>
+                )}
               </div>
             ),
           },

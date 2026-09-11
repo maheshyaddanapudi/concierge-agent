@@ -1,6 +1,7 @@
 """Tool schemas (spec §3.2, §4). Tools are never created via API — they come
 from MCP ingestion or the native registration scan."""
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -24,3 +25,8 @@ class ToolOut(RegistryOut):
     direct_exposure: bool
     input_schema: dict[str, Any] | None
     ingest_state: str | None = None
+    # schema fingerprint: the hash and version of input_schema as last
+    # ingested; schema_changed_at is set while a change awaits acknowledgement
+    schema_hash: str | None = None
+    schema_version: int = 1
+    schema_changed_at: datetime | None = None

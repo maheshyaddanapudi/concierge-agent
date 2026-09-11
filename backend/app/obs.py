@@ -59,6 +59,14 @@ STEPS_TOTAL = Counter(
 TOOL_CALLS_TOTAL = Counter(
     "concierge_tool_calls_total", "Tool calls executed", ["kind", "source", "status"]
 )
+# spec §3.2 drift: a tool's input schema changed under a re-ingest — by the
+# tool kind and the policy that applied (warn: flagged; quarantine: also
+# taken out of service until acknowledged)
+TOOL_SCHEMA_CHANGES = Counter(
+    "concierge_tool_schema_changes_total",
+    "Tool input schemas that changed on re-ingest, by kind and policy",
+    ["kind", "policy"],
+)
 ERRORS_TOTAL = Counter("concierge_errors_total", "Errors", ["tier", "kind", "source"])
 RUN_DURATION = Histogram("concierge_run_duration_seconds", "Run duration", ["mode", "status"])
 # memory layers (spec §16.6)

@@ -20,6 +20,12 @@ async def create_tool(**kw: Any) -> Tool:
         "input_schema": {"type": "object", "properties": {}},
     }
     defaults.update(kw)
+    # every real write path fingerprints the schema (spec §3.2 drift); a row
+    # built here carries the same hash so traces pin it like production rows
+    if "schema_hash" not in defaults:
+        from app.toolschema import schema_fingerprint
+
+        defaults["schema_hash"] = schema_fingerprint(defaults.get("input_schema"))
     async with get_session_factory()() as session:
         tool = Tool(**defaults)
         session.add(tool)

@@ -1,9 +1,10 @@
 """tools registry (spec §3.2)."""
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import RegistryRecord
@@ -42,6 +43,15 @@ class Tool(RegistryRecord):
     # never a tool an operator disabled or deleted; None for native/a2a rows
     # and for rows ingested before M53 (treated as operator intent)
     ingest_state: Mapped[str | None] = mapped_column(String(8), default=None)
+    # schema fingerprint (spec §3.2 drift): a content hash of `input_schema`
+    # as last written, the version that hash is (1 at first sighting, +1 on
+    # every change) and, while a change awaits the operator's acknowledgement,
+    # when it was noticed — a renamed parameter is loud, never silent
+    schema_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    schema_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
     embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)

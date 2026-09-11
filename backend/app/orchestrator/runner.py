@@ -789,6 +789,13 @@ async def _run_agentic(
     else:
         history = await build_history_messages(conversation_id)
         graph_input = {"messages": [*history, HumanMessage(content=task_text)]}
+        # spec §3.6: the catalog the loop could see at the start, frozen on
+        # the run — the registry middlewares resolve live at every model
+        # call, so without this an agentic trace named a registry that may
+        # no longer exist
+        from app.orchestrator.snapshot import catalog_snapshot, write_snapshot
+
+        await write_snapshot(ctx.run_id, {"catalog": await catalog_snapshot()})
 
     last_todos: list[dict[str, Any]] | None = None
     interrupted = False

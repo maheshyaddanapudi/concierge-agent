@@ -30,6 +30,7 @@ from app import egress
 from app.a2a.auth import AgentCredentialService, ConciergeAuthInterceptor, scheme_supported
 from app.db import get_session_factory
 from app.models import RemoteAgent, Tool
+from app.toolschema import apply_schema, schema_fingerprint
 
 logger = structlog.get_logger("a2a")
 
@@ -216,11 +217,13 @@ class A2AManager:
                             tool_name=skill.id,
                             tool_key=key,
                             input_schema=A2A_TOOL_INPUT_SCHEMA,
+                            schema_hash=schema_fingerprint(A2A_TOOL_INPUT_SCHEMA),
+                            schema_version=1,
                         )
                     )
                 else:
                     row.description = skill_description(skill)
-                    row.input_schema = A2A_TOOL_INPUT_SCHEMA
+                    apply_schema(row, A2A_TOOL_INPUT_SCHEMA, policy="warn")
                     row.status = "active"
                     row.deleted_at = None
             for skill_id, row in existing.items():

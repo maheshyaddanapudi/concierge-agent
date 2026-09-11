@@ -107,3 +107,22 @@ async def restore_tool(tool_id: UUID, session: SessionDep) -> Tool:
     await session.refresh(tool)
     await get_cache().invalidate("tools")
     return tool
+
+
+@router.post("/{tool_id}/acknowledge-schema", response_model=ToolOut)
+async def acknowledge_schema_change(tool_id: UUID, session: SessionDep) -> Tool:
+    """The operator has read a schema change (spec §3.2 drift): the flag
+    clears, and a tool the quarantine policy took out of service is back
+    in service. The version and hash stay — they are the record."""
+    from app.toolschema import acknowledge_schema
+
+    tool = await session.get(Tool, tool_id)
+    if tool is None or tool.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="tool not found")
+    if tool.schema_changed_at is None and tool.ingest_state != "changed":
+        return tool
+    acknowledge_schema(tool)
+    await session.commit()
+    await session.refresh(tool)
+    await get_cache().invalidate("tools")
+    return tool

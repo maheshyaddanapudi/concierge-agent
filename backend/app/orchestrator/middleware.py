@@ -80,7 +80,13 @@ ToolsMode = Literal["scoped", "exposed", "full_catalog"]
 
 
 async def _record_tool_call(
-    name: str, kind: str | None, source: str | None, entity_id: str | None
+    name: str,
+    kind: str | None,
+    source: str | None,
+    entity_id: str | None,
+    *,
+    schema_version: int | None = None,
+    schema_hash: str | None = None,
 ) -> UUID | None:
     ctx = get_run_context()
     if ctx is None:
@@ -96,6 +102,9 @@ async def _record_tool_call(
         # the runner's render_chart collection depends on it (spec §7.1)
         node_id=name,
         parent_step_id=CURRENT_STEP_ID.get(),
+        # spec §3.2 drift: the schema version the call was made against
+        entity_version=schema_version,
+        entity_hash=schema_hash,
     )
     return step_id
 
@@ -189,6 +198,8 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
                 "kind": record["kind"],
                 "source": record["source"],
                 "id": record["id"],
+                "schema_version": record.get("schema_version"),
+                "schema_hash": record.get("schema_hash"),
             }
             for record in records
         }
@@ -210,7 +221,12 @@ class ToolsRegistryMiddleware(AgentMiddleware[Any, Any]):
             return await handler(request)
         meta = self._meta.get(name, {})
         step_id = await _record_tool_call(
-            name, meta.get("kind"), meta.get("source"), meta.get("id")
+            name,
+            meta.get("kind"),
+            meta.get("source"),
+            meta.get("id"),
+            schema_version=meta.get("schema_version"),
+            schema_hash=meta.get("schema_hash"),
         )
         holder: dict[str, int] = {}
         token = TOOL_USAGE_HOLDER.set(holder)

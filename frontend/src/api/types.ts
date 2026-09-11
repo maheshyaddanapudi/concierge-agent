@@ -58,8 +58,16 @@ export interface Tool extends RegistryRecord {
   tool_key: string
   direct_exposure: boolean
   input_schema: Record<string, unknown> | null
-  // M53: what the MCP server last said — 'present' | 'missing'; null for native/a2a
+  // M53: what the MCP server last said — 'present' | 'missing'; null for
+  // native/a2a; 'changed' while the quarantine policy holds the tool out of
+  // service after a schema change
   ingest_state?: string | null
+  // schema fingerprint (spec §3.2 drift): the hash and version of the input
+  // schema as last ingested; schema_changed_at is set while a change awaits
+  // the operator's acknowledgement
+  schema_hash?: string | null
+  schema_version?: number
+  schema_changed_at?: string | null
 }
 
 export interface ModelParams {
@@ -120,6 +128,10 @@ export interface RunStep {
   input: Record<string, unknown> | null
   output: Record<string, unknown> | null
   model: string | null
+  // the entity version the step ran against (a tool's schema version and
+  // hash on tool_call steps) — the trace reads against the registry as it was
+  entity_version?: number | null
+  entity_hash?: string | null
   input_tokens: number
   output_tokens: number
   status: string
@@ -227,6 +239,9 @@ export type Settings = Record<string, unknown> & {
   planner_model_params: ModelParams | null
   aggregator_model: string | null
   aggregator_model_params: ModelParams | null
+  overlap_judge_model?: string | null
+  overlap_judge_model_params?: ModelParams | null
+  mcp_schema_change_policy?: 'warn' | 'quarantine'
   max_parallel_dispatch: number
   max_plan_steps: number
   max_tool_iterations: number

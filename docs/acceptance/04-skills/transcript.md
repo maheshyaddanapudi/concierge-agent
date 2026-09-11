@@ -1,20 +1,21 @@
 ```
-[   0.0s] # 04-skills — 2026-09-10T02:39:20.503Z
+[   0.0s] # 04-skills — 2026-09-11T01:31:18.542Z
 [   1.8s] shot 00-native-skills.png
-[   3.8s] shot 01-skill-editor.png
-[  17.4s] save refused → instructions mention {tool:sitefiles.nope} but 'sitefiles.nope' is not a bound tool
-[  17.4s] save with an unbound mention → error: instructions mention {tool:sitefiles.nope} but 'sitefiles.nope' is not a bound tool
-[  17.5s] shot 03-bad-tool-mention-rejected.png
-[  31.1s] overlap judge flagged the save — dialog shown
-[  31.6s] create → {"outcome":"saved","text":"","sawOverlap":true}
-[  31.6s] created: summarize-site custom tools=sitefiles.add,sitefiles.echo
-[  32.2s] shot 02-skill-saved-badges.png
-[  33.4s] shot 04-notes-formatter-exposed.png
-[  46.9s] create → {"outcome":"saved","text":"","sawOverlap":false}
-[  76.5s] overlap judge flagged the save — dialog shown
-[  77.2s] save → {"outcome":"saved","text":"","sawOverlap":true}
-[  77.2s] updated_at 2026-09-10T02:39:51.682877Z → 2026-09-10T02:40:37.247739Z
-[  77.3s] shot 06-edited-skill-updated.png
-[  80.1s] shot 07-tools-page-skill-crosslink.png
-[  80.1s] # end — 2026-09-10T02:40:40.609Z
+[   3.7s] shot 01-skill-editor.png
+[  16.1s] overlap judge flagged the save — dialog shown
+[  16.6s] save refused → instructions mention {tool:sitefiles.nope} but 'sitefiles.nope' is not a bound tool
+[  16.6s] save with an unbound mention → error: instructions mention {tool:sitefiles.nope} but 'sitefiles.nope' is not a bound tool
+[  16.8s] shot 03-bad-tool-mention-rejected.png
+[  28.7s] overlap judge flagged the save — dialog shown
+[  29.2s] create → {"outcome":"saved","text":"","sawOverlap":true}
+[  29.3s] created: summarize-site custom tools=demo-stub.echo,demo-stub.add
+[  29.8s] shot 02-skill-saved-badges.png
+[  30.9s] shot 04-notes-formatter-exposed.png
+[  44.9s] create → {"outcome":"saved","text":"","sawOverlap":false}
+[  53.2s] overlap judge flagged the save — dialog shown
+[  53.7s] save → {"outcome":"saved","text":"","sawOverlap":true}
+[  53.7s] updated_at 2026-09-10T22:22:04.037186Z → 2026-09-11T01:32:11.868076Z
+[  53.9s] shot 06-edited-skill-updated.png
+[  56.8s] shot 07-tools-page-skill-crosslink.png
+[  56.8s] # end — 2026-09-11T01:32:15.293Z
 ```

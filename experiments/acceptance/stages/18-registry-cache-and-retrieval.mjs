@@ -74,7 +74,8 @@ export default async function (ctx) {
 
   // a registry write bumps the skills generation
   const skills = (await get('/skills')).json
-  const notes = skills.find((s) => s.name === 'notes-formatter')
+  // stage 04's `notes-formatter` when the chain ran; any writable skill otherwise
+  const notes = skills.find((s) => s.name === 'notes-formatter') || skills.find((s) => s.source === 'dynamic' && s.status === 'active' && !s.deleted_at) || skills[0]
   const g0 = (await status()).registries.skills.generation
   await ctx.patch(`/skills/${notes.id}`, { description: notes.description + ' (cache drill)' })
   await page.waitForTimeout(800)

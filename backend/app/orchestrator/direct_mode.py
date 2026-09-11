@@ -77,6 +77,14 @@ async def _eval_skill_resolution(skill_id: str) -> Any:
     )
 
 
+async def _first_dispatch(run_id: Any) -> bool:
+    """A HITL resume replays invoke_node: the snapshot is written once, on
+    the dispatch that started the run, never overwritten on replay."""
+    from app.orchestrator.ladder import find_running_dispatch
+
+    return await find_running_dispatch(run_id, DIRECT_ENTRY_ID) is None
+
+
 async def invoke_node(state: DirectState) -> dict[str, Any]:
     """Resolve the pinned agent through the ladder's sub-agent rungs and run
     it with HITL propagation — the exact executor routed dispatch uses."""
@@ -100,6 +108,15 @@ async def invoke_node(state: DirectState) -> dict[str, Any]:
         raise RunFailed(str(exc)) from exc
 
     resolution = await resolve_capability({"type": "sub_agent", "id": state["sub_agent_id"]})
+    # spec §3.6: the pinned agent's definition frozen on the run, exactly as
+    # graph mode freezes a routed dispatch — a direct run was the one mode
+    # whose trace referenced a definition that could change under it
+    from app.orchestrator.context import require_run_context
+    from app.orchestrator.snapshot import resolution_snapshot, write_snapshot
+
+    ctx = require_run_context()
+    if await _first_dispatch(ctx.run_id):
+        await write_snapshot(ctx.run_id, {DIRECT_ENTRY_ID: resolution_snapshot(resolution)})
     result = await execute_resolution(resolution, state["task"], DIRECT_ENTRY_ID)
     if result.get("status") == "error":
         raise RunFailed(

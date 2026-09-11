@@ -47,6 +47,18 @@ function StepRow({ step, depth }: { step: RunStep; depth: number }) {
         {step.node_id && <code className="text-[10px] text-slate-500">{step.node_id}</code>}
         {rung && <Chip tone={rung === 'fallback' ? 'direct' : 'default'}>rung: {rung}</Chip>}
         {step.model && <code className="text-[10px] text-indigo-400">{step.model}</code>}
+        {step.entity_version != null && (
+          // the schema version the tool call was made against, pinned into
+          // the record — a renamed parameter since then shows as a higher
+          // version on the Tools page, not as a silently different trace
+          <code
+            className="text-[10px] text-amber-300/80"
+            title={step.entity_hash ? `schema hash ${step.entity_hash}` : undefined}
+          >
+            schema v{step.entity_version}
+            {step.entity_hash ? ` · ${step.entity_hash.slice(0, 8)}` : ''}
+          </code>
+        )}
         <span className="ml-auto flex items-center gap-2 text-[10px] text-slate-500">
           {step.input_tokens + step.output_tokens > 0 && (
             <span>

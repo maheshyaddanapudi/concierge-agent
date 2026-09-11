@@ -18,6 +18,7 @@ from app.config import get_config
 from app.models import McpServer, Skill, SubAgent, Tool
 from app.native.provider import native_sub_agents, native_tools, scan_native
 from app.skilldoc import scan_skill_files
+from app.toolschema import apply_schema, schema_fingerprint
 
 logger = structlog.get_logger("seed")
 
@@ -94,12 +95,16 @@ async def upsert_native_tools(session: AsyncSession) -> None:
                     tool_key=name,
                     native_ref=entry.native_ref,
                     input_schema=entry.input_schema,
+                    schema_hash=schema_fingerprint(entry.input_schema),
+                    schema_version=1,
                 )
             )
         else:
             tool.description = entry.description
             tool.native_ref = entry.native_ref
-            tool.input_schema = entry.input_schema
+            # a native schema changes only with a deploy — fingerprinted and
+            # versioned like an MCP one so the trace pins it; never quarantined
+            apply_schema(tool, entry.input_schema, policy="warn")
             if tool.status == "inactive":
                 tool.status = "active"
     for key, tool in by_key.items():

@@ -35,6 +35,15 @@ DEFAULTS: dict[str, Any] = {
     "formatter_coverage_flag_threshold": 90,  # visual flag only, never a gate
     "answer_ui_charts_enabled": True,
     "mcp_health_interval_s": 30,
+    # spec §3.2 drift: what a changed tool input schema does on re-ingest —
+    # 'warn' flags the tool until acknowledged, 'quarantine' also takes it
+    # out of service until then
+    "mcp_schema_change_policy": "warn",
+    # the §4 overlap judge's model: null → default_model. A different model
+    # from the one that writes skills (the operator's, or the §17.7 learner's)
+    # keeps the judge from sharing the generator's blind spots
+    "overlap_judge_model": None,
+    "overlap_judge_model_params": None,
     "log_level": "INFO",
     "langsmith_enabled": False,
     "langsmith_endpoint": "",
@@ -189,6 +198,7 @@ _MODEL_KEYS = {
     "formatter_model",
     "memory_extraction_model",
     "ambient_salience_model",
+    "overlap_judge_model",
 }
 _PARAMS_KEYS = {
     "default_model_params",
@@ -197,6 +207,7 @@ _PARAMS_KEYS = {
     "formatter_model_params",
     "memory_extraction_model_params",
     "ambient_salience_model_params",
+    "overlap_judge_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -365,6 +376,8 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append(f"log_level must be one of {sorted(_LOG_LEVELS)}")
         elif key == "formatter_presentation" and value not in _PRESENTATIONS:
             errors.append(f"formatter_presentation must be one of {sorted(_PRESENTATIONS)}")
+        elif key == "mcp_schema_change_policy" and value not in {"warn", "quarantine"}:
+            errors.append("mcp_schema_change_policy must be 'warn' or 'quarantine'")
         elif key == "formatter_coverage_flag_threshold" and (
             not isinstance(value, int) or not 1 <= value <= 100
         ):

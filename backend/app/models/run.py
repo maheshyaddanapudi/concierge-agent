@@ -114,6 +114,11 @@ class RunStep(Base):
     input: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     output: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     model: Mapped[str | None] = mapped_column(String(255), default=None)
+    # the version of the entity this step ran against, pinned into the record
+    # (a tool's schema version and hash on tool_call steps) so a trace reads
+    # against the registry as it was, not as it is
+    entity_version: Mapped[int | None] = mapped_column(Integer, default=None)
+    entity_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="running")

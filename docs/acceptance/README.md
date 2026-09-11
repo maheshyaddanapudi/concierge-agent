@@ -44,6 +44,7 @@ this campaign and what became of it. `report.md` holds the findings.
 | `32-durable-forgetting` | Forget vs Erase, the content-free tombstone, re-admission suppressed and counted, Unforget, a learner proposal rejected |
 | `33-evals` | a three-case dataset (exact / contains / llm_judge) uploaded and graded live, every case an ordinary run |
 | `34-auth-builtin` | the login gate, admin signed in with the bootstrap password, a run under identity, a member's empty Runs page (driven by `prod/m34-auth.sh`) |
+| `35-schema-drift` | tool schema drift (spec §3.2) and the pinned registry (§3.6): the stub server renames `echo`'s parameter under a live run — the Tools page badge, the drawer banner and its Acknowledge, the trace pinning the schema version before and after, the Settings policy toggle and the overlap judge's own model role, then the same change quarantined and re-enabled from the drawer |
 
 ## Production-hardening drills
 

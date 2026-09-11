@@ -74,7 +74,16 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
             source=tool["source"],
             entity_id=tool["id"],
             entity_name=tool["tool_key"],
-            payload={"tool_id": tool["id"]},
+            # the run's frozen snapshot (spec §3.6) keeps the schema the
+            # call was made against, not only the id of a row that may
+            # since have changed
+            payload={
+                "tool_id": tool["id"],
+                "tool_key": tool["tool_key"],
+                "schema_version": tool.get("schema_version"),
+                "schema_hash": tool.get("schema_hash"),
+                "input_schema": tool.get("input_schema"),
+            },
         )
 
     if ctx_type == "direct_skill":
@@ -326,7 +335,8 @@ async def run_direct_tool(
     from app.registry_cache import get_cache
 
     records = await get_cache().tools_by_ids([UUID(tool_id)])
-    record_kind = records[0]["kind"] if records else "mcp"
+    record = records[0] if records else {}
+    record_kind = str(record.get("kind") or "mcp")
     step_id = await ctx.recorder.start_step(
         "tool_call",
         tier="tool",
@@ -334,9 +344,13 @@ async def run_direct_tool(
         source="dynamic",
         entity_id=tool_id,
         entity_name=tool.name,
+        # the tool name on the step like every middleware-recorded call
+        node_id=tool.name,
         parent_step_id=parent_step_id,
         input={"task": task},
         emit_dispatch=True,
+        entity_version=record.get("schema_version"),
+        entity_hash=record.get("schema_hash"),
     )
     try:
         from app.factory.worker import resolve_node_model

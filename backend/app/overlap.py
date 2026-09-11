@@ -111,10 +111,24 @@ async def _sub_agent_candidates(exclude_id: UUID | None) -> list[str]:
     return agent_lines
 
 
+async def _judge_model() -> tuple[str, Any]:
+    """The judge's own model role (`overlap_judge_model`, null → the
+    default): a judge that is not the model writing the skills does not
+    share its blind spots, so slow semantic drift has a second reader."""
+    from app.factory.worker import resolve_node_model
+    from app.llm.port import ModelParams
+    from app.registry_cache import get_cache
+
+    ref = await get_cache().setting("overlap_judge_model")
+    if ref:
+        raw = await get_cache().setting("overlap_judge_model_params")
+        return str(ref), ModelParams.model_validate(raw) if raw else None
+    return await resolve_node_model({}, {})
+
+
 async def _judge(draft_type: str, draft: str, candidates: list[str]) -> OverlapVerdict:
     if not candidates:
         return OverlapVerdict(overlap_percent=0, reasoning="registry has no candidates to compare")
-    from app.factory.worker import resolve_node_model
 
     prompt = (
         load_prompt("overlap_judge")
@@ -123,7 +137,7 @@ async def _judge(draft_type: str, draft: str, candidates: list[str]) -> OverlapV
         .replace("{candidates}", "\n".join(candidates))
     )
     try:
-        model_ref, params = await resolve_node_model({}, {})
+        model_ref, params = await _judge_model()
         model = get_model(model_ref, params)
         structured = model.with_structured_output(OverlapVerdict)
         verdict = await structured.ainvoke(prompt)

@@ -522,6 +522,16 @@ export function SettingsPage() {
           paramsKey="aggregator_model_params"
           allowInherit
         />
+        <ModelSelect
+          label="Overlap judge model"
+          refKey="overlap_judge_model"
+          paramsKey="overlap_judge_model_params"
+          allowInherit
+        />
+        <p className="-mt-2 text-[11px] text-slate-500">
+          The §4 overlap guard judges each skill and sub agent save. A model other than the one
+          writing the skills (yours, or the ambient learner&apos;s) does not share its blind spots.
+        </p>
         <div className="mt-2 rounded-md border border-slate-800 p-3">
           <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-600">
             Provider adapters (code-registered, read-only)
@@ -876,6 +886,27 @@ export function SettingsPage() {
             hint="consecutive failures before the circuit opens — the row says so, and Reconnect resets it"
           />
         </div>
+        <Field
+          label="Schema change policy"
+          hint="what a re-ingest does when a server changes a tool's input schema (a renamed parameter, say): warn flags the tool with its new version until you acknowledge it · quarantine also takes it out of service until then. Every change is versioned and logged either way, and each tool call records the version it ran against"
+        >
+          <div className="flex gap-2" role="group" aria-label="schema change policy">
+            {(['warn', 'quarantine'] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => patch.mutate({ mcp_schema_change_policy: p })}
+                aria-pressed={(settings?.mcp_schema_change_policy ?? 'warn') === p}
+                className={`rounded-md border px-2.5 py-1 font-mono text-[11px] transition-colors ${
+                  (settings?.mcp_schema_change_policy ?? 'warn') === p
+                    ? 'border-accent-500/50 bg-accent-500/10 text-accent-300'
+                    : 'border-slate-700 text-slate-400 hover:border-slate-500'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        </Field>
         <div className="flex items-end gap-4">
           <IntSetting label="Health-check interval (s)" k="mcp_health_interval_s" />
           <Button
