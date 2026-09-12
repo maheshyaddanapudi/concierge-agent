@@ -20,6 +20,7 @@ call". TTLs are deliberately absent: an entry is current or invalidated.
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -27,12 +28,29 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy import select
 
+from app.config import get_config
 from app.models import Skill, SubAgent, Tool
+from app.toolschema import (
+    definition_fingerprint,
+    skill_definition_fields,
+    sub_agent_definition_fields,
+)
 
 logger = structlog.get_logger("registry_cache")
 
 Registry = Literal["tools", "skills", "sub_agents", "settings"]
 REGISTRIES: tuple[Registry, ...] = ("tools", "skills", "sub_agents", "settings")
+
+# M54 (§7.3): the ceiling on any coherency gap — every cached entry, memory
+# or redis, expires on it. None = the REGISTRY_CACHE_TTL_S env (default 300 s).
+CACHE_TTL_S: float | None = None
+
+
+def _ttl_s() -> float:
+    if CACHE_TTL_S is not None:
+        return float(CACHE_TTL_S)
+    return float(get_config().registry_cache_ttl_s)
+
 
 _REDIS_PREFIX = "concierge:cache:"
 _NOTIFY_CHANNEL = "registry_cache_inv"
@@ -57,7 +75,16 @@ def _tool_record(t: Tool) -> dict[str, Any]:
         "tool_key": t.tool_key,
         "direct_exposure": t.direct_exposure,
         "input_schema": t.input_schema,
+        "ingest_state": t.ingest_state,
+        "schema_hash": t.schema_hash,
+        "schema_version": t.schema_version,
+        "schema_changed_at": _iso(t.schema_changed_at),
         "embedding": getattr(t, "embedding", None),
+        # the model+text the vector was built from: rank time drops a vector
+        # another embedding model produced (hardening wave)
+        "embedding_hash": getattr(t, "embedding_hash", None),
+        "description_hash": t.description_hash,
+        "description_source": t.description_source,
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),
     }
@@ -79,8 +106,25 @@ def _skill_record(s: Skill) -> dict[str, Any]:
         "direct_exposure": s.direct_exposure,
         "max_tool_iterations": s.max_tool_iterations,
         "embedding": getattr(s, "embedding", None),
+        "embedding_hash": getattr(s, "embedding_hash", None),
         "created_at": _iso(s.created_at),
         "updated_at": _iso(s.updated_at),
+        # the definition's version (spec §3.6): a row from before the
+        # hardening wave has no stored hash — computed here so a read never
+        # sees None; its version stays 1 until a stamped write
+        "definition_hash": s.definition_hash
+        or definition_fingerprint(
+            skill_definition_fields(
+                description=s.description,
+                persona=s.persona,
+                instructions=s.instructions,
+                model=s.model,
+                model_params=s.model_params,
+                max_tool_iterations=s.max_tool_iterations,
+                tool_ids=[t.id for t in s.tools if t.deleted_at is None],
+            )
+        ),
+        "definition_version": s.definition_version or 1,
         "tools": [
             {
                 "id": str(t.id),
@@ -93,6 +137,8 @@ def _skill_record(s: Skill) -> dict[str, Any]:
                 "status": t.status,
                 "description": t.description,
                 "input_schema": t.input_schema,
+                "schema_hash": t.schema_hash,
+                "schema_version": t.schema_version,
             }
             for t in s.tools
             if t.deleted_at is None
@@ -118,8 +164,21 @@ def _sub_agent_record(a: SubAgent) -> dict[str, Any]:
         "skill_ids": [str(s.id) for s in a.skills],
         "skill_names": [s.name for s in a.skills],
         "embedding": getattr(a, "embedding", None),
+        "embedding_hash": getattr(a, "embedding_hash", None),
         "created_at": _iso(a.created_at),
         "updated_at": _iso(a.updated_at),
+        "definition_hash": a.definition_hash
+        or definition_fingerprint(
+            sub_agent_definition_fields(
+                description=a.description,
+                persona=a.persona,
+                model=a.model,
+                model_params=a.model_params,
+                workflow=a.workflow,
+                native_ref=a.native_ref,
+            )
+        ),
+        "definition_version": a.definition_version or 1,
     }
 
 
@@ -176,12 +235,13 @@ class RegistryCache:
         self._data: dict[str, list[dict[str, Any]] | dict[str, Any]] = {}
         self._generation: dict[str, int] = dict.fromkeys(REGISTRIES, 0)
         self._loaded_at: dict[str, str | None] = dict.fromkeys(REGISTRIES)
+        self._loaded_mono: dict[str, float] = {}  # M54: TTL clock per entry
         self._dirty: set[str] = set(REGISTRIES)
         self._locks: dict[str, asyncio.Lock] = {r: asyncio.Lock() for r in REGISTRIES}
         self._redis: Any = None
         # cross-replica sync (spec §7.3): origin id filters own notifications
         self._origin = uuid4().hex
-        self._listener_conn: Any = None
+        self._listener: Any = None  # M53: a SupervisedListener, reconnects on its own
         self._listener_tasks: set[Any] = set()
 
     # ── lifecycle ────────────────────────────────────────────────
@@ -235,7 +295,7 @@ class RegistryCache:
                 try:
                     redis = await self._get_redis()
                     await redis.delete(f"{_REDIS_PREFIX}{reg}")
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 — redis invalidation is best-effort; Postgres is the truth
                     logger.warning("cache_redis_invalidate_failed", registry=reg, error=str(exc))
             queue.extend(dependents.get(reg, ()))
         if registry == "settings":
@@ -265,44 +325,58 @@ class RegistryCache:
                     {"ch": _NOTIFY_CHANNEL, "payload": f"{self._origin}:{registry}"},
                 )
                 await session.commit()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — NOTIFY is advisory; replicas reload on their next dirty read
             logger.warning("cache_notify_failed", registry=registry, error=str(exc))
 
-    async def start_listener(self) -> None:
-        """LISTEN for peer invalidations on a dedicated connection. Safe to
-        call when already listening; failure logs and leaves single-node
-        behavior untouched."""
-        if self._listener_conn is not None:
+    async def start_listener(self, base_backoff_s: float = 1.0) -> None:
+        """LISTEN for peer invalidations on a dedicated, SUPERVISED connection
+        (M53): lost connections reconnect with backoff, and a reconnect
+        marks every registry dirty — a notification that arrived during the
+        gap is never missed, it is replaced by one reload. Safe to call when
+        already listening; a failing database leaves single-node behavior
+        untouched (the writing process already marked itself dirty)."""
+        if self._listener is not None:
             return
-        try:
-            import asyncpg  # type: ignore[import-untyped]
+        from app.listen import SupervisedListener
 
-            from app.config import get_config
+        def _on_notify(payload: str) -> None:
+            origin, _, registry = payload.partition(":")
+            if origin == self._origin or registry not in REGISTRIES:
+                return
+            self._spawn(self._mark_dirty(registry))
 
-            dsn = get_config().database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-            conn = await asyncpg.connect(dsn)
+        def _on_reconnect() -> None:
+            logger.info("cache_listener_reconnected", origin=self._origin)
+            self._spawn(self._mark_all_dirty())
 
-            def _on_notify(_conn: Any, _pid: int, _channel: str, payload: str) -> None:
-                origin, _, registry = payload.partition(":")
-                if origin == self._origin or registry not in REGISTRIES:
-                    return
-                task = asyncio.create_task(self._mark_dirty(registry))
-                self._listener_tasks.add(task)
-                task.add_done_callback(self._listener_tasks.discard)
-
-            await conn.add_listener(_NOTIFY_CHANNEL, _on_notify)
-            self._listener_conn = conn
+        self._listener = SupervisedListener(
+            _NOTIFY_CHANNEL, _on_notify, on_reconnect=_on_reconnect, base_backoff_s=base_backoff_s
+        )
+        if await self._listener.start():
             logger.info("cache_listener_started", channel=_NOTIFY_CHANNEL, origin=self._origin)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("cache_listener_unavailable", error=str(exc))
+        else:
+            logger.warning("cache_listener_unavailable", channel=_NOTIFY_CHANNEL)
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._listener_tasks.add(task)
+        task.add_done_callback(self._listener_tasks.discard)
+
+    async def _mark_all_dirty(self) -> None:
+        for registry in REGISTRIES:
+            await self._mark_dirty(registry)
+
+    @property
+    def listener_connected(self) -> bool:
+        return bool(self._listener is not None and self._listener.connected)
+
+    def listener_pid(self) -> int | None:
+        return self._listener.server_pid() if self._listener is not None else None
 
     async def stop_listener(self) -> None:
-        if self._listener_conn is not None:
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                await self._listener_conn.close()
-            self._listener_conn = None
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            await listener.stop()
 
     async def refresh(self, registry: Registry) -> dict[str, Any]:
         """Operator-forced eager reload (§8.7 buttons). In bypass, just counts."""
@@ -321,6 +395,7 @@ class RegistryCache:
                 out["registries"][registry] = {
                     "records": None,
                     "generation": self._generation[registry],
+                    "dirty": registry in self._dirty,
                     "loaded_at": None,
                     "cached": False,
                 }
@@ -334,6 +409,8 @@ class RegistryCache:
         return {
             "records": len(data),
             "generation": self._generation[registry],
+            "dirty": registry
+            in self._dirty,  # M54: a bumped generation with a stale blob is visible
             "loaded_at": self._loaded_at.get(registry),
             "cached": self._mode != "bypass",
         }
@@ -360,32 +437,68 @@ class RegistryCache:
             return await _load_registry(registry)
         async with self._locks[registry]:
             if self._mode == "redis":
-                redis = await self._get_redis()
-                key = f"{_REDIS_PREFIX}{registry}"
-                if not force:
-                    blob = await redis.get(key)
-                    if blob is not None:
-                        loaded: list[dict[str, Any]] | dict[str, Any] = json.loads(blob)
-                        return loaded
-                data = await _load_registry(registry)
-                await redis.set(key, json.dumps(data))
+                try:
+                    redis = await self._get_redis()
+                    key = f"{_REDIS_PREFIX}{registry}"
+                    if not force:
+                        blob = await redis.get(key)
+                        if blob is not None:
+                            loaded: list[dict[str, Any]] | dict[str, Any] = json.loads(blob)
+                            return loaded
+                    # M54 (scale-B4 race B): a slow read-through must not
+                    # resurrect a blob a peer deleted meanwhile — write only
+                    # if no invalidation moved the generation under the load,
+                    # and always with a TTL so nothing stale outlives it
+                    generation = self._generation[registry]
+                    data = await _load_registry(registry)
+                    if self._generation[registry] == generation:
+                        await redis.set(key, json.dumps(data), ex=int(_ttl_s()))
+                except Exception as exc:  # noqa: BLE001 — M51: the cache fails OPEN, Postgres is the truth
+                    from app import obs
+
+                    obs.CACHE_DEGRADED.labels(backend="redis").inc()
+                    logger.warning(
+                        "cache_backend_degraded",
+                        backend="redis",
+                        registry=registry,
+                        error=str(exc)[:200],
+                    )
+                    return await _load_registry(registry)
                 self._data[registry] = data
                 self._loaded_at[registry] = datetime.now(UTC).isoformat()
-                self._dirty.discard(registry)
+                self._loaded_mono[registry] = time.monotonic()
+                if self._generation[registry] == generation:
+                    self._dirty.discard(registry)
                 return data
-            # memory: reload-on-dirty
-            if force or registry in self._dirty or registry not in self._data:
+            # memory: reload-on-dirty, and on the TTL (M54 — a lost NOTIFY
+            # costs at most one TTL of staleness)
+            loaded_mono = self._loaded_mono.get(registry)
+            expired = loaded_mono is None or (time.monotonic() - loaded_mono) >= _ttl_s()
+            if force or registry in self._dirty or registry not in self._data or expired:
+                # M54 (scale-B4 race A): a peer invalidation landing DURING
+                # the load must survive it — discard the dirty flag only if
+                # the generation is what it was when the load started
+                generation = self._generation[registry]
                 data = await _load_registry(registry)
                 self._data[registry] = data
                 self._loaded_at[registry] = datetime.now(UTC).isoformat()
-                self._dirty.discard(registry)
+                self._loaded_mono[registry] = time.monotonic()
+                if self._generation[registry] == generation:
+                    self._dirty.discard(registry)
             return self._data[registry]
+
+    async def _rows(self, registry: Registry) -> list[dict[str, Any]]:
+        """`_ensure` for the list-shaped registries, checked at the boundary
+        rather than asserted — asserts vanish under `python -O` (M49)."""
+        rows = await self._ensure(registry)
+        if not isinstance(rows, list):
+            raise TypeError(f"registry {registry!r} cached as {type(rows).__name__}, expected list")
+        return rows
 
     # ── typed reads (consumers) ──────────────────────────────────
 
     async def tools(self, *, exposed_only: bool) -> list[dict[str, Any]]:
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         return [
             t
             for t in rows
@@ -394,19 +507,16 @@ class RegistryCache:
 
     async def tools_by_ids(self, ids: list[UUID | str]) -> list[dict[str, Any]]:
         """Order-preserving, active-only — mirrors factory.resolve_tools_by_ids."""
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         by_id = {t["id"]: t for t in rows if t["status"] == "active"}
         return [by_id[str(i)] for i in ids if str(i) in by_id]
 
     async def tool_by_id(self, tool_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("tools")
-        assert isinstance(rows, list)
+        rows = await self._rows("tools")
         return next((t for t in rows if t["id"] == str(tool_id)), None)
 
     async def skills(self, *, exposed_only: bool) -> list[dict[str, Any]]:
-        rows = await self._ensure("skills")
-        assert isinstance(rows, list)
+        rows = await self._rows("skills")
         return [
             s
             for s in rows
@@ -414,19 +524,16 @@ class RegistryCache:
         ]
 
     async def skill_by_id(self, skill_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("skills")
-        assert isinstance(rows, list)
+        rows = await self._rows("skills")
         return next((s for s in rows if s["id"] == str(skill_id)), None)
 
     async def sub_agents(self) -> list[dict[str, Any]]:
         """Active only, created_at order (rung-3 precedence relies on it)."""
-        rows = await self._ensure("sub_agents")
-        assert isinstance(rows, list)
+        rows = await self._rows("sub_agents")
         return [a for a in rows if a["status"] == "active"]
 
     async def sub_agent_by_id(self, agent_id: UUID | str) -> dict[str, Any] | None:
-        rows = await self._ensure("sub_agents")
-        assert isinstance(rows, list)
+        rows = await self._rows("sub_agents")
         return next((a for a in rows if a["id"] == str(agent_id)), None)
 
     async def sub_agent_cards(self) -> list[dict[str, Any]]:
@@ -467,6 +574,8 @@ class RegistryCache:
                 "kind": agent["kind"],
                 "source": agent["source"],
                 "updated_at": agent["updated_at"],
+                "definition_hash": agent.get("definition_hash"),
+                "definition_version": agent.get("definition_version"),
             },
             "workflow": workflow,
             "skills": skills,
@@ -474,7 +583,8 @@ class RegistryCache:
 
     async def setting(self, key: str) -> Any:
         data = await self._ensure("settings")
-        assert isinstance(data, dict)
+        if not isinstance(data, dict):
+            raise TypeError(f"settings cached as {type(data).__name__}, expected dict")
         return data[key]
 
 

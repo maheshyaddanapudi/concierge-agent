@@ -2,11 +2,342 @@
 
 All notable changes to the Concierge Agent POC. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are grouped
-by milestone (spec §12) instead of semver releases, newest first. The project
+by milestone (spec §12) instead of semver releases, newest first. **`1.0.0`** (2026-09-10) is the first release: milestones M1–M56 complete (spec §12). The version lives in `backend/pyproject.toml` and `frontend/package.json`; a git tag is cut when a consumer needs to pin one. The project
 was built spec-first, milestone by milestone, on a single feature branch:
 milestones M1–M8 landed via [PR #2] (merged 2026-08-07, superseding the
 earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #3].
+
+
+> **Reconstruction note (M56).** Entries M13–M55 below were reconstructed from the README milestone table when the project was tagged `v1.0.0`; each entry's text is that milestone's row, its date the newest commit in the history that names the milestone. Entries M1–M12 are the original hand-written ones.
+
+## The hardening wave — 2026-09-11
+
+Three reviewer frames were run over the whole system after the schema-drift work — *what else changes under a bound skill without a deploy*, *what else does a trace resolve live instead of pinning*, and *where does the model that writes also judge* — and every finding they verified is closed here, each with a regression test (`backend/tests/test_hardening_wave.py`, `frontend/src/test/hardening-wave.test.tsx`) and live evidence in `docs/acceptance/36-hardening-wave/` and `docs/acceptance/prod/HARDENING/`. Spec §3.1, §3.2, §3.3, §3.4, §3.6, §3.7, §4, §7.4, §8.3, §8.6, §8.7, §15, §16.2, §16.5 and §16.7 amended. Migration `v1j2k3l4m5n6`.
+
+### Fixed
+
+- **A tool call could be stamped with another tool's identity.** The tools middleware built its per-name metadata from every resolved record, last-wins, while the bound tool was first-wins — two `tool_key`s that sanitize to the same LLM-facing name (`srv.echo` / `srv_echo`) ran tool A and recorded tool B's id, version and hash on the step. Both maps are now built in one pass; the skipped record is logged (`tool_name_collision_skipped`) and counted (`concierge_tool_name_collisions_total`), and a `PATCH /tools/{id}` rename that would create such a pair is refused (409), as is one that leaves a bound skill mentioning `{tool:old.key}`.
+- **A bound tool that went inactive, quarantined, deleted or missing was silent.** A skill loop whose bound tool did not resolve ran half-blind; the model's call to it burned an iteration on "not a valid tool". The bind now logs and counts the unresolved ids (`skill_bound_tool_unavailable`, `concierge_skill_tool_unavailable_total{reason}`) and posts an activity line on the trace; a call to a tool the loop does not have is a **failed `tool_call` step** and, in a strict skill loop, the node's error edge. The Skills page badges the skill with the tool and the reason.
+- **The registry cache records had no `embedding_hash`,** so nothing could tell a vector built by a previous embedding model from a current one (found by the wave's own stale-vector check; every cached record now carries it).
+
+### Added
+
+- **Description drift** (§3.2): tool descriptions are fingerprinted (`description_hash`) and sourced (`description_source`: `server` | `operator`). A server rewording one is logged (`tool_description_changed`), counted (`concierge_tool_description_changes_total{kind, source}`) and re-embedded; an operator's edit is never overwritten by a re-ingest. MCP ingest also refuses a new tool whose sanitized name collides with one already taken.
+- **A2A card versions** (§19.2): `remote_agents.card_hash` / `card_version`; a refresh whose card differs bumps the version, logs the changed keys (`a2a_card_changed`) and counts (`concierge_a2a_card_changes_total`). The projection never clears a deleted tool's `deleted_at` and reactivates only a tool the card had dropped (`ingest_state='missing'`) — an operator's disable stays.
+- **MCP config hash** (§3.1): `mcp_servers.config_hash` over transport, command, args, url and the env / header keys; a PATCH that moves it logs `mcp_server_config_changed` and reconnects the server at once.
+- **Embedding model change** (§7.4): a settings write that changes `embedding_model` (or turns retrieval on) starts the registry backfill immediately; at rank time a vector whose hash names another model is ignored and counted (`concierge_retrieval_stale_vectors_total{kind}`).
+- **Definition versions** (§3.3, §3.4): `definition_hash` / `definition_version` on skills and sub agents over the fields that change behaviour (never status or exposure), stamped by every write path — API, the seed scan at boot, fallback mining — and carried on skill, dispatch and route steps, in the frozen dispatch payload and the agentic catalog. `overlap_audited_hash` records what the audit last judged.
+- **The rest of the run pinned** (§3.6): `run_steps.entity_name` and `model_params`; the formatter as a `format` step (model, params, presentation, coverage, attempts, repair); `runs.snapshot` gains `settings`, `prompts` (a hash per prompt file), `build`, `context` (what each surface was told: memory ids and blocks, exemplar ids, history size and hash, catalog and prompt hashes) and `catalog_calls` (the registry ids each model call was shown); `runs.cost_usd` / `cost_priced` / `price_snapshot` stamped at finish so a price change never rewrites a finished run or the day's spend; an ambient run's `trigger` copies the decision, the payload hash and the routine as it was; `deliveries.policy_id` names the policy that set a delivery's tier. Eval runs snapshot the whole settings dict, the prompt hashes and the target's assembled definition. The Runs page shows the pinned names and versions, the format step, the prices, and a **Snapshot vs registry** panel that reads every pinned record against the live registry (same / changed / deleted / inactive) with the settings, prompts and injected context on demand.
+- **Judge independence** (§4, §15, §16): fallback-mining proposals are linted against the document rules and judged under `overlap_judge_model` before they can be queued, and activating one is judged again (`PATCH /skills/{id}` → 409 with the match, `?force=true` to save anyway); a reused exemplar's positive vote is deferred until the next turn in the conversation is not a correction (or a ten-minute quiet sweep, `memory:exemplar_settle`); `eval_judge_model` / `_params` give the `llm_judge` grader its own role; every `inferred` memory lands quarantined; a citation raises importance at most once a day per memory and never for an inferred one; `registry_overlap_audit_enabled` (born dark) runs the `registry:overlap_audit` job every 6 h over changed definitions and posts an inbox item per flagged pair; a compiled watch's proposal carries the `semantic_predicate` the judge will apply, folded into the echo the human confirms; Settings hints when the salience judge inherits the answering model.
+
+### The second reading
+
+The same three frames were run again over the wave's diff before it was committed, and the live stage was run on the built image first. Everything they verified is closed in the same change:
+
+- **Caught live, not by the suite:** graph mode's dispatch-time snapshot write replaced the run's snapshot wholesale, dropping the settings and prompt hashes on every routed run (the fake-provider tests answered directly). It merges now, and a routed-run test pins it.
+- **Regressions the reading caught:** the formatter's tokens were counted twice on the run totals (and so in the stamped cost); the run-start pin could fail a run instead of being best-effort; a HITL resume replaced the pre-pause context and catalog slices instead of appending; the "sub agents involved" chips listed worker skills; a soft-deleted binding was hashed differently by the API, the seed and the cache; every tool call ran a pause-check query; catalog slices were logged on tool-call replays; an unknown tool name failed a strict node instead of handing the model its slip back (only a bound-but-unavailable tool takes the error edge now, with the reason); the stale-vector rule dropped vectors on any text drift with nothing re-embedding them (they self-heal now, and a tool rename re-embeds the skills bound to it); an A2A refresh re-enabled an agent the operator had disabled, and nothing refused calls to a disabled agent; an MCP server was only hashed at first *successful* ingest, so fixing a broken config did not reconnect, and a secret rotation never did; the judge's fail-open let every machine proposal through when the judge was down and stamped the audit as done; the correction heuristic matched "nothing wrong with that" and one false hit retired a fresh exemplar; only the newest pending vote in a conversation was ever settled; the activation guard keyed off an editable description prefix; mining held a database session across the judge call; the overlap audit never ran without the memory layer.
+- **Gaps the reading named, now closed:** route steps carry the definition version (`Resolution` resolves it; native sub agents and ephemeral workers pin what they can); a HITL replay in direct mode executes the resolution the run froze, and an agentic replay logs `definition_changed_during_pause`; a resume records the settings it ran under (`snapshot.resumes`); failed and cancelled runs are cost-stamped too; an ambient run executes under the allowlist its record pinned, not the live routine; the skills and sub agent projections log their per-call slices like tools; plan and aggregate steps carry model params and a failed node pins its definition; the bind-time unavailability report lands on the stored run (`context` surface `skill_bind`) with the reason per tool; an inactive skill inside a workflow takes the node's error edge instead of running; a harvested exemplar is born pending and serves the planner only once the human's next turn (or a quiet conversation) confirms it; the watch judge uses the salience role before the extraction role, so the model that compiled a predicate is not the one applying it; the eval snapshot says whether the judge was the model under test; the migration backfills description hashes and the manager stamps missing config hashes at boot; A2A ingest guards sanitized-name collisions; an operator can hand a description back to the server (`PATCH description_source=server`) and a suppressed server rewording is logged; `skills.origin` records who authored a definition.
+
+### The third reading
+
+Three fresh readers over the wave's diff, run in parallel with a fresh-volume §14 ceremony on the committed image (which proved the migration chain on an empty database and passed steps 1–11). Everything they verified is closed here, with regression tests for each:
+
+- **Their one high:** the compiled-worker cache was keyed on the sub agent's `updated_at`, which a skill edit never touches — a skill toggled off (or rewritten) after the first invoke kept running from the cached graph, and the node pinned the old definition while the dispatch step pinned the new one. The key now carries a digest of the bound skills' definition hashes and statuses (spec §6).
+- **Ingest drift:** a tool that vanished and returned with a changed schema was reactivated past the `quarantine` policy; disabling a remote agent left its A2A tools advertised in the catalog (they follow the agent's status now, under `ingest_state='agentoff'`, and only the cascaded ones return); `PATCH /tools/{id}` with a null description stored the text "None" and locked it operator-owned; a masked (`***`) secret round-trip reconnected a live MCP server; a bound tool under a `dispatch.`/`use_skill_` server name was passed through as a loop sibling instead of judged; native tools carried no description fingerprint at seed; the upgrade-time description fingerprint trimmed spaces only where the code strips every whitespace character; proposals mined before `origin` existed stayed `human` and so were activatable unjudged (migration `w2k3l4m5n6o7` stamps both); the post-resume schema check re-matched the orphaned paused step on every later call.
+- **Pinning:** the direct-mode replay gated on the live row before it read the pin, so an agent deleted, deactivated or unexposed during the pause failed the approved run (the pin is read first now; the live state is logged); a cancelled or wall-clocked run never pinned `context` / `catalog_calls`; a failed workflow node pinned the skill's declared model, not the one it ran under; `_pin_context` could run twice and duplicate every entry; the agentic replay compared against the run-start catalog rather than the dispatch step that paused; the agentic catalog pin was not best-effort; a plan entry id equal to a snapshot key (`settings`, `context`, …) would have replaced the pin (`validate_plan` refuses them); snapshot writes now lock the run row; a failed run was priced from the live settings without the ambient overlay; the eval `judge_is_target_model` flag ignored per-skill model overrides.
+- **Judge independence:** the overlap judge prompt was built with bare replacement — a server-written tool description could address the judge (fenced now, like the eval and significance judges); an in-flight audit did not stop when its gate turned off, although the report said so; `judge_pending_vote` confirmed every older pending run blindly, including one whose very next turn was a correction (each is judged against the first turn that followed it, as the sweep does); a bare "no " / "nope" opener retired a fresh exemplar on "No thanks, that's all"; mined proposal names came from Python's per-process `hash()`, so every restart re-proposed each cluster under a new name (sha256 of the representative ask now); the activation guard judged the pre-PATCH definition when the same request rewrote it; spec §4 still described the guard as prefix-keyed and §16.5 claimed the verdict was written into the proposal's instructions (it never was).
+- **Proof:** the whole ceremony re-run from a fresh volume on the rebuilt image (`docs/acceptance/prod/M56/`), the third-reading drill (`prod/HARDENING/third-reading.md`), stage 36 and the regression stages 02–05, 14, 18, 27, 28, 35 on that image; backend 1170 passed / 1 skipped, frontend 107.
+- **Named by a reader of the write-up, closed here:** a crashed overlap judge and a real 0% carried the same value into the admin UI's save dialog — the API had returned `judge_available: false` since the wave, and every machine path branched on it, but the human save flow swallowed it. The Skills and Sub Agents editors now save and show a dismissible "Saved unjudged" notice with the judge's error (stage 36 frame 11: the judge given a one-token output budget, so its verdict cannot parse).
+- **Caught by the ceremony, not the readers:** the workflow router raised `AttributeError` when the live model answered with nothing parseable, failing the dispatch (the agentic loop retried it and the run completed) — one retry, then the first condition with the reason on the route step.
+
+## Schema drift, the pinned registry and the judge's own model — 2026-09-11
+
+Three points raised on the release announcement, each answered in code (spec §3.2, §3.6, §3.7 and §8.2 amended), with regression tests on the fake provider and the stub MCP server, and live evidence in `docs/acceptance/35-schema-drift/` and `docs/acceptance/prod/DRIFT/`.
+
+### Added
+
+- **Tool schema drift is loud.** Every write of a tool's `input_schema` (MCP ingest, the native scan, an A2A card refresh) goes through one rule (`app/toolschema.py`): the schema is fingerprinted (`schema_hash`, key order and whitespace do not count), versioned (`schema_version`, 1 at first sighting, +1 per change) and, on a change, logged (`tool_schema_changed`), counted (`concierge_tool_schema_changes_total{kind, policy}`) and flagged (`schema_changed_at`) until an operator acknowledges it (`POST /tools/{id}/acknowledge-schema`). The new `mcp_schema_change_policy` setting (`warn`, the default, or `quarantine`) decides whether a changed MCP tool also goes out of service — `status='inactive'`, `ingest_state='changed'` — which a re-ingest never undoes. The Tools page badges a changed tool with its new version in the table and, in the drawer, shows a banner with one Acknowledge action (Acknowledge & re-enable when quarantined) and the schema version next to the tool key. Rows from before the rule carry no hash and are recorded as first sightings on their next ingest, never flagged wholesale. Migration `u0i1j2k3l4m5`.
+- **The registry version is pinned into the run.** Every `tool_call` step records the tool's schema version and hash (`run_steps.entity_version` / `entity_hash`, shown as `schema v{n} · hash` in the Runs trace) and the span carries them as attributes, not §10 metric labels. A `direct_tool` plan entry's frozen payload now holds the tool's schema, version and hash, not only its id. A `direct` run freezes the pinned sub agent's resolution on the run (once, never on a HITL replay), and an `agentic` run freezes the catalog it could see at start — exposed tools with their versions, exposed skills and active sub agents with their `updated_at` — so a trace reads against the registry as it was in all three modes.
+- **The overlap judge has its own model role.** `overlap_judge_model` / `overlap_judge_model_params`, null falling back to `default_model` like every other role, threaded into the §4 judge and offered in Settings → Models. A judge that is not the model writing the skills (the operator's, or the §17.7 learner's) does not share the generator's blind spots.
+- The test stub MCP server gains `mutate_schema`, which renames `echo`'s parameter (`text` ⇄ `message`) and notifies listChanged, so the drift path is exercised end to end by tests and by the live stage.
+
+## Fixes from campaign v1 — 2026-09-11
+
+The three product findings of the acceptance campaign on the `dev` images (`docs/acceptance/report.md`, findings 1, 2 and 4), each with a regression test on the fake provider and a live re-verification under `docs/acceptance/prod/FIXES/`.
+
+### Fixed
+
+- **A HITL deny reached the aggregator as a success.** The worker's dispatch result was built from its `ok` nodes only, so a denied gate vanished with the steps after it and the aggregator saw the pre-gate draft alone — and answered as if the gated action had happened ("[Published successfully]…" after "Do not publish"). `worker_result` (`app/orchestrator/ladder.py`) now carries every denied gate into the result text with the reviewer's note and marks the result `status=denied`; the aggregator prompt names that status as a refusal that must never be reported as done; the agentic loop and the skill/sub-agent tools return the verdict text instead of a "failed" line. Regression: `TestHitlHappyPath.test_deny_routes_to_end` asserts the dispatch step and the aggregator's prompt both carry the denial; `TestWorkerResult` pins the builder.
+- **Flipping `ambient_enabled` off and on stalled the leader tick until a restart.** A local `from app import obs` inside `_tick` (`app/ambient/drain.py`) made `obs` a function local, so the dark branch (`elif lease.held: … obs.AMBIENT_LEADER.set(0.0)`) raised `UnboundLocalError`, the `except` handler raised again on the same name, and the loop task ended with the exception unretrieved: no lease, gauge 0, nothing logged. The shadowing import is gone and the loop body now survives a failure of the tick's own error handling (`ambient_tick_crashed`, counted in `concierge_loop_errors_total`). Regression: `TestDarkTick` (the dark tick releases without raising; a raising tick never ends the loop) and `TestTwoLoops.test_off_then_on_leads_again` — all three fail on the previous code.
+- **A chart-less answer with no artifact when the formatter's structured call came back as prose.** The formatter kept the first attempt's parse failure as its final word; it now retries once without thinking (the same repair doctrine as the chart-contract repair) before giving up. Regression: `test_prose_instead_of_the_tool_call_is_retried_once`, `test_prose_twice_means_no_artifact`.
+
+### Changed
+
+- A dispatch that fails outside a skill node (in the worker plumbing rather than on a node's error edge) now logs `dispatch_failed` with the traceback; the step row kept only the message, which left one such failure during the re-verification (`'NoneType' object has no attribute 'index'`, seen once, report finding 8) undiagnosable after the fact.
+
+### Noted, not changed
+
+- The rate limiter runs only for identified principals: the token bucket is per user (spec §18.8) and auth off is byte-identity (§14 step 44), so there is no key to bucket on while dark — the 429 boundary is proven under `AUTH_ENABLED=1` (`prod/M34`).
+- The egress policy refusing private counterparties unless named in `EGRESS_ALLOW_HOSTS`, the scripted counterparty's per-task "ask" script, and the missing embeddings provider are environment or driver facts, not defects.
+
+## M55 — The fork seam — 2026-09-10
+
+### Added / changed
+
+- The fork seam (PLAN M55 — no authentication is implemented; the socket it plugs into is). An `AuthProvider` port + registry in `backend/app/auth/` following the §2.1 provider pattern: identity resolution, the tenancy predicate contribution (work-row filter, row check, memory visibility fragment), the authorization decision point, the owner stamp and a boot hook; selected by `AUTH_PROVIDER` (default `builtin` — today's §18.8 behaviour, byte-identical dark) with `AUTH_PROVIDER_MODULE` importing a fork's module so its decorator registers it. Every tenancy decision in the core asks the port; a test fails if any file outside the package reads the auth switch. A contract suite runs over every registered provider; the reference stub in `backend/tests/auth_stub.py` — one module, rows shared by tenant, writes gated on `editor` — holds end-to-end through the middleware, stores, streams and memory recall. `docs/extending.md` is the forker's guide; spec §20 records the seam
+
+## M54 — Horizontal scale — 2026-09-10
+
+### Added / changed
+
+- Horizontal scale (PLAN M54 — where the system stops being one process that happens to run behind a load balancer). A shared control plane: every process has a `replica_id` and a heartbeat row in `replicas`, `runs.owner_replica` is stamped at creation, and cancellation is a persisted intent announced on one LISTEN/NOTIFY control channel that the owner acts on at once (its heartbeat is the fallback) — a Stop pressed on any replica stops the run on the one executing it and never writes a status it did not cause; a stream held on a non-owner resolves from the record when the owner announces the terminal transition; boot reaping is scoped to the booting replica and a dead owner's runs are failed truthfully; the consolidation and retention clocks live in `job_clock`, so an interval is a cluster property and a restart re-runs nothing; migrations and seeding take a boot lock. Delivery fan-out: the leader publishes each in-app delivery on the control channel and every replica re-fans it to its own subscribers; the pursuit oracle becomes the cluster audience. The connection budget is declared (`DB_REPLICAS`, `DB_MAX_CONNECTIONS`), checked at boot and served by `GET /replicas`; the pooled connections survive a transaction-mode pooler. A distributed rate limiter, generation-guarded cache coherency with TTLs, idempotent MCP ingest with per-replica reconciliation, and typed per-dimension embedding columns each with a real HNSW index. Compose scales with a host-port range, nginx resolves replicas per request, Prometheus discovers each replica; `docs/operations/scaling.md` rewritten from the evidence. 36 contract tests; §14q-91..96; evidence in `docs/acceptance/prod/M54/`
+
+## M53 — Deploy and operate — 2026-09-09
+
+### Added / changed
+
+- Deploy and operate (PLAN M53 — the wave where the system becomes something an operator can deploy, watch and trim). The SSE wire format survives a deploy: every run event carries a monotonic `id:`, `Last-Event-ID` resumes from it, the heartbeat is inside the tightest balancer default (15 s), a run whose events are gone from the process resolves for a reconnecting client from its row, and the client folds each sequence at most once — a deploy with open streams duplicates no answer text. A readiness-first lifecycle (`deploy.sh`): `SIGUSR1` flips `/ready` to 503 while the port is still open and politely closes the streams the process cannot serve, uvicorn's connection grace is bounded under a 40 s stop grace so the M51 drain always gets its window, the ambient loop is awaited so the leader lease is released at once, `/ready` also reports the database, and compose gains a healthcheck, restart policy and resource limits. Retention for the six tables nothing else ever trimmed, each purge behind its own §3.7.1 gate enforced in-function, previewable and runnable from Settings. Observability that diagnoses: §10 labels on the step metrics, per-call LLM latency and outcome by provider/model from one LangChain callback at the port, pool saturation, in-flight runs, backlog depth, loop errors, MCP and listener state — with Prometheus/Grafana provisioning under `docs/observability/`. MCP reconnection with backoff and a circuit breaker, supervised LISTEN connections, and re-ingest that keeps operator intent. A cost model: per-run cost from captured usage (unknown models reported as unpriced, never guessed), provider-reported prices, operator overrides, and one spend ceiling across every run kind behind its own gate. A backup/restore drill with the measured RTO, one runbook per failure class, and an accessibility pass on the Settings and Ambient controls. 44 contract tests plus 9 client stream tests; §14p-83..90; evidence in `docs/acceptance/prod/M53/`
+
+## M52 — Untrusted input and secrets — 2026-09-02
+
+### Added / changed
+
+- Untrusted input and secrets (PLAN M52 — the wave whose failure mode is an attacker steering an autonomous agent that holds tools). One fence choke point: every untrusted-bearing prompt (remote-agent output, fired-event payloads, delivery bodies, candidate answers, member memories, watch requests, the remembered-context block) is rendered through `app/untrusted.py`, which neutralizes any fence-shaped tag inside the payload and stamps a per-render token on both fence tags — a payload can neither close the fence early nor forge one, and the golden harness pins the tokened prompts. One egress policy (`EGRESS_POLICY` public / allowlist / open) judges every outbound URL fetched on someone else's say-so — A2A cards and calls, poll sources, HTTP MCP servers, the webhook channel — by literal address and by resolution, re-checks every redirect hop in the client's request hook, streams bodies under `EGRESS_MAX_BYTES`, and fails with one fixed shape whatever the cause; feeds parse with `defusedxml` off the event loop. MCP `env`/`headers` are write-only (masked reads, `*` keeps, null removes, `env:VAR` resolves at connect time). One sanitizer redacts known secret values and credential shapes before any error is persisted or returned, and on every log line. Authored regexes pass a static guard at the API and before every match, which runs under a timeout off the loop. 40 contract tests; §14o-77..82; evidence in `docs/acceptance/prod/M52/`
+
+## M51 — Bounded work — 2026-09-02
+
+### Added / changed
+
+- Bounded work (PLAN M51 — every unit of work gets a ceiling and a truthful end state). Limits live at the provider port: `LLM_TIMEOUT_S` / `LLM_MAX_RETRIES` reach every adapter through one function, a contract test asserts each adapter carries them, and a provider failure reaches the run as a classified error (rate-limited / timeout / unknown-or-retired model / provider error) naming the model and the setting that resolved it; a retired model is refused at validation. Every run has a wall clock (`run_wall_clock_s`) and a heartbeat, and the stalled-run reaper now covers chat runs too. Admission is explicit: `run_max_concurrent` semaphore, `run_queue_max` queue with a visible `queued` status, chat shed with 503 + `Retry-After`, `GET /ready` as the readiness gate. Shutdown drains in-flight runs for `SHUTDOWN_GRACE_S` and restart reaps anything still `running`/`queued` as failed "orphaned by a restart" with its open steps cancelled. The run event bus is bounded and TTL-evicting. No session spans a provider call: the ambient drain claims → commits → processes → writes back (abandoned claims reclaimed after 10 min), memory writes, digests, exemplars and compaction embed between sessions — enforced by a per-task session tracker the fake provider checks in strict mode, so a regression fails the suite. Delivery dispatches then commits; external sends carry an attempt counter, backoff (60 s → 5 min → 30 min) and a dead-letter state with a per-tick retry stage. The registry cache fails open to Postgres with a degraded counter; token totals increment atomically; the contradiction sweep keeps the newest fact. 29 contract tests; §14n-70..76; fault-injection evidence in `docs/acceptance/prod/M51/`
+
+## M50 — The ceiling — 2026-09-01
+
+### Added / changed
+
+- The ceiling (PLAN M50 — the four ways the M49 baseline showed a fresh install falls over first, each fixed at its cause). The connection budget is explicit (`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT`) and `/chat/stream` releases its session before streaming, so an open tab holds no pooled connection (the baseline failed the pool at 15 tabs). `/runs` and `/conversations` are paged with `X-Total-Count`, `run_count` is an aggregate, child relationships are `lazy="raise"` and loaded explicitly where a detail view needs them, the five missing hot-path indexes ship in one migration, and the UI polls with backoff (3 s while something is live, 15 s when quiet, never in a background tab). One memory visibility predicate (`visibility_sql`) feeds recall's two legs and the pinned profile — the pinned path had leaked project rows across projects and never checked the owner; the contract test spies on the builder so a rule cannot be added to one path and forgotten in the other. Routine triggers are typed at the API boundary (interval ≥ 60 s, parseable cron, ISO `once.at`, webhook filters with known ops and compiling regexes), the schedule evaluator isolates routines and quarantines one whose trigger keeps raising (`status='error'` after three, reason recorded), and every tick stage runs under a timeout with an error counter so one failure never skips the rest. `ambient_timezone` makes quiet hours and digest times wall-clock in the user's zone (UTC default = byte-identical). 20 contract tests; §14m-67..69
+
+## M49 — Production-hardening foundation — 2026-09-01
+
+### Added / changed
+
+- Production-hardening foundation (`docs/research/prod_hardening/PLAN.md` M49): measurement before fixes. The prompt regression harness — every prompt file has a golden set rendered the way its consumer renders it and graded by the spec §15 grader, so a dropped binding sentence, a renamed placeholder, or a prompt no code loads fails `python -m app.prompts.check` (pytest gate + Docker build gate; it found and removed the consumer-less `answer_ui.md`). The load harness (`experiments/load/`) drives the shipped API and the baseline was captured before any fix — read-path latency, `/runs` under 10× growth, concurrent chat runs, the SSE subscriber ceiling, recall by corpus size with the vector leg's plan, ambient backlog drain, connection peaks — so M50, M54 and M56 have a number to beat. Ruff `BLE`/`S` enabled with all 41 violations triaged: 31 runtime asserts replaced by explicit checks, every surviving suppression justified in one line, `defusedxml` for the RSS body. Evidence: `docs/acceptance/prod/M49/`
+
+## M48 — The switchability rule — 2026-08-30
+
+### Added / changed
+
+- The switchability rule (spec §3.7.1 — from an independent pre-public audit that traced every gate to its enforcement site rather than trusting the spec's intent). The audit found six behaviors the system performed on its own with no switch of their own: the four memory consolidation jobs (decay expires rows, contradiction quarantines them, communities spends a model call per changed group, and compaction hard-deletes — four different consequences, so one family switch would not have done), the anticipation job (the only feature that initiates contact unprompted — silence had to be statable, not just learnable via the hit-rate floor), and the §15 eval surface. All six now have named gates, every default equal to the behavior it replaces, so the promotion is byte-identical. Plus the §3.7.1 corollary — a setting that reads as off must be off: `memory_community_budget_tokens = 0` now skips the rebuild instead of silencing injection while the job kept spending tokens, and the Settings page labels the legal-but-degraded forgetting-without-an-embedding-model case instead of leaving it silent. Settings coverage closed to 89/89 and asserted by test, so a future key with no control fails the suite rather than a review; dead `STALL_AFTER_S` removed. 15 contract tests; §14k-61..63
+
+## M47 — Extraction tuner — 2026-08-30
+
+### Added / changed
+
+- Extraction tuner (spec §17.7/§16.2: the second feedback consumer — the tombstone-informed learner the M44 no-consumer note reserved. Deterministic rules over machine-write tombstones (with confidence-at-admission metadata) and quarantine review rejections, machine sources only — the human's own words are consent, never a training signal. Kind routing sends a ≥50%-repudiated kind's future machine writes through the review queue (novel junk of a repudiated kind is what tombstone suppression cannot catch); the admission floor — promoted to the live `memory_admission_min_confidence` setting, byte-identical default — walks ±0.05 in [0.5, 0.9] on a band-local trigger, because the harness showed a raw forget-rate trigger ratchets into starving valuable kinds. Two-world harness evidence: world A learner 10 junk admissions at zero valuable-blocked vs 42–60 for every zero-loss static; world B floor walks 0.5→0.60, stops at the zero-collateral point, beats the shipped default 36 vs 66 — but NOT the retrospective oracle static (12), a failure reported at full prominence rather than reworded: a single-dial learner converges to its dial's oracle, it cannot beat it in-window. Gate `memory_extraction_learning` off\|propose\|auto, default off — born dark; 17 contract tests; §14j-59..60)
+
+## M46 — Embedding backfill job — 2026-08-29
+
+### Added / changed
+
+- Embedding backfill job (spec §16.2: the promised "re-embeds in the background and flips" scheduler job, built — an advisory-locked hourly job embeds every live memory, run digest, and active plan exemplar lacking a vector under the ACTIVE model key, batched and pass-bounded, old-key rows coexisting untouched, write-through failures repaired by the same path; closes the known gap recorded in stage 32 where a row without an embedding silently degraded the forget gate to hash-only matching. Tombstones deliberately excluded — they keep no text, so pre-switch tombstones stay on hash+anchor matching: privacy over recall, stated in the spec rather than discovered later. 10 contract tests; §14j-58)
+
+## M45 — Salience tuner — 2026-08-30
+
+### Added / changed
+
+- Salience tuner (spec §17.7: the first consumer of the M43b `judge_reward` ledger — deterministic rules, not a bandit (salience decisions are rare events): per-category mutes as `salience:<cat>` policy rows (revert un-mutes, M44 reject stays inert, review UI works day one) and urgency-floor moves ±1 clamped [2,5] through the same `_apply_special` path as the digest-time learner; own gate `ambient_salience_learning` off\|propose\|auto, default off — born dark, byte-identical until a human flips it. Evidence-first on the M24-pattern harness: learner precision .655 vs best-static .622 and default .483 at zero missed-critical and zero clamp violations, total judge reward +17 beating every static point; honest dynamics (the post-mute floor slide) and the harness-forced mute-rule change (≤0.10, not zero) recorded in `docs/research/feedback_loop/report.md` rather than tuned away. 13 contract tests)
+
+## M44 — Durable forgetting + feedback-trace completeness — 2026-08-30
+
+### Added / changed
+
+- Durable forgetting + feedback-trace completeness (spec §16.1/§16.2/§17.7/§8.8: the M43c audit's finding made correct — physical delete + existence-only reconciliation meant the system could quietly RE-LEARN a fact the user deleted. Deletion now splits into Forget (metadata + normalized-hash + payload-token-hash tombstone, embedding copy for suppression only, destroyed with the tombstone) and Erase (physical, no trace — privacy by explicit choice; purge clears tombstones too); the §16.2 admission gate refuses suppressed candidates via the hybrid gate — threshold cosine alone, or gray-band ≥0.70 with a shared distinctive-payload anchor — calibrated by LIVE measurement: two real paraphrase pairs at cosine 0.876 and 0.847 proved no single threshold separates restatements from value-updates; user re-assertion overrides in one step; the Forgotten tab lists tombstones metadata-only with working Unforget; §17.7 pending proposals gain explicit reject; overlap-guard overrides logged content-free. `memory_forget_enabled` default false = byte-identical; 17 contract tests; §14i-55..57 proven live through four campaign legs whose two failures each produced a spec-recorded correction)
+
+## M43 — Salience decision surface + settings completeness — 2026-08-30
+
+### Added / changed
+
+- Salience decision surface + settings completeness (spec §17.5/§8.9/§8.7: M42 shipped two promises its own spec text made and its code did not keep — `propose` "queued verdicts for approval" with nothing able to approve them, and §8.7 listed a salience model override that had no picker. A verdict now renders on its own delivery card leading with the CONSEQUENCE in plain language ("Worth your attention" / "Worth remembering" / "Looks like noise") with Do it / Leave it, and a layered "why this?" that never omits that a model made the call; every applied verdict — human- or `auto`-applied — carries a working Undo that restores the pre-mutation snapshot and retracts only the memories retention itself created, refusing honestly once a digest has spent the escalation rather than pretending to un-send it; apply and decline write the judge's OWN reward (`judge_reward` on the salience record) — deliberately separate from the delivery's §17.7 `accepted`/`dismissed` feedback, because "the judge misread this alert" and "this alert was worthless" are different facts and undoing an over-eager escalation of a real alert must never feed the §17.3 precision rule toward demoting the category — so the judge finally accrues the evidence by which it can be evaluated instead of merely trusted; decisions are first-write-wins, conflict-refusing and tenant-scoped. Plus the §8.7 rule — every §3.7 role model has a Settings picker in the section owning it — closing `memory_extraction_model` and `ambient_salience_model`, both API-validated and unreachable until now. 12 new contract tests; §14h-52..54 proven live)
+
+## M42 — Delivery salience + truthful delivery record — 2026-08-29
+
+### Added / changed
+
+- Delivery salience + truthful delivery record (spec §17.5/§18.4/§16: the delivery EVENT and the delivered CONTENT are different facts — `in_app` becomes a first-class ledger entry written only when a real-time broadcast reached nobody (a digest flushing to an empty room is normal, not a failure), and `seen_at` + an unread nav badge make attention a fact rather than an inference; the salience pass then re-judges what nobody saw — deterministic prefilter (tier, urgency floor, and `skey` recurrence, a signal supersede-collapse had been discarding since M23) then a fail-open LLM judge over the FENCED body — into three ledgered outcomes: escalate to digest-lead (never a re-interrupt, never breaking quiet hours), retain into §16 through the normal admission path with delivery provenance, or drop on the explicit record. `ambient_salience_mode` default `off`, so defaults stay byte-identical; §14g-48..51 proven live plus a randomized regression sample of archived frames)
+
+## M41 — Ambient pursuit — 2026-08-28
+
+### Added / changed
+
+- Ambient pursuit (spec §17.5/§18.4: channel routing was presence-blind — a configured email on `interrupt` sent whether or not the toast had already landed in front of you. `ambient_pursuit` ('off'\|'away'\|'always', default 'always' = pre-M41 behavior, so defaults stay byte-identical) now gates the EXTERNAL half of `dispatch_delivered` on whether the in-app half reached anyone; the presence oracle is `stream_subscriber_count()` sampled immediately before `_publish` — not an estimate of presence but the literal audience of the toast being sent, which stays correct per-process under §18.9 multi-replica and avoids the idle timer's false positives against an open, watched tab; a held escalation logs `ambient_pursuit_held` and leaves an ABSENT ledger entry rather than a silent one; strictly subordinate to tiers, quiet hours, and the notification budget — it escalates the channel, never the hour; Settings select beside the routing it modifies — 12 contract tests incl. the full tri-state × presence matrix, and §14f-45..47 proven live against local SMTP + SMS-gateway-shaped webhook sinks)
+
+## M40 — Config hardening + per-chat target pin — 2026-08-30
+
+### Added / changed
+
+- Config hardening + per-chat target pin (spec §3.7/§7.5/§8.7: the composer's direct-invocation pin — and its history-summary checkbox — became per-conversation state (a conversation-keyed map; `?target=` deep links pin only the chat they open, new chats always start at auto); `a2a_poll_interval_s` wired as a tick-bounded monotonic watermark in the parked-task poller (effective cadence `max(tick, interval)`); seven hardcoded constants promoted to live validated settings with defaults equal to the constants they replaced — `ambient_tick_interval_s`, `rate_limit_burst`/`rate_limit_per_s`, `overlap_threshold_percent`, `run_stall_after_s`, `agentic_recursion_limit`, `a2a_http_timeout_s`, `a2a_fence_max_chars` — plus `AUTH_SESSION_TTL_H` env; the Settings page gained Ambient (§17), A2A (§19), and API-guardrail sections with live nav toggling and per-control inline 422s; §14e steps 41–44 proven live (evidence in `docs/acceptance/28-config-hardening/`) with the affected settings frames surgically recaptured; the campaign also fixed two silent-failure UI defects — per-control settings 422s that never surfaced, and the skill editor's §4 overlap check 422ing invisibly on an extra payload field)
+
+## M39 — A2A long-running tasks — 2026-08-27
+
+### Added / changed
+
+- A2A long-running tasks (spec §19.6: budget expiry PARKS the remote task instead of erroring — ambient on, under `a2a_max_parked` (0 disables parking, timeout becomes a plain tool error) — and the run completes honestly with a "result will be delivered ambiently" note; the ambient leader tick gains `poll_parked_tasks()` — rechecks each parked row via `tasks/get`, terminal outcomes deliver through the §17.5 outbox (`category='a2a'`, `skey=a2a:{row}` supersede lineage, tier 1 + urgency 4 for failures, tier 2 for results, fenced bodies) with zero recheck runs ever; a remote question while parked lands a tier-1 "needs your input" delivery pointing at the task drawer; the Remote Agents page gains that drawer — live task list with reply box for input-required (`POST .../tasks/{id}/reply`: terminal→outbox delivery, still-working→re-park, another question→stays in the drawer) and cancel (`POST .../tasks/{id}/cancel` propagates `tasks/cancel`); poller inert while a2a dark — 5 contract tests incl. park→poll→deliver with zero new runs and the parked-then-ask drawer round-trip)
+
+## M38 — A2A execution in runs — 2026-08-27
+
+### Added / changed
+
+- A2A execution in runs (spec §19.5: `kind='a2a'` tools materialize as lazy call-time proxies — dark/dead backends are tool-call errors with error-edge semantics, never rebuild triggers; adopt-or-send replay idempotency keyed on `(run_id, call_key)` so HITL resume re-execution ADOPTS the open remote task instead of re-sending (§7.1 spin_worker contract); remote `input-required` raises the standard HITL interrupt with the question marked "untrusted, its own words" — deny cancels remotely, approve replies into the same remote task; every remote result and error body wrapped in the `<untrusted_remote_agent_output>` fence before entering any model context; run Stop propagates `tasks/cancel` best-effort via a detached cleanup task; `submitted/working` drains through a 1s `tasks/get` settle loop under the `a2a_task_timeout_s` budget — 6 contract tests through the REAL run machinery: echo round-trip with fence, HITL ask→approve and ask→deny, failed-terminal error edge honestly reported, Stop cancel propagation)
+
+## M37 — A2A substrate — 2026-08-27
+
+### Added / changed
+
+- A2A substrate (spec §19.1–19.4: `remote_agents` registry as an MCP-server peer — register by card URL, the manager fetches `/.well-known/agent-card.json` via a2a-sdk 0.3, stores the card, projects per-card-skill `kind='a2a'` tools with MCP ingest semantics (refresh-in-place, inactive-on-vanish, collision-suffixed `tool_key`), periodic card refresh honoring `a2a_card_refresh_interval_s`; auth read off the card's `securitySchemes` at runtime — apiKey header/query/cookie, http basic/bearer, oauth2 client_credentials via authlib with a skew-aware token cache, placed by a standalone `ClientCallInterceptor`; credentials WRITE-ONLY in the DB with `env:VAR` indirection, never serialized outward, per-scheme `configured` flags + `auth_status` computed instead; dark by default — `a2a_enabled=false` means 409 writes, inert tools, byte-identical runs; Remote Agents admin page with card/skills/auth chips + write-only credential editor — 19 contract tests incl. the full auth placement matrix against a scripted SDK-server stub)
+
+## M36 — Full acceptance ceremony — 2026-08-26
+
+### Added / changed
+
+- Full acceptance ceremony (spec §18.10: fresh volumes via `./decom.sh -y` + fresh `docker compose up` on qwen3.8-max, then the original §14 eleven-step script re-earned end-to-end — seed → UI-registered MCP server → custom skill → exposure toggle → branch/error/HITL sub agent with inline validation → multi-turn chat with mid-run HITL + history follow-up → uncovered-ask fallback rung → kill-server error-edge + reconnect → trace/cancel/retry → planner-label + second-provider (gemini-3.6-flash) switch + purge → agentic + mid-session tool live-sync; plus §14c ambient UI + decision plane live (typed builder, webhook fire matched/held, live qwen watch compile, correlation chain, run history), an adversarial fire proven fenced, a live custom-gateway smoke with usage metadata, and the §11 byte-identity/dark-mode suites — 66 UI frames + transcripts in docs/acceptance/prod/M56; full backend suite 691 passed, 1 skipped)
+
+## M35 — Multi-replica ambient coordination — 2026-08-26
+
+### Added / changed
+
+- Multi-replica ambient coordination (spec §18.9: the tick elects a leader through a Postgres SESSION advisory lock on the dedicated pair `(427017, 1)` held on an unpooled connection — the session IS the lease, renewal is a per-tick liveness check, and process death releases the lock server-side; only the leader runs the evaluators, every replica LISTENs + drains (the SKIP-LOCKED drain/executor were replica-safe by construction), a dark loop holds no lease, `concierge_ambient_leader` gauge per replica; proven in-process with two concurrent loops — exactly one ticks, both drain, takeover on leader stop — AND live with two containers on one database: failover in 48s and re-acquisition in 51s, both ≤ one 60s tick; compose stays three services, scale via `--scale backend=N`; evidence in docs/acceptance/coordination_m35)
+
+## M34 — Auth + tenancy + hardening — 2026-09-03
+
+### Added / changed
+
+- Auth + tenancy + hardening (spec §18.8: `AUTH_ENABLED` env gate — DARK BY DEFAULT, auth off is byte-identical single-user; scrypt passwords + bearer sessions sha256-hashed at rest (24h TTL), bootstrap admin one-time password printed once at boot; AuthMiddleware over `/api/v1` with exemptions (health/metrics/login + the token-auth routine fire — the fire token IS the auth; SSE accepts `?token=` since EventSource can't set headers); admin-gated registry/settings writes, token-bucket rate limit (burst 120, 10/s — proven live: 200 hammered requests → 112×200 + 88×429), security headers + CORS pin; tenancy: `user_id` on all eight work tables, strict `scope_to_user`/`owns_row` on every list/detail API, run tasks re-bind the owner so ambient + eval work scopes to the routine/intent owner, per-user delivery buckets/quiet-hours/digest-times/tier-overrides/precision/learner partitions and presence rows; §14c-32 proven live — bootstrap admin + member, real-qwen run per identity, runs/routines/deliveries invisible across users both ways, member registry write 403, fire-token-only fire became a member-owned run + delivery, LoginGate UI, then auth off reopened everything; evidence in docs/acceptance/prod/M34)
+
+## M33 — Custom gateway adapter — 2026-08-27
+
+### Added / changed
+
+- Custom gateway adapter (spec §18.7: `custom` provider — OpenAI-compatible chat-completions behind env-only `CUSTOM_GATEWAY_BASE_URL`/`_API_KEY`, model list from `CUSTOM_GATEWAY_MODELS` (the env list IS the validated list — off-list refs reject at save); explicit `effort` params rejected at validation, internal role-default effort hints dropped at call time; registered like every provider, shared adapter contract suite green, zero changes outside `app/llm/`; proven live — `get_model("custom:qwen/qwen3.8-max")` answered through a real gateway with usage metadata, and a full chat run completed with `default_model=custom:…`)
+
+## M32 — Evals — 2026-08-25
+
+### Added / changed
+
+- Evals (spec §15 promoted: csv/xlsx dataset upload in the predefined format; admin-direct batch runner over the EXISTING run machinery — skill cases run a single-skill ephemeral worker by registry id, sub-agent cases ride §7.5 direct, both exempt from the rung-4 exposure gate; every case is an ordinary Run with `is_eval=true` + `eval=true` in the log label set, HITL auto-approved; graders exact/contains/llm_judge with structured verdicts, judge failure ⇒ `error`; eval_datasets/cases/runs/results tables + config snapshots; LangSmith publish when configured; Evals UI page + skill/sub-agent drawer launchers; §14c-31 proven live — 3/3 passed on qwen across all three graders, evidence in docs/acceptance/33-evals)
+
+## M31 — Memory communities — 2026-08-27
+
+### Added / changed
+
+- Memory communities (spec §18.6: label propagation over `memory_entity_links` with deterministic tie-breaks as an hourly consolidation job; `memory_communities` rows keep a member-set signature so only CHANGED communities re-summarize (extraction model, fail-open keeps the old summary); recall gains community breadth under its own `memory_community_budget_tokens` line — proven live: qwen summarized a 3-entity meridian/kafka/clickhouse cluster and the summary injected for a partial-recall probe, chat answered with all facts + memory citations; live proof also found+fixed a real recall bug — raw `SELECT *` positional column mapping broke on migrated DBs whose column order drifts from the model, replaced with ORM loads)
+
+## M30 — Ambient UI completeness — 2026-08-25
+
+### Added / changed
+
+- Ambient UI completeness (spec §18.5: typed trigger builder — schedule kind pickers + §17.3 webhook filter rows — beside the raw-JSON escape hatch; routine drawer run history via `GET /runs?routine_id=`; ledger rows expand into the correlation-chain view + per-category precision sparklines; watch authoring from the page — `POST /watches/compile` reuses the `ambient.watch` compiler (live qwen picked the M28 `pending_hitl_count` probe), typed event-filter watches via `POST /watches`; decision-plane fix: webhook fires now match the routine's STORED webhook-trigger filters — proven live: matching fire ran, non-matching held; evidence in docs/acceptance/26-ambient)
+
+## M29 — Delivery channels — 2026-08-28
+
+### Added / changed
+
+- Delivery channels (spec §18.4: adapter registry behind `ambient_channels` per-tier routing — `in_app` always, `email` renders a digest batch as ONE SMTP message, `webhook` POSTs a gateway-shaped JSON envelope; per-channel send ledger `external` on every delivery row; failures ledgered + logged, never blocking the outbox; global `/api/v1/ambient/stream` SSE — 409 when dark, self-closing on dark — and the in-app tier-0/1 toast; §14c-30 proven live: one 12-item digest email at a local SMTP sink, interrupt toast with no reload + webhook envelope, evidence in docs/acceptance/29-ambient-pursuit)
+
+## M28 — Real trigger sources — 2026-08-25
+
+### Added / changed
+
+- Real trigger sources (spec §18.3: parameterized contracts `fn(watermark, config)` / `fn(config)→float`; native `http_json`/`rss`/`mcp_tool` poll sources + `workspace_disk_pct`/`pending_hitl_count`/`runs_failed_last_hour` probes, boot-registered with config shapes the watch compiler lists; `WatchCompile` gains `poll_config`/`probe_config`; §14c-29 proven live end-to-end — qwen compiled an `http_json` watch over a real feed conversationally, the poller ingested a real item, the fire produced a run + tier-2 delivery; live proof also caught+fixed a real decide bug: poll-item filters now match item fields)
+
+## M27 — Memory context pack — 2026-08-25
+
+### Added / changed
+
+- Memory context pack (spec §18.2: routine `include_memories` — fires share ONE persistent conversation, proven live: Beat #2 quantified the delta vs Beat #1 on qwen3.8-max; `project` memory scope with key-partitioned recall/injection that never leaks across projects; the aggregator gains the §16.3 remembered-context block)
+
+## M26 — Ambient completeness pack — 2026-08-25
+
+### Added / changed
+
+- Ambient completeness pack (spec §18.1: per-routine `model_ref` honored end-to-end — explicit role models > routine override > default, proven live with a kimi-k3 routine on a qwen stack; near-due poller tightening; escalation budget on digest approvals; per-item anticipation deliveries; learner threshold recovery; independent multi-slot digest shifting; judge `usage_metadata` accounting — judge_live battery: 7 calls, 3,880 in / 1,609 out tokens at Set-F1 1.0)
+
+## M25 — Adaptive policy learning — 2026-08-30
+
+### Added / changed
+
+- Adaptive policy learning (spec §17.7: reward-weighted bandit over the delivery substrate — category re-tiering both directions with a hard tier-1 floor, digest-time shifts ≤2h from a ledgered anchor, per-intent judge thresholds; `ambient_learning_mode` off/auto/propose with auto first-class — applies immediately under clamps, ledgered + one-click revert; gate passed: learning 0.70 vs static 0.20 intervention precision, zero learner tier-0 escalations; §14c-28 proven live tick-driven in both modes)
+
+## M24 — Ambient evals — 2026-08-30
+
+### Added / changed
+
+- Ambient evals (spec §17.6: simulated-clock scenario harness — Set-F1 1.0 with the qwen3.8-max judge vs 0.57 filters-only; guard battery: dedupe/depth/kill-switch hold under stress; 3-sim-day soak: AIMD 10.8× cheaper than fixed polling, 2/day digests exact; 8-min live soak: 8/8 fires→completed runs, 0 stalled, supersede-collapse live; report in docs/research/ambient/07)
+
+## M23 — Ambient delivery plane + §8.9 UI — 2026-08-30
+
+### Added / changed
+
+- Ambient delivery plane + §8.9 UI (spec §17.5/§17.6: four-tier outbox flushing with interrupt budget + quiet hours + bounded deferral + digest builder + return-flush + supersede-collapse; feedback → blended reward substrate; rule-based precision auto-downgrade on an append-only policy ledger; anticipation job with hit-rate self-prune; four-tab Ambient page)
+
+## M22 — Ambient execution plane — 2026-08-25
+
+### Added / changed
+
+- Ambient execution plane (spec §17.4: fires become ordinary runs with trigger provenance + narrowed projection + budgets + abstain; `ambient.wakeup`/`ambient.cancel_wakeup` with clamps/caps/done-guard; `ambient.watch` compile-echo-confirm; H3 heartbeat/reaper; HITL timeout → digest)
+
+## M21 — Ambient trigger + decision planes — 2026-08-25
+
+### Added / changed
+
+- Ambient trigger + decision planes (spec §17.2/17.3/17.3a: schedules with catch-up watermarks, AIMD pollers, state-edge conditions, three-tier fire/hold gate with significance judge, CEP-lite patterns with armed-timer absence)
+
+## M20 — Ambient substrate — 2026-08-26
+
+### Added / changed
+
+- Ambient substrate (spec §17.1/17.2: event store with cascade guards, routines + hashed fire tokens, NOTIFY-wake drain, presence + real idle detector — dark by default)
+
+## M19 — OpenRouter gateway adapter — 2026-08-25
+
+### Added / changed
+
+- OpenRouter gateway adapter (spec §2.1 custom-gateway scenario) + six-model cross-provider retest matrix
+
+## M18 — Closed-loop refinement — 2026-08-27
+
+### Added / changed
+
+- Closed-loop refinement (spec §16.7: citation feedback — only cited memories reinforce; digest compaction — episodic store stays O(conversations); entity-hop recall; 90-day time-warp simulation)
+
+## M17 — Consolidation — 2026-08-30
+
+### Added / changed
+
+- Consolidation (spec §16.6: decay sweep, generative reflection with evidence citations, contradiction sweep, advisory-locked jobs) + experiment harness
+
+## M16 — Procedural layer — 2026-08-30
+
+### Added / changed
+
+- Procedural layer (spec §16.5: plan exemplars with vote lifecycle, routing stats, fallback mining → inactive skill proposals)
+
+## M15 — Semantic layer — 2026-08-20
+
+### Added / changed
+
+- Semantic layer (spec §16.4: extraction pipeline, LLM-match/code-resolve reconciliation, instruction quarantine, memory tools + Memory UI)
+
+## M14 — Episodic layer — 2026-08-20
+
+### Added / changed
+
+- Episodic layer (spec §16.3: run digests, conversation rollups, prompt-assembly injection with budgets + data-fencing)
+
+## M13 — Memory substrate — 2026-08-26
+
+### Added / changed
+
+- Memory substrate (spec §16.1: pgvector store, bi-temporal supersession, admission gate, hybrid recall, settings — dark by default)
 
 ## M12 — Declarative .agent.md sub-agents — 2026-08-09
 

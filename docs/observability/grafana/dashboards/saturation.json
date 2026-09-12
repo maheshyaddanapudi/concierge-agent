@@ -1,0 +1,131 @@
+{
+  "uid": "concierge-saturation",
+  "title": "Concierge — Saturation",
+  "tags": ["concierge", "m53"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "gauge",
+      "title": "DB pool saturation",
+      "description": "checked_out / (pool_size + max_overflow). 1.0 = the next checkout waits DB_POOL_TIMEOUT.",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.7 },
+              { "color": "red", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "concierge_db_pool_saturation" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "DB pool connections",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "concierge_db_pool_connections", "legendFormat": "{{state}}" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Runs in flight vs slots (the autoscaling signal)",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "concierge_runs_in_flight", "legendFormat": "{{state}}" },
+        { "refId": "B", "expr": "concierge_run_slots", "legendFormat": "slots" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Backlog depth (leader tick sample)",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "concierge_backlog_depth", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Loop errors / min",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (loop) (increase(concierge_loop_errors_total[1m]))", "legendFormat": "{{loop}}" },
+        {
+          "refId": "B",
+          "expr": "sum by (evaluator) (increase(concierge_ambient_evaluator_errors_total[1m]))",
+          "legendFormat": "evaluator {{evaluator}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Leader / listeners",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [
+        { "refId": "A", "expr": "concierge_ambient_leader", "legendFormat": "ambient leader" },
+        { "refId": "B", "expr": "concierge_listener_connected", "legendFormat": "listen {{channel}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "MCP servers by state",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "concierge_mcp_servers", "legendFormat": "{{state}}" },
+        { "refId": "B", "expr": "sum by (outcome) (increase(concierge_mcp_reconnects_total[5m]))", "legendFormat": "reconnect {{outcome}} (5m)" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "SSE subscribers",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "concierge_sse_subscribers", "legendFormat": "{{stream}}" }]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Runs / min by status",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (status) (increase(concierge_runs_total[1m]))", "legendFormat": "{{status}}" }
+      ]
+    }
+  ]
+}

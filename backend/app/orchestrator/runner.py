@@ -32,6 +32,19 @@ from app.orchestrator.recorder import RunRecorder
 logger = structlog.get_logger("orchestrator.runner")
 
 RUNNING_TASKS: dict[UUID, asyncio.Task[None]] = {}
+HEARTBEAT_INTERVAL_S = 30.0  # M51: every run proves liveness; the reaper trusts it
+# M54: how long a cancel served by a replica that does not own the run waits
+# for the owner to act before answering `cancel_requested` (the owner sees
+# the NOTIFY at once; its heartbeat is the fallback)
+CANCEL_WAIT_S = 3.0
+# M54: the reason a locally cancelled run records — set by whoever cancels
+# (a user's Stop, a peer's intent, the reaper) before the task is cancelled
+_CANCEL_REASON: dict[UUID, str] = {}
+_PROVIDER_LABELS = {
+    "rate_limited": "provider rate-limited (429) after the port's retry budget",
+    "timeout": "provider call timed out (LLM_TIMEOUT_S)",
+    "unknown_model": "model not served by the provider (retired or misspelled)",
+}
 
 
 async def create_run(
@@ -45,8 +58,20 @@ async def create_run(
     is_eval: bool = False,
     eval_skill_id: UUID | None = None,
     user_id: UUID | None = None,
+    shed_if_full: bool = False,
+    trigger_kind: str = "chat",
 ) -> Run:
-    from app.auth import auth_enabled, current_user_id
+    """Insert the run row (M51: as `queued` — it is `running` only once it
+    holds an execution slot). Raises admission.AtCapacity before inserting
+    when the process is draining, or when `shed_if_full` and the queue is
+    full — the caller turns that into an explicit 503. M53: the spend
+    ceiling is enforced HERE, for every trigger kind (chat, direct, ambient,
+    eval), as a 429-shaped AtCapacity."""
+    from app.auth import current_user_id, visible_to
+    from app.cost import enforce_spend_ceiling
+    from app.orchestrator import admission
+
+    kind = "eval" if is_eval else ("direct" if mode == "direct" else trigger_kind)
 
     if user_id is None:
         user_id = current_user_id()  # §18.8: requester owns the work; None when dark
@@ -64,13 +89,27 @@ async def create_run(
             existing = await session.get(Conversation, conversation_id)
             if existing is None:
                 raise ValueError(f"conversation {conversation_id} not found")
-            if auth_enabled() and existing.user_id != user_id:
+            if not visible_to(existing, user_id):
                 raise ValueError(f"conversation {conversation_id} not found")  # invisible
+            # spec §16.5: the next turn settles the previous run's deferred
+            # exemplar vote — a correction downvotes, anything else upvotes
+            if kind == "chat":
+                from app.memory.procedural import judge_pending_vote
+
+                try:
+                    await judge_pending_vote(conversation_id, message)
+                except Exception as exc:  # noqa: BLE001 — bookkeeping never blocks a chat
+                    logger.warning("exemplar_vote_settle_failed", error=str(exc))
         settings = await load_settings_snapshot()
+        admission.check_admission(settings, shed_if_full=shed_if_full)
+        await enforce_spend_ceiling(settings, kind)
+        from app.replica import replica_id
+
         run = Run(
             conversation_id=conversation_id,
             chat_message=message,
-            status="running",
+            status="queued",
+            owner_replica=replica_id(),  # M54: the creating process runs it
             orchestrator_mode=mode or str(settings["orchestrator_mode"]),
             target_sub_agent_id=target_sub_agent_id,
             include_history_summary=include_history_summary,
@@ -85,10 +124,212 @@ async def create_run(
         return run
 
 
-def start_run_task(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
-    task = asyncio.create_task(_execute(run_id, resume=resume))
+def start_run_task(
+    run_id: UUID, resume: dict[str, Any] | None = None, *, shed_if_full: bool = False
+) -> None:
+    """Schedule a run: it waits for an admission slot (`queued`), then
+    executes under the wall clock with a heartbeat (M51). `shed_if_full`
+    is recorded for the slot policy; the shed decision itself was made
+    at create_run."""
+    _ = shed_if_full
+    task = asyncio.create_task(bounded_execute(run_id, resume))
     RUNNING_TASKS[run_id] = task
     task.add_done_callback(lambda t: RUNNING_TASKS.pop(run_id, None))
+
+
+async def _heartbeat(run_id: UUID) -> None:
+    """Refresh last_heartbeat_at while the run executes — the reaper
+    (ambient/execute.reap_stalled_runs) covers every run kind since M51.
+    M54: the same round trip re-reads `cancel_requested_at`, so a cancel
+    intent from another replica is honoured even if its NOTIFY was lost."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+        async with get_session_factory()() as session:
+            requested = (
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == run_id, Run.status == "running")
+                    .values(last_heartbeat_at=datetime.now(UTC))
+                    .returning(Run.cancel_requested_at)
+                )
+            ).scalar_one_or_none()
+            await session.commit()
+        if requested is not None:
+            asyncio.get_running_loop().create_task(
+                cancel_local(run_id, reason="cancelled by request (seen at heartbeat)")
+            )
+            return
+
+
+async def bounded_execute(
+    run_id: UUID,
+    resume: dict[str, Any] | None = None,
+    *,
+    wall_clock_s: float | None = None,
+) -> None:
+    """M51: admission slot → status running → heartbeat + wall clock around
+    _execute. A run that outlives `run_wall_clock_s` ends `failed` with the
+    clock named; one cancelled while still queued ends `cancelled`."""
+    from app.orchestrator import admission
+
+    settings = await load_settings_snapshot()
+    wall = float(
+        wall_clock_s if wall_clock_s is not None else settings.get("run_wall_clock_s") or 900
+    )
+    mode = "graph"
+    async with get_session_factory()() as session:
+        row = await session.get(Run, run_id)
+        if row is None:
+            return
+        mode = row.orchestrator_mode
+    started = False
+    try:
+        async with admission.slot(run_id, settings):
+            started = True
+            await _set_status(run_id, "running")
+            beat = asyncio.create_task(_heartbeat(run_id))
+            try:
+                await asyncio.wait_for(_execute(run_id, resume=resume), timeout=wall)
+            except TimeoutError:
+                await _finalize_failure(
+                    run_id,
+                    mode,
+                    "failed",
+                    f"exceeded the run wall clock ({wall:g}s, run_wall_clock_s) — terminated",
+                )
+            finally:
+                beat.cancel()
+                with contextlib.suppress(BaseException):
+                    await beat
+    except asyncio.CancelledError:
+        if not started:
+            await _finalize_failure(
+                run_id,
+                mode,
+                "cancelled",
+                _SHUTDOWN_REASON or _CANCEL_REASON.pop(run_id, None) or "cancelled while queued",
+            )
+        raise
+
+
+async def reap_orphaned_runs() -> int:
+    """Startup (M51): a run that was running or queued when the previous
+    process died cannot be resumed — mark it failed, truthfully. Paused
+    runs are checkpointed and resumable, so they are left alone. M54: scoped
+    to THIS replica's rows (and rows with no owner) — another replica's
+    in-flight runs are not ours to fail; a dead owner's runs are reaped by
+    `reap_dead_owner_runs` on any replica."""
+    from sqlalchemy import or_
+
+    from app.replica import replica_id
+
+    now = datetime.now(UTC)
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            update(Run)
+            .where(
+                Run.status.in_(["running", "queued"]),
+                or_(Run.owner_replica == replica_id(), Run.owner_replica.is_(None)),
+            )
+            .values(status="failed", error="orphaned by a restart", finished_at=now)
+            .returning(Run.id)
+        )
+        ids = [r[0] for r in result.all()]
+        if ids:
+            await session.execute(
+                update(RunStep)
+                .where(RunStep.run_id.in_(ids), RunStep.status == "running")
+                .values(status="cancelled", finished_at=now)
+            )
+        await session.commit()
+    if ids:
+        logger.warning("runs_orphaned_by_restart", count=len(ids))
+    return len(ids)
+
+
+async def reap_dead_owner_runs() -> int:
+    """M54: a run whose owning replica stopped heartbeating (spec §18.9)
+    cannot finish — its process is gone. Fail it truthfully, on any replica,
+    naming the owner; the M51 heartbeat reaper still covers a run whose
+    process is alive but silent."""
+    from sqlalchemy import select
+
+    from app.replica import live_replica_ids, replica_id
+
+    live = await live_replica_ids()
+    live.add(replica_id())
+    now = datetime.now(UTC)
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(Run.id, Run.owner_replica).where(
+                        Run.status.in_(["running", "queued"]),
+                        Run.owner_replica.is_not(None),
+                        Run.owner_replica.not_in(live),
+                    )
+                )
+            ).all()
+        )
+        ids = [r[0] for r in rows]
+        if ids:
+            for run_id, owner in rows:
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == run_id, Run.status.in_(["running", "queued"]))
+                    .values(
+                        status="failed",
+                        error=f"owner replica gone: {owner} stopped heartbeating — retry it",
+                        finished_at=now,
+                    )
+                )
+            await session.execute(
+                update(RunStep)
+                .where(RunStep.run_id.in_(ids), RunStep.status == "running")
+                .values(status="cancelled", finished_at=now)
+            )
+        await session.commit()
+    if ids:
+        from app import control
+
+        logger.warning("runs_reaped_dead_owner", count=len(ids))
+        for run_id in ids:
+            await control.notify("terminal", run_id=str(run_id), status="failed")
+    return len(ids)
+
+
+_SHUTDOWN_REASON: str | None = None
+
+
+async def drain_running_tasks(grace_s: float) -> dict[str, int]:
+    """Shutdown (M51): stop accepting, let in-flight runs finish for
+    `grace_s`, then cancel the rest — each cancelled run finalizes itself
+    with a terminal status on the way out, and its error names the
+    shutdown (not a user's Stop) so the record says why it ended."""
+    global _SHUTDOWN_REASON
+    from app.orchestrator import admission
+
+    admission.set_accepting(False)
+    tasks = list(RUNNING_TASKS.values())
+    finished = cancelled = 0
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=grace_s)
+        finished = len(done)
+        if pending:
+            _SHUTDOWN_REASON = (
+                f"cancelled by shutdown: the process stopped before this run finished "
+                f"(drain grace {grace_s:g}s, SHUTDOWN_GRACE_S) — retry it"
+            )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(BaseException):
+                await task
+            cancelled += 1
+        _SHUTDOWN_REASON = None  # the finalizers have run; a later Stop is a user's Stop
+    RUNNING_TASKS.clear()
+    logger.info("runs_drained", finished=finished, cancelled=cancelled, grace_s=grace_s)
+    return {"finished": finished, "cancelled": cancelled}
 
 
 async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
@@ -118,7 +359,13 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         _structlog.contextvars.bind_contextvars(eval=True)
     # §17.4: an ambient run carries its routine's narrowed registry projection
     ambient_allowlist: dict[str, Any] | None = None
-    if trigger and trigger.get("routine_id"):
+    pinned_routine = (trigger or {}).get("routine") if trigger else None
+    if isinstance(pinned_routine, dict) and "allowlist" in pinned_routine:
+        # spec §3.6: the projection the run executes under is the one its
+        # record shows — the routine as it was when the fire was prepared,
+        # not the live row (edited or deleted while the run sat queued)
+        ambient_allowlist = pinned_routine.get("allowlist")
+    elif trigger and trigger.get("routine_id"):
         from app.models import Routine
 
         async with get_session_factory()() as session:
@@ -144,12 +391,37 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         ),
     )
     set_run_context(ctx)
+    from app.orchestrator.snapshot import (
+        append_snapshot_list,
+        run_settings_snapshot,
+        write_snapshot,
+    )
+
     if resume is None:
         obs.RUNS_TOTAL.labels(mode=mode, status="started").inc()
         recorder.emit("run_status", {"status": "running"})
+        # spec §3.6 (hardening wave): the settings that shape this run, the
+        # prompt files' hashes and the build, frozen on the run at start —
+        # best-effort, like every other pin: the record never fails the run
+        try:
+            await write_snapshot(run_id, run_settings_snapshot(settings))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settings_snapshot_failed", run_id=str(run_id), error=str(exc))
     else:
+        ctx.resumed = True
         await _set_status(run_id, "running")
         recorder.emit("run_status", {"status": "running"})
+        # a resume runs under the settings of NOW, which may differ from the
+        # start-time pin: recorded as such, so the trace says which half
+        # ran under what
+        try:
+            await append_snapshot_list(
+                run_id,
+                "resumes",
+                {"at": datetime.now(UTC).isoformat(), **run_settings_snapshot(settings)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("resume_snapshot_failed", run_id=str(run_id), error=str(exc))
     started = datetime.now(UTC)
     try:
         if mode == "direct":
@@ -168,6 +440,7 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             outcome = await _run_agentic(ctx, task_text, conversation_id, resume)
         else:
             outcome = await _run_graph(ctx, task_text, conversation_id, resume)
+        await _pin_context(ctx)
         if outcome["paused"]:
             await _set_status(run_id, "paused_hitl")
             recorder.emit("run_status", {"status": "paused_hitl"})
@@ -176,6 +449,8 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         totals = {"input_tokens": 0, "output_tokens": 0}
         tool_charts = await _collect_tool_charts(run_id)
         answer_ui = await _maybe_format_answer(ctx, task_text, answer, tool_charts)
+        from app.cost import stamp_run_cost
+
         async with get_session_factory()() as session:
             run = await session.get(Run, run_id)
             if run is not None:
@@ -184,6 +459,9 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
                 run.answer_ui = answer_ui
                 run.charts = tool_charts or None
                 run.finished_at = datetime.now(UTC)
+                # the cost with the prices of this moment, stamped: a later
+                # price change never rewrites a finished run
+                await stamp_run_cost(session, run, settings)
                 await session.commit()
                 totals = {
                     "input_tokens": run.total_input_tokens,
@@ -195,6 +473,10 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             recorder.emit("answer_ui", answer_ui)
         recorder.emit("run_status", {"status": "completed"})
         recorder.emit("done", {"answer": answer, "tokens": totals})
+        # M54: a stream held on another replica is waiting for this
+        from app import control
+
+        await control.notify("terminal", run_id=str(run_id), status="completed")
         # post-run memory pipeline (spec §16.2) — fire-and-forget, off = no-op
         from app.memory.scheduler import on_run_completed
 
@@ -204,13 +486,48 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
             (datetime.now(UTC) - started).total_seconds()
         )
     except asyncio.CancelledError:
-        await _finalize_failure(run_id, mode, "cancelled", "run cancelled")
+        # a stopped or wall-clocked run pins what it was shown too (review
+        # round 3: the cancel branch was the one terminal path without it)
+        await _pin_context(ctx)
+        await _finalize_failure(
+            run_id,
+            mode,
+            "cancelled",
+            _SHUTDOWN_REASON or _CANCEL_REASON.pop(run_id, None) or "run cancelled",
+            settings=settings,
+        )
         raise
     except RunFailed as exc:
-        await _finalize_failure(run_id, mode, "failed", str(exc))
+        await _pin_context(ctx)
+        await _finalize_failure(run_id, mode, "failed", str(exc), settings=settings)
     except Exception as exc:  # noqa: BLE001 - all failures surface in chat
         logger.exception("run_failed", run_id=str(run_id))
-        await _finalize_failure(run_id, mode, "failed", f"{type(exc).__name__}: {exc}")
+        await _pin_context(ctx)
+        await _finalize_failure(
+            run_id, mode, "failed", _describe_failure(exc, settings), settings=settings
+        )
+
+
+async def _pin_context(ctx: RunContext) -> None:
+    """Spec §3.6 (hardening wave): what every surface was actually told
+    (memory blocks, exemplars, the history window) and what every model
+    call could see, onto the run's snapshot — read live at run time, and
+    superseded, compacted or deleted afterwards. Best-effort, never fatal."""
+    if not ctx.context_log and not ctx.catalog_calls:
+        return
+    try:
+        from app.orchestrator.snapshot import append_snapshot_list
+
+        # appended, never replaced: a HITL resume starts a fresh context
+        # whose lists must land NEXT TO what the pre-pause half recorded
+        if ctx.context_log:
+            await append_snapshot_list(ctx.run_id, "context", *ctx.context_log, cap=100)
+            ctx.context_log.clear()  # pinned once: a second pass (a failure after
+        if ctx.catalog_calls:  # the success pin) must not append it again
+            await append_snapshot_list(ctx.run_id, "catalog_calls", *ctx.catalog_calls, cap=200)
+            ctx.catalog_calls.clear()
+    except Exception as exc:  # noqa: BLE001 — the record must never fail the run
+        logger.warning("context_snapshot_failed", run_id=str(ctx.run_id), error=str(exc))
 
 
 async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
@@ -263,6 +580,19 @@ async def _maybe_format_answer(
     raw_params = ctx.settings.get("formatter_model_params")
     params = ModelParams.model_validate(raw_params) if raw_params else None
     presentation = str(ctx.settings.get("formatter_presentation") or "a2ui_first")
+    # hardening wave: the formatter is a recorded step like every other
+    # model call — model, params, the repair taken, the artifact's shape
+    step_id = await ctx.recorder.start_step(
+        "format",
+        tier="orchestrator",
+        model=ref,
+        model_params=params.model_dump(exclude_none=True) if params else None,
+        input={
+            "presentation": presentation,
+            "charts_enabled": bool(ctx.settings.get("answer_ui_charts_enabled", True)),
+            "tool_charts": len(tool_charts),
+        },
+    )
     payload, usage = await generate_answer_ui(
         ref,
         task,
@@ -272,24 +602,79 @@ async def _maybe_format_answer(
         presentation=presentation,
         tool_charts=tool_charts,
     )
-    if usage["input_tokens"] or usage["output_tokens"]:
-        async with get_session_factory()() as session:
-            run = await session.get(Run, ctx.run_id)
-            if run is not None:
-                run.total_input_tokens += usage["input_tokens"]
-                run.total_output_tokens += usage["output_tokens"]
-                await session.commit()
+    formatter_meta = (payload or {}).get("formatter") or {}
+    await ctx.recorder.finish_step(
+        step_id,
+        status="completed" if payload else "failed",
+        output={
+            "artifact": payload is not None,
+            "coverage": (payload or {}).get("coverage"),
+            "charts": len((payload or {}).get("charts") or []),
+            "attempts": formatter_meta.get("attempts"),
+            "repair": formatter_meta.get("repair"),
+        },
+        error=None if payload else "formatter produced no artifact (fail-open)",
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+    )
+    # the step's finish rolled the usage onto the run totals (recorder);
+    # adding it here again double-counted the formatter (review round 2)
     return payload
 
 
-async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) -> None:
+def _describe_failure(exc: BaseException, settings: dict[str, Any]) -> str:
+    """M51: a provider failure names its class (rate-limited / timed out /
+    model not served) and the setting(s) whose model ref was in play — not
+    an opaque SDK traceback."""
+    from app import obs
+    from app.llm import classify_provider_error
+    from app.sanitize import sanitize_error
+
+    kind = classify_provider_error(exc)
+    base = sanitize_error(f"{type(exc).__name__}: {exc}") or type(exc).__name__  # M52
+    if kind == "provider_error":
+        return base
+    obs.LLM_ERRORS.labels(kind=kind).inc()
+    refs = {k: v for k, v in settings.items() if k.endswith("_model") and isinstance(v, str) and v}
+    where = ", ".join(f"{k}={v}" for k, v in sorted(refs.items())) or "default_model"
+    return f"{_PROVIDER_LABELS[kind]} — {base} (model settings in play: {where})"
+
+
+async def _finalize_failure(
+    run_id: UUID,
+    mode: str,
+    status: str,
+    message: str,
+    *,
+    settings: dict[str, Any] | None = None,
+) -> None:
+    """`settings`: the run's own (its start-time snapshot, ambient overlay
+    included) so a failed run is priced like a completed one — the live
+    snapshot only when the caller has none (review round 3)."""
+    from app.sanitize import sanitize_error
+
+    message = sanitize_error(message) or message  # M52: nothing secret is ever persisted
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is not None:
             run.status = status
             run.error = message
             run.finished_at = datetime.now(UTC)
+            # a failed or cancelled run spent tokens too: stamped with the
+            # prices of this moment like a completed one (review round 2),
+            # best-effort
+            try:
+                from app.cost import stamp_run_cost
+
+                await stamp_run_cost(
+                    session,
+                    run,
+                    settings if settings is not None else await load_settings_snapshot(),
+                )
+            except Exception as exc:  # noqa: BLE001 — the stamp never blocks the failure
+                logger.warning("cost_stamp_failed", run_id=str(run_id), error=str(exc))
             await session.commit()
+            mode = run.orchestrator_mode or mode
         await session.execute(
             update(RunStep)
             .where(RunStep.run_id == run_id, RunStep.status == "running")
@@ -301,6 +686,9 @@ async def _finalize_failure(run_id: UUID, mode: str, status: str, message: str) 
         recorder.emit("error", {"message": message})
     recorder.emit("run_status", {"status": status})
     obs.RUNS_TOTAL.labels(mode=mode, status=status).inc()
+    from app import control  # M54: streams held elsewhere resolve from the record
+
+    await control.notify("terminal", run_id=str(run_id), status=status)
 
 
 async def _set_status(run_id: UUID, status: str) -> None:
@@ -518,6 +906,16 @@ async def _run_agentic(
     else:
         history = await build_history_messages(conversation_id)
         graph_input = {"messages": [*history, HumanMessage(content=task_text)]}
+        # spec §3.6: the catalog the loop could see at the start, frozen on
+        # the run — the registry middlewares resolve live at every model
+        # call, so without this an agentic trace named a registry that may
+        # no longer exist
+        from app.orchestrator.snapshot import catalog_snapshot, write_snapshot
+
+        try:  # best-effort like every pin: the record never fails the run
+            await write_snapshot(ctx.run_id, {"catalog": await catalog_snapshot()})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("catalog_snapshot_failed", run_id=str(ctx.run_id), error=str(exc))
 
     last_todos: list[dict[str, Any]] | None = None
     interrupted = False
@@ -577,21 +975,58 @@ async def resume_run(
     start_run_task(run_id, resume=resume)
 
 
-async def cancel_run(run_id: UUID) -> None:
-    """Cooperative cancel (spec §7.1); cancel on paused_hitl resolves it."""
+async def cancel_local(run_id: UUID, *, reason: str = "run cancelled") -> bool:
+    """Cancel a run executing in THIS process; False when it is not here."""
     task = RUNNING_TASKS.get(run_id)
-    if task is not None:
-        task.cancel()
-        with contextlib.suppress(BaseException):
-            await asyncio.wait_for(task, timeout=10)
-        return
+    if task is None:
+        return False
+    _CANCEL_REASON[run_id] = reason
+    logger.info("run_cancel_local", run_id=str(run_id), reason=reason)
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(task, timeout=10)
+    return True
+
+
+async def cancel_run(run_id: UUID) -> str:
+    """Cooperative cancel (spec §7.1); cancel on paused_hitl resolves it.
+    M54 (spec §18.9): a run executing on ANOTHER replica is not cancelled
+    here — that would write a status this process cannot make true. The
+    intent is persisted (`cancel_requested_at`), announced on the control
+    channel, and the owner acts on it (NOTIFY first, heartbeat as the
+    fallback). Returns the run's real status: `cancelled`, or
+    `cancel_requested` when the owner has not yet acted."""
+    from app import control
+    from app.replica import replica_id
+
+    if await cancel_local(run_id):
+        return "cancelled"
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
             raise ValueError("run not found")
-        if run.status not in {"running", "paused_hitl"}:
+        if run.status not in {"running", "paused_hitl", "queued"}:
             raise ValueError(f"run is {run.status}; only running/paused runs can be cancelled")
-    await _finalize_failure(run_id, "graph", "cancelled", "cancelled while paused")
+        owner = run.owner_replica
+        if run.status == "paused_hitl" or owner is None or owner == replica_id():
+            # no task anywhere can be waiting on this row (paused runs are
+            # checkpoints; an unowned or self-owned row with no local task
+            # is a leftover) — the terminal status is ours to write
+            await session.close()
+            await _finalize_failure(run_id, "graph", "cancelled", "cancelled while paused")
+            return "cancelled"
+        if run.cancel_requested_at is None:
+            run.cancel_requested_at = datetime.now(UTC)
+            await session.commit()
+    await control.notify("cancel", run_id=str(run_id))
+    deadline = asyncio.get_event_loop().time() + CANCEL_WAIT_S
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.1)
+        async with get_session_factory()() as session:
+            status = await session.scalar(select(Run.status).where(Run.id == run_id))
+        if status in {"cancelled", "failed", "completed", "stalled"}:
+            return str(status)
+    return "cancel_requested"
 
 
 async def retry_run(run_id: UUID) -> Run:

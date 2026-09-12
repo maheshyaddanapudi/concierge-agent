@@ -44,7 +44,7 @@ class LeaderLease:
             try:
                 await self._conn.execute("SELECT 1")  # heartbeat renewal
                 return True
-            except Exception:
+            except Exception:  # noqa: BLE001 — any error here means the lease session is gone
                 # the lease session died under us — the lock is already gone
                 await self._teardown()
                 logger.warning("ambient_leader_lost", tier="ambient", kind="leader")

@@ -1,0 +1,196 @@
+{
+  "meta": {
+    "label": "m54-recall",
+    "captured_at": "2026-09-10T21:32:28+00:00",
+    "git_sha": "8d5424c",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "recall"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "m54-recall",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M54/recall.json",
+      "scenarios": [
+        "recall"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        10000,
+        100000,
+        1000000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": true,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "recall": {
+      "embedding_key": "fake:scripted@64",
+      "levels": [
+        {
+          "loadgen_memories": 10000,
+          "active_memories": 10014,
+          "fake_vectors": 10000,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 38.1,
+            "p95_ms": 81.23,
+            "p99_ms": 94.41,
+            "max_ms": 98.87,
+            "mean_ms": 46.56,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 74.57,
+            "p95_ms": 237.4,
+            "p99_ms": 270.13,
+            "max_ms": 280.67,
+            "mean_ms": 95.62,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 18.9,
+            "index_matches": 0,
+            "wall_ms": 22.1
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 195.24,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 100000,
+          "active_memories": 100014,
+          "fake_vectors": 100092,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 188.78,
+            "p95_ms": 298.74,
+            "p99_ms": 334.35,
+            "max_ms": 343.89,
+            "mean_ms": 193.1,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 637.9,
+            "p95_ms": 888.66,
+            "p99_ms": 1089.96,
+            "max_ms": 1211.35,
+            "mean_ms": 602.44,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 181.5,
+            "index_matches": 37503,
+            "wall_ms": 208.7
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 241.49,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        },
+        {
+          "loadgen_memories": 1000000,
+          "active_memories": 1000016,
+          "fake_vectors": 1000121,
+          "concurrency_1": {
+            "n": 40,
+            "p50_ms": 999.48,
+            "p95_ms": 3072.23,
+            "p99_ms": 3149.99,
+            "max_ms": 3170.78,
+            "mean_ms": 1318.45,
+            "errors": 0
+          },
+          "concurrency_5": {
+            "n": 40,
+            "p50_ms": 4270.39,
+            "p95_ms": 12001.97,
+            "p99_ms": 24782.32,
+            "max_ms": 32757.08,
+            "mean_ms": 6049.57,
+            "errors": 0
+          },
+          "lexical_leg": {
+            "execution_ms": 990.1,
+            "index_matches": 375003,
+            "wall_ms": 993.9
+          },
+          "vector_leg_plan": {
+            "node": "Limit",
+            "total_cost": 277.17,
+            "scans": [
+              "Index Scan on memories",
+              "Index Scan on memory_embeddings",
+              "Seq Scan on memory_embeddings"
+            ]
+          }
+        }
+      ],
+      "elapsed_s": 2915.3
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 1000121",
+    "memories": "DELETE 1000000",
+    "run_steps": "DELETE 0",
+    "runs": "DELETE 0",
+    "conversations": "DELETE 0"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 14,
+      "active": 1,
+      "idle": 13
+    },
+    "max_connections": 100
+  }
+}

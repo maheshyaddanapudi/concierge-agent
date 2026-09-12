@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
+from app import egress
 from app.api.deps import (
     FiltersDep,
     SessionDep,
@@ -21,6 +23,7 @@ from app.api.deps import (
     reject_static_delete,
 )
 from app.models import A2ATask, RemoteAgent, Skill, Tool, skill_tools
+from app.sanitize import sanitize_error
 from app.schemas.common import ApiModel
 from app.schemas.remote_agent import (
     A2ATaskOut,
@@ -28,7 +31,9 @@ from app.schemas.remote_agent import (
     RemoteAgentOut,
     RemoteAgentPatch,
 )
+from app.toolschema import AGENT_INACTIVE
 
+logger = structlog.get_logger("remote_agents")
 router = APIRouter(prefix="/remote-agents", tags=["remote-agents"])
 
 
@@ -82,6 +87,12 @@ async def create_agent(body: RemoteAgentCreate, session: SessionDep) -> RemoteAg
     await _a2a_on()
     from app.a2a.manager import get_manager
 
+    # M52: the card URL is judged by the egress policy before anything is
+    # fetched; a refusal is a 422, not a connection attempt
+    try:
+        egress.check_url_static(body.card_url)
+    except egress.EgressError as exc:
+        raise HTTPException(422, f"card_url refused by the egress policy ({exc.kind})") from exc
     manager = get_manager()
     if manager is None:
         raise HTTPException(status_code=503, detail="A2A manager not running")
@@ -89,7 +100,7 @@ async def create_agent(body: RemoteAgentCreate, session: SessionDep) -> RemoteAg
     try:
         card = await manager.fetch_card(body.card_url)
     except Exception as exc:
-        raise HTTPException(422, f"could not fetch agent card: {exc}") from exc
+        raise HTTPException(422, f"could not fetch agent card: {sanitize_error(str(exc))}") from exc
     agent = RemoteAgent(
         name=body.name or card.name,
         description=body.description or card.description or "",
@@ -100,7 +111,7 @@ async def create_agent(body: RemoteAgentCreate, session: SessionDep) -> RemoteAg
     )
     session.add(agent)
     await session.commit()
-    await manager.refresh_agent(agent.id)
+    await manager.refresh_agent(agent.id, activate=True)
     await session.refresh(agent)
     counts = await _tool_counts(session, [agent.id])
     return _to_out(agent, counts.get(agent.id, 0))
@@ -130,10 +141,51 @@ async def patch_agent(
             else:
                 merged[scheme] = value
         agent.credentials = merged
+    was_active = agent.status == "active"
     for field, value in changes.items():
         setattr(agent, field, value)
+    # the agent's tools follow its status (review round 3): a disabled
+    # agent's tools stayed `active` in the catalog, advertised to the
+    # planner and failing only at the call. Off takes every active tool
+    # out of service under its own ingest_state; on brings back exactly
+    # those, never a tool the operator disabled on its own
+    tools_touched = False
+    if was_active and agent.status != "active":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.remote_agent_id == agent.id,
+                Tool.deleted_at.is_(None),
+                Tool.status == "active",
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "inactive"
+            tool.ingest_state = AGENT_INACTIVE
+            tools_touched = True
+    elif not was_active and agent.status == "active":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.remote_agent_id == agent.id,
+                Tool.deleted_at.is_(None),
+                Tool.ingest_state == AGENT_INACTIVE,
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "active"
+            tool.ingest_state = "present"
+            tools_touched = True
     await session.commit()
     await session.refresh(agent)
+    if tools_touched:
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
+        logger.info(
+            "a2a_agent_tools_cascaded",
+            agent_id=str(agent.id),
+            name=agent.name,
+            status=agent.status,
+        )
     counts = await _tool_counts(session, [agent.id])
     return _to_out(agent, counts.get(agent.id, 0))
 
@@ -262,7 +314,7 @@ async def reply_task(
         await session.refresh(task)
         return _task_out(task)
     except Exception as exc:
-        raise HTTPException(502, f"reply failed: {exc}") from exc
+        raise HTTPException(502, f"reply failed: {sanitize_error(str(exc))}") from exc
     from app.models import A2A_TERMINAL_STATES
 
     if outcome.state in A2A_TERMINAL_STATES:
@@ -286,7 +338,7 @@ async def cancel_agent_task(agent_id: UUID, task_id: UUID, session: SessionDep) 
         try:
             await client_port.cancel_task(agent_id, task.remote_task_id)
         except Exception as exc:
-            raise HTTPException(502, f"remote cancel failed: {exc}") from exc
+            raise HTTPException(502, f"remote cancel failed: {sanitize_error(str(exc))}") from exc
     await task_store.update_task(
         task_id, state="canceled", error="cancelled from the task drawer", delivered=True
     )

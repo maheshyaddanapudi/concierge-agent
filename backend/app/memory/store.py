@@ -91,26 +91,50 @@ async def active_model_key() -> str | None:
         return None
 
 
-async def _embed_ref(session: AsyncSession, ref_id: UUID, table_ref: str, text: str) -> None:
-    """Best-effort write-through embedding (never fails the save)."""
+Embedded = tuple[str, list[float]]  # (model_key, vector)
+
+
+async def _embed_text(text: str) -> Embedded | None:
+    """The write-through embedding, computed BEFORE any session opens
+    (M51, arch-H15: a provider round trip never holds a pooled connection
+    — the fake provider's strict mode makes a regression fail loudly).
+    None when no embedding model is configured or the call fails: the row
+    degrades to lexical-only, the save never fails."""
     try:
         from app.llm import get_embeddings
         from app.registry_cache import get_cache
 
         model = await get_cache().setting("embedding_model")
         if not model:
-            return
+            return None
         vec = (await get_embeddings(str(model), [text]))[0]
-        key = f"{model}@{len(vec)}"
-        existing = await session.get(MemoryEmbedding, (ref_id, table_ref, key))
-        if existing is None:
-            session.add(
-                MemoryEmbedding(ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec)
-            )
-        else:
-            existing.embedding = vec
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("memory_embed_failed", ref=str(ref_id), error=str(exc))
+        return f"{model}@{len(vec)}", list(vec)
+    except Exception as exc:  # noqa: BLE001 — embedding failure degrades this row to lexical-only
+        logger.warning("memory_embed_failed", error=str(exc))
+        return None
+
+
+async def _store_embedding(
+    session: AsyncSession, ref_id: UUID, table_ref: str, embedded: Embedded | None
+) -> None:
+    """Persist a precomputed embedding inside the caller's write transaction
+    (upsert on the side-table's composite key). No model access here."""
+    if embedded is None:
+        return
+    key, vec = embedded
+    from app.memory.dims import vector_column
+
+    if vector_column(key) is None:
+        # M54: no typed column for this dimension — lexical-only, said aloud
+        logger.warning("memory_embedding_dims_unsupported", model_key=key, dims=len(vec))
+        return
+    existing = await session.get(MemoryEmbedding, (ref_id, table_ref, key))
+    if existing is None:
+        session.add(
+            MemoryEmbedding.build(ref_id=ref_id, table_ref=table_ref, model_key=key, embedding=vec)
+        )
+    else:
+        existing.set_embedding(vec)
 
 
 async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) -> None:
@@ -137,7 +161,7 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
                 await sess.flush()
             sess.add(MemoryEntityLink(memory_id=memory_id, entity_id=entity.id))
         await sess.flush()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — entity linking is best-effort decoration
         logger.warning("memory_entity_link_failed", memory_id=str(memory_id), error=str(exc))
 
 
@@ -189,6 +213,12 @@ async def remember(
     review_note: str | None = None
     if kind == "instruction" and (source in {"extracted", "inferred"} or via_tool):
         status = "quarantined"  # behavior-changing writes gate through review
+    elif source == "inferred":
+        # hardening wave: a reflection's generalization is the model's own
+        # conclusion about the model's own extractions — it reaches the
+        # injection path only after a human has read it (spec §16.2)
+        status = "quarantined"
+        review_note = "inferred by reflection — review before it is injected"
     elif source in MACHINE_SOURCES:
         # M47 §16.2: a kind the extraction tuner routed through review —
         # machine writes only; the human's own words always land directly
@@ -219,11 +249,13 @@ async def remember(
     )
     if valid_from is not None:
         row.valid_from = valid_from
+    # M51: the embedding round trip happens with NO session open
+    embedded = await _embed_text(text)
 
     async def _write(sess: AsyncSession) -> Memory:
         sess.add(row)
         await sess.flush()
-        await _embed_ref(sess, row.id, "memories", row.text)
+        await _store_embedding(sess, row.id, "memories", embedded)
         await _link_entities(sess, row.id, entities or [])
         await sess.commit()
         await sess.refresh(row)
@@ -261,6 +293,8 @@ async def supersede(
 ) -> Memory:
     """Append-only replacement (spec §16.1): insert the new row, close the old
     one bi-temporally in the same transaction. Never deletes."""
+    new_text = " ".join(text.split())
+    embedded = await _embed_text(new_text)  # M51: before the transaction opens
     async with get_session_factory()() as session:
         old = await session.get(Memory, old_id)
         if old is None:
@@ -274,7 +308,7 @@ async def supersede(
         now = datetime.now(UTC)
         effective_from = valid_from or now
         new = Memory(
-            text=" ".join(text.split()),
+            text=new_text,
             kind=old.kind,
             scope=old.scope,
             conversation_id=old.conversation_id,
@@ -306,7 +340,7 @@ async def supersede(
         )
         if int(getattr(closed, "rowcount", 0) or 0) != 1:
             raise MemoryWriteError(f"memory {old_id} was superseded concurrently")
-        await _embed_ref(session, new.id, "memories", new.text)
+        await _store_embedding(session, new.id, "memories", embedded)
         await session.commit()
         await session.refresh(new)
     logger.info(
@@ -664,7 +698,8 @@ async def _near_duplicate(
             return None
         async with get_session_factory()() as session:
             row = await session.get(MemoryEmbedding, (top.memory.id, "memories", key))
-        if row is not None and cosine(qvec, list(row.embedding)) >= GATE_DUP_COSINE:
+        stored = row.embedding if row is not None else None
+        if stored is not None and cosine(qvec, stored) >= GATE_DUP_COSINE:
             return top.memory.id
     except Exception as exc:  # noqa: BLE001 — the gate stays deterministic-safe
         logger.warning("memory_dup_check_failed", error=str(exc))

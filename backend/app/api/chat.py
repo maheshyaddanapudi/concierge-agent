@@ -5,13 +5,16 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import SessionDep
 from app.auth import owns_row, scope_to_user
+from app.db import get_session_factory
 from app.models import Conversation, Run
+from app.orchestrator import admission
 from app.orchestrator.context import EVENT_BUS
 from app.orchestrator.runner import create_run, resume_run, start_run_task
 from app.schemas.common import ApiModel
@@ -67,25 +70,46 @@ def _run_out(run: Run) -> dict[str, Any]:
 
 
 @router.get("/conversations")
-async def list_conversations(session: SessionDep) -> list[dict[str, Any]]:
-    conversations = list(
-        (
-            await session.execute(
-                scope_to_user(
-                    select(Conversation).order_by(Conversation.updated_at.desc()), Conversation
-                )
-            )
-        ).scalars()
+async def list_conversations(
+    session: SessionDep,
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    """Newest first, paged (M50): `limit`/`offset`, total in X-Total-Count.
+    run_count is an aggregate — before M50 it loaded every run of every
+    conversation (the 10× growth in the M49 baseline)."""
+    scoped = scope_to_user(select(Conversation), Conversation)
+    total = (
+        await session.execute(select(func.count()).select_from(scoped.subquery()))
+    ).scalar_one()
+    counts = (
+        select(Run.conversation_id, func.count(Run.id).label("n"))
+        .group_by(Run.conversation_id)
+        .subquery()
     )
+    rows = (
+        await session.execute(
+            scope_to_user(
+                select(Conversation, func.coalesce(counts.c.n, 0))
+                .outerjoin(counts, counts.c.conversation_id == Conversation.id)
+                .order_by(Conversation.updated_at.desc())
+                .limit(limit)
+                .offset(offset),
+                Conversation,
+            )
+        )
+    ).all()
+    response.headers["X-Total-Count"] = str(total)
     return [
         {
             "id": str(c.id),
             "title": c.title,
             "created_at": c.created_at.isoformat(),
             "updated_at": c.updated_at.isoformat(),
-            "run_count": len(c.runs),
+            "run_count": int(n),
         }
-        for c in conversations
+        for c, n in rows
     ]
 
 
@@ -101,7 +125,13 @@ async def create_conversation(body: ConversationCreate, session: SessionDep) -> 
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: UUID, session: SessionDep) -> dict[str, Any]:
-    conversation = await session.get(Conversation, conversation_id)
+    conversation = (
+        await session.execute(
+            select(Conversation)
+            .options(selectinload(Conversation.runs))  # M50: explicit child load
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
     if conversation is None or not owns_row(conversation):
         raise HTTPException(status_code=404, detail="conversation not found")
     runs = sorted(conversation.runs, key=lambda r: r.started_at)
@@ -154,6 +184,21 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             detail="include_history_summary applies only to sub-agent-pinned messages — "
             "the orchestrator always receives conversation history",
         )
+    try:
+        run = await _create_chat_run(body, session)
+    except admission.AtCapacity as exc:
+        # M51: shed load explicitly — never an invisible wait; M53: the
+        # spend ceiling is the same shape with a 429
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers={"Retry-After": str(exc.retry_after_s)},
+        ) from exc
+    start_run_task(run.id, shed_if_full=True)
+    return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
+
+
+async def _create_chat_run(body: ChatRequest, session: Any) -> Run:
     if body.target_sub_agent_id is not None:
         # pinned message (spec §7.5): same gating as /sub-agents/{id}/invoke
         from app.models import SubAgent
@@ -168,7 +213,7 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
                 status_code=403,
                 detail=f"sub agent {agent.name!r} is not exposed for direct invocation",
             )
-        run = await create_run(
+        return await create_run(
             body.conversation_id,
             body.message,
             mode="direct",
@@ -176,47 +221,182 @@ async def chat(body: ChatRequest, session: SessionDep) -> dict[str, Any]:
             include_history_summary=body.include_history_summary,
             include_memories=body.include_memories,
             project_key=body.project,
+            shed_if_full=True,
         )
-    else:
-        run = await create_run(body.conversation_id, body.message, project_key=body.project)
-    start_run_task(run.id)
-    return {"run_id": str(run.id), "conversation_id": str(run.conversation_id)}
+    return await create_run(
+        body.conversation_id, body.message, project_key=body.project, shed_if_full=True
+    )
 
 
-class _StreamDone(Exception):
-    pass
+# M53 wire format (scale-B3): the heartbeat sits inside the tightest load-
+# balancer idle default (15 s), every run event carries a monotonic `id:`,
+# and a client that reconnects with Last-Event-ID gets only what it missed.
+SSE_HEARTBEAT_S = 15.0
+SSE_RECONNECT_RETRY_MS = 5000
+_TERMINAL = {"completed", "failed", "cancelled"}
+
+
+def _wire(event: dict[str, Any]) -> dict[str, Any]:
+    out = {"event": event["type"], "data": json.dumps(event)}
+    if event.get("seq"):
+        out["id"] = str(event["seq"])
+    return out
+
+
+def synthesize_terminal_events(run: Run, after: int) -> list[dict[str, Any]]:
+    """A run whose events are gone from this process (a deploy, an eviction)
+    still resolves for a reconnecting client: the row is the record. The
+    sequence continues from the client's Last-Event-ID so idempotent folding
+    keeps working."""
+    from app.orchestrator.recorder import sse_event
+
+    seq = after
+    events: list[dict[str, Any]] = []
+
+    def ev(event_type: str, payload: dict[str, Any]) -> None:
+        nonlocal seq
+        seq += 1
+        event = sse_event(event_type, run.id, payload)
+        event["seq"] = seq
+        event["replayed_from"] = "record"
+        events.append(event)
+
+    if run.status == "completed":
+        ev("run_status", {"status": "completed"})
+        ev(
+            "done",
+            {
+                "answer": run.final_answer or "",
+                "tokens": {
+                    "input_tokens": run.total_input_tokens,
+                    "output_tokens": run.total_output_tokens,
+                },
+            },
+        )
+    elif run.status == "failed":
+        ev("error", {"message": run.error or "run failed"})
+        ev("run_status", {"status": "failed"})
+    elif run.status == "cancelled":
+        ev("run_status", {"status": "cancelled"})
+    elif run.status == "paused_hitl":
+        ev("run_status", {"status": "paused_hitl"})
+    return events
+
+
+async def _record_terminal(run_id: UUID, after: int) -> list[dict[str, Any]] | None:
+    """The run row's terminal events, when it has reached one (M53 record
+    path) — None while it is still going."""
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+    if run is None or run.status not in _TERMINAL | {"paused_hitl"}:
+        return None
+    return synthesize_terminal_events(run, after)
+
+
+async def stream_run_events(run_id: UUID, after: int = 0) -> Any:
+    """The event generator behind /chat/stream: replay after `after`, then
+    live, with a heartbeat every SSE_HEARTBEAT_S. While this process drains
+    (M53) a stream it cannot serve — the run is not executing here — is
+    closed politely with a `reconnect` hint; a run executing here streams
+    on until its terminal event. M54 (spec §18.9): a run executing on
+    ANOTHER replica has no events here — the stream waits for the owner's
+    terminal announcement on the control channel (re-reading the row at
+    each beat as the fallback) and then serves the recorded terminal
+    events, continuing the client's sequence."""
+    from app import control
+    from app.orchestrator import admission
+    from app.orchestrator.runner import RUNNING_TASKS
+
+    history, queue = EVENT_BUS.subscribe(run_id, after=after)
+    foreign = False
+    wake: asyncio.Event | None = None
+    try:
+        if not history:
+            if EVENT_BUS.is_done(run_id):
+                return  # the client already holds everything
+            if EVENT_BUS.last_seq(run_id) == 0:
+                async with get_session_factory()() as session:
+                    run = await session.get(Run, run_id)
+                if run is not None and run.status in _TERMINAL | {"paused_hitl"}:
+                    for event in synthesize_terminal_events(run, after):
+                        yield _wire(event)
+                    if run.status in _TERMINAL:
+                        return
+                elif run is not None and run_id not in RUNNING_TASKS:
+                    foreign = True  # executing elsewhere: the record will resolve it
+                    wake = control.watch_terminal(run_id)
+        for event in history:
+            yield _wire(event)
+            if _is_terminal(event):
+                return
+        while True:
+            if not admission.accepting() and run_id not in RUNNING_TASKS:
+                yield {
+                    "event": "reconnect",
+                    "data": json.dumps(
+                        {"reason": "draining", "retry_after_ms": SSE_RECONNECT_RETRY_MS}
+                    ),
+                    "retry": SSE_RECONNECT_RETRY_MS,
+                }
+                return
+            if foreign and wake is not None:
+                waiter = asyncio.create_task(wake.wait())
+                getter = asyncio.create_task(queue.get())
+                done, pending = await asyncio.wait(
+                    {waiter, getter}, timeout=SSE_HEARTBEAT_S, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                if getter in done:
+                    event = getter.result()
+                    yield _wire(event)
+                    if _is_terminal(event):
+                        return
+                    continue
+                # announced, or one beat elapsed: the row is the truth
+                recorded = await _record_terminal(run_id, after)
+                if recorded is not None:
+                    for event in recorded:
+                        yield _wire(event)
+                    return
+                wake.clear()
+                yield {"event": "ping", "data": "{}"}
+                continue
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_S)
+            except TimeoutError:
+                yield {"event": "ping", "data": "{}"}
+                continue
+            yield _wire(event)
+            if _is_terminal(event):
+                return
+    finally:
+        if wake is not None:
+            control.unwatch_terminal(run_id, wake)
+        EVENT_BUS.unsubscribe(run_id, queue)
 
 
 @router.get("/chat/stream/{run_id}")
-async def chat_stream(run_id: UUID, session: SessionDep) -> EventSourceResponse:
-    """SSE event stream (spec §7.1 contract): replay + live."""
-    run = await session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
-
-    async def gen() -> Any:
-        history, queue = EVENT_BUS.subscribe(run_id)
-        try:
-            terminal = False
-            for event in history:
-                yield {"event": event["type"], "data": json.dumps(event)}
-                if _is_terminal(event):
-                    terminal = True
-            if terminal:
-                return
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=120)
-                except TimeoutError:
-                    yield {"event": "ping", "data": "{}"}
-                    continue
-                yield {"event": event["type"], "data": json.dumps(event)}
-                if _is_terminal(event):
-                    return
-        finally:
-            EVENT_BUS.unsubscribe(run_id, queue)
-
-    return EventSourceResponse(gen())
+async def chat_stream(
+    run_id: UUID,
+    request: Request,
+    after: int | None = Query(default=None, ge=0),
+) -> EventSourceResponse:
+    """SSE event stream (spec §7.1 contract): replay + live. M50 (arch-C1):
+    the existence check uses a short-lived session released BEFORE the
+    stream opens — an open tab holds no pooled connection. M53: resumes
+    from `Last-Event-ID` (EventSource sends it on every reconnect) or the
+    `after` query for clients that cannot set headers."""
+    async with get_session_factory()() as session:
+        run = await session.get(Run, run_id)
+        if run is None or not owns_row(run):  # M55 (spec §20): the stream asks the port
+            raise HTTPException(status_code=404, detail="run not found")
+    last = request.headers.get("last-event-id", "")
+    start = after if isinstance(after, int) else (int(last) if last.isdigit() else 0)
+    return EventSourceResponse(
+        stream_run_events(run_id, after=start),
+        ping=60,  # sse-starlette's comment ping is only a backstop; `ping` events carry the beat
+    )
 
 
 def _is_terminal(event: dict[str, Any]) -> bool:

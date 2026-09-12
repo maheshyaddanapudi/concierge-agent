@@ -13,6 +13,7 @@ append-only policy ledger (§17.6) — the same ledger the M25 learner writes.
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from sqlalchemy import func, select
@@ -30,18 +31,29 @@ REPETITION_DECAY = 0.8
 USEFULNESS_BONUS = 0.5
 
 
-def in_quiet_hours(now: datetime, ranges: list[str]) -> bool:
-    """Quiet hours are absolute (spec §17.5). `ranges` is [start, end] in
-    HH:MM; a wrap-around range (22:00→07:00) spans midnight."""
+def _zone(tz: str | None) -> ZoneInfo:
+    """The configured wall-clock zone; anything unresolvable is UTC."""
+    try:
+        return ZoneInfo(tz or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def in_quiet_hours(now: datetime, ranges: list[str], tz: str = "UTC") -> bool:
+    """Quiet hours are wall-clock ranges in the configured zone (spec §17.5;
+    M50 `ambient_timezone` — before it, "never at night" meant UTC night).
+    `ranges` is [start, end] in HH:MM; a wrap-around range (22:00→07:00)
+    spans midnight."""
     if len(ranges) != 2:
         return False
+    local = now.astimezone(_zone(tz))
     start_h, start_m = (int(x) for x in ranges[0].split(":"))
     end_h, end_m = (int(x) for x in ranges[1].split(":"))
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    start = local.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = local.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if start <= end:
-        return start <= now < end
-    return now >= start or now < end
+        return start <= local < end
+    return local >= start or local < end
 
 
 async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
@@ -54,6 +66,7 @@ async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
     out: dict[str, Any] = {
         "ambient_quiet_hours": list(await cache.setting("ambient_quiet_hours") or []),
         "ambient_digest_times": list(await cache.setting("ambient_digest_times") or []),
+        "ambient_timezone": str(await cache.setting("ambient_timezone") or "UTC"),
         "ambient_notification_budget_per_day": int(
             await cache.setting("ambient_notification_budget_per_day")
         ),
@@ -71,6 +84,8 @@ async def effective_ambient_settings(user_id: "UUID | None") -> dict[str, Any]:
     for key in ("ambient_quiet_hours", "ambient_digest_times"):
         if isinstance(prefs.get(key), list):
             out[key] = list(prefs[key])
+    if isinstance(prefs.get("ambient_timezone"), str) and prefs["ambient_timezone"]:
+        out["ambient_timezone"] = str(prefs["ambient_timezone"])
     return out
 
 
@@ -78,6 +93,16 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
     """Latest APPLIED policy-ledger row wins (spec §17.6). Queued
     learner_proposal rows are inert until approved (§17.7 propose mode).
     §18.8: a user-scoped row beats the global (NULL-user) fallback."""
+    tier, _policy_id = await current_policy(category, user_id)
+    return tier
+
+
+async def current_policy(
+    category: str, user_id: "UUID | None" = None
+) -> "tuple[int | None, UUID | None]":
+    """The tier override AND the policy row it came from — the row's id
+    rides on the delivery (hardening wave) so the lineage survives the
+    policy's supersession."""
     async with get_session_factory()() as session:
         rows = list(
             (
@@ -94,8 +119,8 @@ async def current_tier_override(category: str, user_id: "UUID | None" = None) ->
         )
     for row in rows:  # newest first; prefer the user-scoped lineage
         if row.user_id == user_id:
-            return row.tier_override
-    return rows[0].tier_override if rows else None
+            return row.tier_override, row.id
+    return (rows[0].tier_override, rows[0].id) if rows else (None, None)
 
 
 async def add_delivery(
@@ -118,7 +143,7 @@ async def add_delivery(
     the requester — in that order."""
     if user_id is None:
         user_id = await _resolve_owner(run_id, intent_id)
-    override = await current_tier_override(category, user_id)
+    override, policy_id = await current_policy(category, user_id)
     if override is not None:
         tier = override
     now = datetime.now(UTC)
@@ -129,6 +154,7 @@ async def add_delivery(
             intent_id=intent_id,
             category=category,
             tier=tier,
+            policy_id=policy_id if override is not None else None,
             urgency=urgency,
             title=title[:250],
             body=body,
@@ -232,18 +258,21 @@ async def _digest_due(
     digest_times: list[str],
     owner: "UUID | None" = None,
     scoped: bool = False,
+    tz: str = "UTC",
 ) -> bool:
-    """Due when we crossed a configured digest time (today) that no digest
+    """Due when we crossed a configured digest time (today, in the configured
+    zone — M50) that no digest
     flush has covered yet — a missed time catches up exactly once. §18.8:
     per-owner when auth is on (each user has their own last flush)."""
+    local = now.astimezone(_zone(tz))
     occurrences = []
     for hhmm in digest_times:
         try:
             hh, mm = (int(x) for x in hhmm.split(":"))
         except ValueError:
             continue
-        at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if at <= now:
+        at = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if at <= local:
             occurrences.append(at)
     if not occurrences:
         return False
@@ -259,6 +288,39 @@ async def _digest_due(
 APPROVAL_CATEGORIES = {"hitl", "learning"}
 
 
+async def _deliver_batch(mode: str, rows: list[Delivery], now: datetime) -> int:
+    """Dispatch, THEN commit (M51, arch-H9). The flush decides a batch with
+    nothing written, fans it out to the SSE hub and the external channels,
+    and only then marks the rows delivered — together with the per-channel
+    ledger — in one transaction. A crash between the two re-delivers on
+    the next pass instead of silently losing a toast the row claims was
+    sent. Returns how many rows this call actually marked delivered."""
+    if not rows:
+        return 0
+    from app.ambient.channels import dispatch_delivered
+
+    entries = await dispatch_delivered(mode, rows, record=False)
+    written = 0
+    async with get_session_factory()() as session:
+        fresh_rows = list(
+            (
+                await session.execute(
+                    select(Delivery).where(
+                        Delivery.id.in_([r.id for r in rows]), Delivery.delivered_at.is_(None)
+                    )
+                )
+            ).scalars()
+        )
+        for row in fresh_rows:
+            row.delivered_at = now
+            row.channel = mode
+            if entries:
+                row.external = {**(row.external or {}), **entries}
+            written += 1
+        await session.commit()
+    return written
+
+
 async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool = False) -> int:
     """Deliver every pending tier-2 row as one digest batch, urgency first
     (demoted interrupts lead — they kept urgency 5). Approval items
@@ -268,8 +330,7 @@ async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool
     eff = await effective_ambient_settings(owner if scoped else None)
     escalation_budget = int(eff["ambient_escalation_budget_per_day"])
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    flushed = 0
-    delivered_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     async with get_session_factory()() as session:
         approvals_query = select(func.count()).where(
             Delivery.category.in_(APPROVAL_CATEGORIES),
@@ -286,15 +347,8 @@ async def _digest_flush(now: datetime, owner: "UUID | None" = None, scoped: bool
                 if allowed <= 0:
                     continue  # over the escalation budget — next digest
                 allowed -= 1
-            row.delivered_at = now
-            row.channel = "digest"
-            flushed += 1
-            delivered_rows.append(row)
-        await session.commit()
-    if delivered_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("digest", delivered_rows)
+            chosen.append(row)
+    flushed = await _deliver_batch("digest", chosen, now)
     if flushed:
         from app import obs
 
@@ -314,8 +368,7 @@ async def _flush_tier1(
     """Tier 1: the user-returned edge (or current presence) delivers; the
     bounded deferral (spec §17.5, Horvitz) delivers past the deadline even
     with nobody present."""
-    delivered = 0
-    delivered_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     present = force or await _presence_active(owner, scoped)
     async with get_session_factory()() as session:
         for row in await _pending(session, 1, owner, scoped):
@@ -327,16 +380,9 @@ async def _flush_tier1(
             if quiet:
                 row.tier = 2  # quiet hours absolute — rides the digest
                 continue
-            row.delivered_at = now
-            row.channel = "notify"
-            delivered += 1
-            delivered_rows.append(row)
-        await session.commit()
-    if delivered_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("notify", delivered_rows)
-    return delivered
+            chosen.append(row)
+        await session.commit()  # demotions only — deliveries commit after dispatch
+    return await _deliver_batch("notify", chosen, now)
 
 
 async def _flush_bucket(
@@ -344,10 +390,12 @@ async def _flush_bucket(
 ) -> None:
     """One owner's delivery pass with THEIR effective settings (§18.8)."""
     eff = await effective_ambient_settings(owner if scoped else None)
-    quiet = in_quiet_hours(now, list(eff["ambient_quiet_hours"]))
+    quiet = in_quiet_hours(
+        now, list(eff["ambient_quiet_hours"]), str(eff.get("ambient_timezone") or "UTC")
+    )
     budget = int(eff["ambient_notification_budget_per_day"])
 
-    interrupt_rows: list[Delivery] = []
+    chosen: list[Delivery] = []
     async with get_session_factory()() as session:
         used = await _interrupts_delivered_today(session, now, owner, scoped)
         for row in await _pending(session, 0, owner, scoped):
@@ -362,16 +410,10 @@ async def _flush_bucket(
                     reason="quiet hours" if quiet else "budget exhausted",
                 )
                 continue
-            row.delivered_at = now
-            row.channel = "interrupt"
             used += 1
-            out["interrupt"] += 1
-            interrupt_rows.append(row)
-        await session.commit()
-    if interrupt_rows:
-        from app.ambient.channels import dispatch_delivered
-
-        await dispatch_delivered("interrupt", interrupt_rows)
+            chosen.append(row)
+        await session.commit()  # demotions only — deliveries commit after dispatch
+    out["interrupt"] += await _deliver_batch("interrupt", chosen, now)
 
     out["notify"] += await _flush_tier1(now, quiet=quiet, owner=owner, scoped=scoped)
 
@@ -379,7 +421,14 @@ async def _flush_bucket(
     # out — the user-returned flush stays live because the user is present
     if not quiet:
         async with get_session_factory()() as session:
-            due = await _digest_due(session, now, list(eff["ambient_digest_times"]), owner, scoped)
+            due = await _digest_due(
+                session,
+                now,
+                list(eff["ambient_digest_times"]),
+                owner,
+                scoped,
+                tz=str(eff.get("ambient_timezone") or "UTC"),
+            )
         if due:
             out["digest"] += await _digest_flush(now, owner, scoped)
 
@@ -389,11 +438,11 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
     (presence/deferral), and time-based digests. §18.8: with auth on the
     pass runs per owner bucket under each owner's effective settings;
     dark = one unscoped bucket, byte-identical to M23–M25."""
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
     now = now or datetime.now(UTC)
     out = {"interrupt": 0, "notify": 0, "digest": 0, "demoted": 0}
-    if not auth_enabled():
+    if not tenancy_on():
         await _flush_bucket(now, None, False, out)
         return out
     async with get_session_factory()() as session:
@@ -419,9 +468,9 @@ async def on_user_returned(
     return from absence > 1h also flushes the digest as one collapsed
     'while you were away' stack. Micro-absences flush tier 1 only.
     §18.8: the returning USER's bucket only when auth is on."""
-    from app.auth import auth_enabled
+    from app.auth import tenancy_on
 
-    scoped = auth_enabled()
+    scoped = tenancy_on()
     now = now or datetime.now(UTC)
     await _flush_tier1(now, quiet=False, force=True, owner=user_id, scoped=scoped)
     if away_s > 3600:
@@ -497,9 +546,9 @@ async def record_feedback(delivery_id: UUID, feedback: str) -> Delivery | None:
     if str(await cache.setting("ambient_learning_mode")) == "off" and bool(
         await cache.setting("ambient_precision_rule_enabled")
     ):
-        from app.auth import auth_enabled
+        from app.auth import tenancy_on
 
-        await apply_precision_rule(row.category, row.user_id, auth_enabled())
+        await apply_precision_rule(row.category, row.user_id, tenancy_on())
     return row
 
 

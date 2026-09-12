@@ -124,7 +124,7 @@ async def test_runner_completion_hook_creates_digest(client: AsyncClient) -> Non
     run_id = resp.json()["run_id"]
     for _ in range(80):
         status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
-        if status not in {"running", "paused_hitl"}:
+        if status not in {"queued", "running", "paused_hitl"}:
             break
         await asyncio.sleep(0.25)
     from app.memory.scheduler import drain
@@ -148,7 +148,7 @@ async def test_runner_hook_noop_when_memory_disabled(client: AsyncClient) -> Non
     run_id = resp.json()["run_id"]
     for _ in range(80):
         status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
-        if status not in {"running", "paused_hitl"}:
+        if status not in {"queued", "running", "paused_hitl"}:
             break
         await asyncio.sleep(0.25)
     from app.memory.scheduler import drain
@@ -199,7 +199,7 @@ async def test_block_contains_memories_episodes_and_abstention() -> None:
     block, stats = await build_memory_block(
         "which database does the user prefer", conversation_id=other_id, surface="planner"
     )
-    assert "<remembered_context>" in block
+    assert '<remembered_context token="' in block  # M52: tokened fence
     assert "never invent a remembered fact" in block
     assert "favorite database is postgres" in block
     assert "Similar past episodes" in block
@@ -298,7 +298,7 @@ async def test_direct_run_include_memories_composes_block(client: AsyncClient) -
     run_id = resp.json()["run_id"]
     for _ in range(80):
         detail = (await client.get(f"/api/v1/runs/{run_id}")).json()
-        if detail["status"] not in {"running", "paused_hitl"}:
+        if detail["status"] not in {"queued", "running", "paused_hitl"}:
             break
         await asyncio.sleep(0.25)
     assert detail["include_memories"] is True

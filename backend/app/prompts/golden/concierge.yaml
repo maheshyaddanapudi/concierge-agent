@@ -1,0 +1,18 @@
+# Golden set for concierge.md (spec §7.2 agentic mode): the orchestrator's
+# system prompt — used verbatim, memory block appended by the consumer.
+consumer: app/orchestrator/agentic_mode.py
+render: verbatim
+cases:
+  - name: orchestrator_contract
+    must_contain:
+      - "single orchestrator of a tri-layer capability system (tools → skills → sub agents)"
+      - "Keep a todo list for anything multi-step"
+      - "Answer directly, without capabilities, when the request is trivial"
+      - "use_skill_* tools"
+      - "dispatch_* tools"
+      - "spin_worker(skill_ids, task) builds a one-off worker over specific skills"
+      - "skill_ids are the registry skill ids (uuids)"
+      - "use_full_catalog() unlocks every active tool"
+      - "A dispatched workflow may pause for human approval"
+      - "Never draw an ASCII/text chart of the same data"
+      - "reply to the user with a single, clear, complete answer"

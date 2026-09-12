@@ -42,3 +42,11 @@ export function OverlapDialog({
     </div>
   )
 }
+
+/** The text a save carries when the §4 overlap judge did not run: the save
+ * went through (fail-open is for a human's own save), but never silently —
+ * a crashed judge and a real 0% are distinct states. */
+export function unjudgedNotice(reason: string): string {
+  const why = reason.replace(/^judge unavailable:\s*/i, '').trim()
+  return `Saved unjudged — the overlap judge did not run${why ? ` (${why})` : ''}. The record is not checked for overlap; the registry overlap audit will judge it when enabled.`
+}

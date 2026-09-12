@@ -46,6 +46,8 @@ class SubAgentOut(RegistryOut):
     covers_skill_ids: list[Any] | None
     direct_exposure: bool
     skills: list[SkillOut] = []
+    definition_hash: str | None = None
+    definition_version: int = 1
 
 
 class SubAgentInvoke(ApiModel):

@@ -46,9 +46,13 @@ def parse_model_ref(ref: str) -> tuple[str, str]:
 
 
 def get_model(ref: str, params: ModelParams | None = None) -> BaseChatModel:
-    """Resolve 'provider:model' against the registry and delegate to the adapter."""
+    """Resolve 'provider:model' against the registry and delegate to the
+    adapter. M53: every model leaves here instrumented — one LangChain
+    callback times each call and classifies its outcome onto /metrics."""
+    from app.llm.metrics import instrument
+
     provider_id, model = parse_model_ref(ref)
-    return get_provider(provider_id).get_chat_model(model, params)
+    return instrument(get_provider(provider_id).get_chat_model(model, params), provider_id, model)
 
 
 def validate_model_selection(ref: str, params: ModelParams | None = None) -> list[str]:
@@ -65,6 +69,10 @@ def validate_model_selection(ref: str, params: ModelParams | None = None) -> lis
     info = next((m for m in provider.list_models() if m.id == model), None)
     if info is None:
         errors.append(f"model {model!r} is not in provider {provider_id!r}'s model list")
+    elif info.deprecated:
+        errors.append(
+            f"model {model!r} is retired by provider {provider_id!r} — pick a current model"
+        )
     else:
         unsupported = info.unsupported_params(params)
         if unsupported:

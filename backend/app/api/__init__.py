@@ -11,6 +11,7 @@ from app.api import (
     fake_llm,
     mcp_servers,
     memories,
+    ops,
     remote_agents,
     routines,
     runs,
@@ -39,5 +40,6 @@ api_router.include_router(ambient.deliveries_router)
 api_router.include_router(ambient.watches_router)
 api_router.include_router(ambient.ledger_router)
 api_router.include_router(settings.router)
+api_router.include_router(ops.router)
 api_router.include_router(seed.router)
 api_router.include_router(fake_llm.router)

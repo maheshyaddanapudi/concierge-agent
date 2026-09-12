@@ -1,0 +1,16 @@
+# Golden set for ambient_anticipation.md (spec §17.6): the idle-time
+# briefing — bounded to 3 items, empty beats guessed.
+consumer: app/ambient/anticipate.py
+render: format
+cases:
+  - name: idle_briefing
+    vars:
+      recent_activity: "- asked for the deploy status of aurora\n- reviewed the on-call rota"
+      watches: "- (none)"
+    must_contain:
+      - "The platform is idle"
+      - "predict what they are most likely to ask for next"
+      - "Return up to 3 items"
+      - "Only include items with a genuine basis in the activity above"
+      - "an empty briefing is better than a guessed one"
+      - "deploy status of aurora"

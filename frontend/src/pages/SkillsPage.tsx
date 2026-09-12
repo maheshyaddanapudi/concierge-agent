@@ -8,7 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useInvalidate, useProviders, useSkills, useTools } from '../api/hooks'
 import type { ModelParams, OverlapCheck, Skill, SubAgent, Tool } from '../api/types'
-import { OverlapDialog } from '../components/OverlapDialog'
+import { OverlapDialog, unjudgedNotice } from '../components/OverlapDialog'
 import { RegistryTable } from '../components/RegistryTable'
 import { ExposureWarningBanner } from './ToolsPage'
 import {
@@ -19,6 +19,7 @@ import {
   Field,
   KindBadge,
   PageHeader,
+  SaveNotice,
   Select,
   SourceBadge,
   StaticNotice,
@@ -198,7 +199,7 @@ function SkillEditor({
   onDone,
 }: {
   skill: Skill | null
-  onDone: () => void
+  onDone: (notice?: string | null) => void
 }) {
   const { data: tools = [] } = useTools()
   const invalidate = useInvalidate()
@@ -225,7 +226,7 @@ function SkillEditor({
   )
   const boundKeys = tools.filter((t) => toolIds.includes(t.id)).map((t) => t.tool_key)
 
-  const doSave = async () => {
+  const doSave = async (notice: string | null = null) => {
     const body = {
       name,
       description,
@@ -241,7 +242,7 @@ function SkillEditor({
       if (skill) await api.patch(`/skills/${skill.id}`, body)
       else await api.post('/skills', body)
       invalidate('skills', 'tools')
-      onDone()
+      onDone(notice)
     } catch (e) {
       setError(e)
     }
@@ -250,7 +251,9 @@ function SkillEditor({
   const save = async () => {
     setError(null)
     // pre-save overlap guard (spec §4) — advisory, so check failures fall
-    // through to a normal save
+    // through to a normal save — but never silently: a judge that did not
+    // run is a distinct state, and the save is reported as unjudged
+    let notice: string | null = null
     try {
       // NOTE: only the fields SkillOverlapCheck accepts — an extra field
       // 422s the advisory check and silently disables the guard (M40 fix)
@@ -265,10 +268,11 @@ function SkillEditor({
         setOverlap(check)
         return
       }
-    } catch {
-      // judge unavailable — never block the save on it
+      if (check.judge_available === false) notice = unjudgedNotice(check.reasoning)
+    } catch (e) {
+      notice = unjudgedNotice(e instanceof Error ? e.message : String(e))
     }
-    await doSave()
+    await doSave(notice)
   }
 
   return (
@@ -279,10 +283,12 @@ function SkillEditor({
           entity="skill"
           onConfirm={async () => {
             // M44: saving past the warning is a captured, content-free event
-            void api.post('/skills/overlap-ack', {
-              draft_type: 'skill',
-              overlap_percent: overlap.overlap_percent,
-            }).catch(() => {})
+            void api
+              .post('/skills/overlap-ack', {
+                draft_type: 'skill',
+                overlap_percent: overlap.overlap_percent,
+              })
+              .catch(() => {})
             setOverlap(null)
             await doSave()
           }}
@@ -365,9 +371,7 @@ function SkillEditor({
                   checked={toolIds.includes(t.id)}
                   onChange={(e) =>
                     setToolIds(
-                      e.target.checked
-                        ? [...toolIds, t.id]
-                        : toolIds.filter((id) => id !== t.id),
+                      e.target.checked ? [...toolIds, t.id] : toolIds.filter((id) => id !== t.id),
                     )
                   }
                 />
@@ -439,6 +443,38 @@ function SkillEditor({
   )
 }
 
+/** A bound tool that the loop cannot actually call: deleted at a re-ingest,
+ * toggled inactive, or quarantined under the schema-change policy. Binding
+ * is availability strictly, so the skill runs with fewer tools than its
+ * document names — the badge says so on the list, not only in a run's
+ * failed step. */
+export function unavailableBoundTools(tools: Tool[]): { tool: Tool; reason: string }[] {
+  return tools.flatMap((t) => {
+    if (t.deleted_at) return [{ tool: t, reason: 'deleted' }]
+    if (t.ingest_state === 'changed') return [{ tool: t, reason: 'quarantined' }]
+    if (t.ingest_state === 'missing') return [{ tool: t, reason: 'missing from server' }]
+    if (t.ingest_state === 'agentoff') return [{ tool: t, reason: 'remote agent disabled' }]
+    if (t.status !== 'active') return [{ tool: t, reason: t.status }]
+    return []
+  })
+}
+
+function BoundToolWarning({ tools }: { tools: Tool[] }) {
+  const gone = unavailableBoundTools(tools)
+  if (gone.length === 0) return null
+  return (
+    <span
+      role="status"
+      title={gone.map((g) => `${g.tool.tool_key}: ${g.reason}`).join('\n')}
+      className="inline-flex items-center rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-amber-500/30"
+    >
+      {gone.length === 1
+        ? `${gone[0].tool.tool_key} unavailable · ${gone[0].reason}`
+        : `${gone.length} bound tools unavailable`}
+    </span>
+  )
+}
+
 function SubAgentChips({ skillId }: { skillId: string }) {
   const navigate = useNavigate()
   const { data: agents = [] } = useQuery({
@@ -462,6 +498,7 @@ export function SkillsPage() {
   const [searchParams] = useSearchParams()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -470,8 +507,13 @@ export function SkillsPage() {
   }, [searchParams])
 
   const selected = skills.find((s) => s.id === selectedId) ?? null
+  const done = (close: () => void) => (n?: string | null) => {
+    close()
+    setNotice(n ?? null)
+  }
   return (
     <div className="p-6">
+      {notice && <SaveNotice text={notice} onDismiss={() => setNotice(null)} />}
       <PageHeader
         title="Skills"
         subtitle="Markdown documents: minor persona + multi-step instructions + strict tool bindings."
@@ -526,6 +568,7 @@ export function SkillsPage() {
                   </Chip>
                 ))}
                 {s.tools.length > 4 && <Chip tone="muted">+{s.tools.length - 4}</Chip>}
+                <BoundToolWarning tools={s.tools} />
               </div>
             ),
           },
@@ -533,17 +576,21 @@ export function SkillsPage() {
           { header: 'Status', render: (s) => <StatusPill status={s.status} /> },
         ]}
       />
+      <Drawer open={creating} onClose={() => setCreating(false)} title="New skill document" wide>
+        {creating && <SkillEditor skill={null} onDone={done(() => setCreating(false))} />}
+      </Drawer>
       <Drawer
-        open={creating}
-        onClose={() => setCreating(false)}
-        title="New skill document"
+        open={selected !== null}
+        onClose={() => setSelectedId(null)}
+        title={selected?.name}
         wide
       >
-        {creating && <SkillEditor skill={null} onDone={() => setCreating(false)} />}
-      </Drawer>
-      <Drawer open={selected !== null} onClose={() => setSelectedId(null)} title={selected?.name} wide>
         {selected && (
-          <SkillEditor key={selected.id} skill={selected} onDone={() => setSelectedId(null)} />
+          <SkillEditor
+            key={selected.id}
+            skill={selected}
+            onDone={done(() => setSelectedId(null))}
+          />
         )}
       </Drawer>
     </div>

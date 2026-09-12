@@ -13,6 +13,8 @@ LangGraph deferred nodes — they run once every reachable upstream branch has
 completed, so branches not taken never deadlock a join (spec §3.5).
 """
 
+import hashlib
+import json
 import re
 from datetime import datetime
 from typing import Annotated, Any, TypedDict
@@ -81,12 +83,15 @@ async def snapshot_skill(session: AsyncSession, skill: Skill) -> dict[str, Any]:
     return {
         "id": str(skill.id),
         "name": skill.name,
+        "status": skill.status,
         "persona": skill.persona,
         "instructions": skill.instructions,
         "model": skill.model,
         "model_params": skill.model_params,
         "direct_exposure": skill.direct_exposure,
         "max_tool_iterations": skill.max_tool_iterations,
+        "definition_hash": skill.definition_hash,
+        "definition_version": skill.definition_version or 1,
         "tools": [
             {
                 "id": str(t.id),
@@ -128,6 +133,8 @@ async def snapshot_sub_agent(session: AsyncSession, agent: SubAgent) -> dict[str
             "kind": agent.kind,
             "source": agent.source,
             "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
+            "definition_hash": agent.definition_hash,
+            "definition_version": agent.definition_version or 1,
         },
         "workflow": workflow,
         "skills": skills,
@@ -356,10 +363,38 @@ def _make_skill_node(
     async def run_skill(state: WorkerState, config: RunnableConfig) -> dict[str, Any]:
         from app.orchestrator.middleware import SkillLoopContext, build_middleware_stack
 
-        try:
-            model_ref, params = await resolve_node_model(
-                skill_snapshot, agent_snapshot["sub_agent"]
+        if skill_snapshot.get("status", "active") != "active":
+            # spec §3.3: a skill toggled off since the workflow was saved is
+            # not a skill the node may run — the error edge, counted and
+            # logged, never a silent run of a disabled definition (review
+            # round 2)
+            from app import obs
+
+            obs.SKILL_TOOL_UNAVAILABLE.labels(reason="skill_inactive").inc()
+            logger.warning(
+                "workflow_skill_inactive",
+                node_id=node_id,
+                skill_id=skill_snapshot.get("id"),
+                skill_name=skill_snapshot.get("name"),
             )
+            return {
+                "node_outputs": {
+                    node_id: {
+                        "status": "error",
+                        "error": f"skill {skill_snapshot.get('name')!r} is "
+                        f"{skill_snapshot.get('status')} — the workflow names a disabled skill",
+                        "skill_id": skill_snapshot["id"],
+                        "skill_name": skill_snapshot.get("name"),
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
+                    }
+                }
+            }
+        # resolved before the try so a failed node pins the model it RAN
+        # under, as a completed one does — not the skill's declared one
+        # (review round 3)
+        model_ref, params = await resolve_node_model(skill_snapshot, agent_snapshot["sub_agent"])
+        try:
             model = get_model(model_ref, params)
             prompt = assemble_skill_prompt(
                 agent_snapshot["sub_agent"].get("persona", ""),
@@ -395,6 +430,10 @@ def _make_skill_node(
                         "skill_name": skill_snapshot["name"],
                         "model": model_ref,
                         "effort": params.effort if params else None,
+                        # pinned onto the node's step (spec §3.6)
+                        "model_params": params.model_dump(exclude_none=True) if params else None,
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
                         "usage": _usage_from_messages(messages),
                     }
                 },
@@ -415,6 +454,12 @@ def _make_skill_node(
                         "error": f"{type(exc).__name__}: {exc}",
                         "skill_id": skill_snapshot["id"],
                         "skill_name": skill_snapshot.get("name"),
+                        # a failed node pins the same definition and model
+                        # as a completed one (review rounds 2 and 3)
+                        "model": model_ref,
+                        "model_params": params.model_dump(exclude_none=True) if params else None,
+                        "definition_version": skill_snapshot.get("definition_version"),
+                        "definition_hash": skill_snapshot.get("definition_hash"),
                     }
                 }
             }
@@ -480,11 +525,11 @@ def _make_router_node(
                     chosen = conditional[0]["to"]
                     record["reason"] = "single conditional edge"
                 else:
-                    chosen, usage = await _pick_condition(
+                    chosen, usage, reason = await _pick_condition(
                         str(out.get("output", "")), conditional, agent_snapshot, config
                     )
                     record["usage"] = usage
-                    record["reason"] = "router model selected condition"
+                    record["reason"] = reason
                 targets.append(chosen)
                 record["chosen"] = chosen
             record["targets"] = targets or ["END"]
@@ -498,17 +543,37 @@ async def _pick_condition(
     conditional_edges: list[dict[str, Any]],
     agent_snapshot: dict[str, Any],
     config: RunnableConfig,
-) -> tuple[str, dict[str, int]]:
+) -> tuple[str, dict[str, int], str]:
+    """(target, usage, reason). A live model can answer the router with
+    nothing parseable (a thinking-only reply, a malformed tool call —
+    seen on the §14 ceremony's agentic step): one retry, then the FIRST
+    condition with the reason on the route step, never an AttributeError
+    that fails the dispatch (review round 3)."""
     model_ref, params = await resolve_node_model({}, agent_snapshot["sub_agent"])
     model = get_model(model_ref, params)
     conditions = "\n".join(f"{i}. {e.get('condition')}" for i, e in enumerate(conditional_edges))
     prompt = load_prompt("router").format(output=output, conditions=conditions)
     structured = model.with_structured_output(ConditionChoice, include_raw=True)
-    result: dict[str, Any] = await structured.ainvoke(prompt, config=config)  # type: ignore[assignment]
-    choice: ConditionChoice = result["parsed"]
-    usage = _usage_from_messages([result["raw"]])
-    index = max(0, min(choice.index, len(conditional_edges) - 1))
-    return conditional_edges[index]["to"], usage
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    for attempt in (1, 2):
+        result: dict[str, Any] = await structured.ainvoke(prompt, config=config)  # type: ignore[assignment]
+        raw_usage = _usage_from_messages([result["raw"]]) if result.get("raw") is not None else {}
+        for k in usage:
+            usage[k] += int(raw_usage.get(k) or 0)
+        choice = result.get("parsed")
+        if isinstance(choice, ConditionChoice):
+            index = max(0, min(choice.index, len(conditional_edges) - 1))
+            return conditional_edges[index]["to"], usage, "router model selected condition"
+        logger.warning(
+            "router_choice_unparsed",
+            attempt=attempt,
+            error=str(result.get("parsing_error") or "no parsed choice"),
+        )
+    return (
+        conditional_edges[0]["to"],
+        usage,
+        "router model gave no parseable choice twice — first condition taken",
+    )
 
 
 def build_worker(
@@ -632,7 +697,25 @@ def get_compiled_worker(
     agent = snapshot["sub_agent"]
     if agent.get("id") is None:  # ephemeral workers are never cached
         return build_worker(snapshot, checkpointer)
-    key = (str(agent["id"]), str(agent.get("updated_at")), id(checkpointer))
+    # a skill edit never touches the sub agent's updated_at, so the key
+    # carries the bound skills' definitions and statuses too (review round
+    # 3: a skill toggled off after the first invoke kept running from the
+    # cached graph, and the node pinned the OLD definition while the
+    # dispatch step pinned the new one)
+    skills_digest = hashlib.sha256(
+        json.dumps(
+            sorted(
+                (
+                    str(sid),
+                    str(s.get("definition_hash")),
+                    str(s.get("status")),
+                    str(s.get("updated_at")),
+                )
+                for sid, s in (snapshot.get("skills") or {}).items()
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    key = (str(agent["id"]), f"{agent.get('updated_at')}:{skills_digest}", id(checkpointer))
     cached = _WORKER_CACHE.get(key)
     if cached is None:
         cached = build_worker(snapshot, checkpointer)

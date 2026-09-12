@@ -20,6 +20,12 @@ async def create_tool(**kw: Any) -> Tool:
         "input_schema": {"type": "object", "properties": {}},
     }
     defaults.update(kw)
+    # every real write path fingerprints the schema (spec §3.2 drift); a row
+    # built here carries the same hash so traces pin it like production rows
+    if "schema_hash" not in defaults:
+        from app.toolschema import schema_fingerprint
+
+        defaults["schema_hash"] = schema_fingerprint(defaults.get("input_schema"))
     async with get_session_factory()() as session:
         tool = Tool(**defaults)
         session.add(tool)
@@ -43,10 +49,26 @@ async def create_skill(
         "source": "dynamic",
     }
     defaults.update(kw)
+    from app.toolschema import skill_definition_fields, stamp_definition
+
     async with get_session_factory()() as session:
         skill = Skill(**defaults)
         if tools:
             skill.tools = [await session.merge(t) for t in tools]
+        # every real write path stamps the definition (spec §3.6): a row
+        # built here carries version 1 and its hash like an API-created one
+        stamp_definition(
+            skill,
+            skill_definition_fields(
+                description=skill.description,
+                persona=skill.persona,
+                instructions=skill.instructions,
+                model=skill.model,
+                model_params=skill.model_params,
+                max_tool_iterations=skill.max_tool_iterations,
+                tool_ids=[t.id for t in (tools or [])],
+            ),
+        )
         session.add(skill)
         await session.commit()
         await session.refresh(skill)
@@ -82,6 +104,19 @@ async def create_sub_agent(
             agent.skills = list(
                 (await session.execute(select(Skill).where(Skill.id.in_(skill_ids)))).scalars()
             )
+        from app.toolschema import stamp_definition, sub_agent_definition_fields
+
+        stamp_definition(
+            agent,
+            sub_agent_definition_fields(
+                description=agent.description,
+                persona=agent.persona,
+                model=agent.model,
+                model_params=agent.model_params,
+                workflow=agent.workflow,
+                native_ref=agent.native_ref,
+            ),
+        )
         session.add(agent)
         await session.commit()
         await session.refresh(agent)

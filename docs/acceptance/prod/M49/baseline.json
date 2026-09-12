@@ -1,0 +1,600 @@
+{
+  "meta": {
+    "label": "baseline",
+    "captured_at": "2026-09-10T21:29:28+00:00",
+    "git_sha": "d47015c",
+    "base_url": "http://localhost:8000",
+    "model": "fake:scripted",
+    "scenarios": [
+      "api",
+      "runs-scale",
+      "chat",
+      "sse"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "fake:scripted",
+      "label": "baseline",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M49/baseline.json",
+      "scenarios": [
+        "api",
+        "runs-scale",
+        "chat",
+        "sse"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        5,
+        10,
+        25,
+        50
+      ],
+      "chat_deadline": 120.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": true,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "api": {
+      "requests_per_endpoint": 100,
+      "concurrency": 10,
+      "endpoints": {
+        "GET /runs": {
+          "n": 100,
+          "p50_ms": 104.31,
+          "p95_ms": 431.19,
+          "p99_ms": 485.61,
+          "max_ms": 526.23,
+          "mean_ms": 170.35,
+          "errors": {},
+          "bytes": 102034
+        },
+        "GET /conversations": {
+          "n": 100,
+          "p50_ms": 57.8,
+          "p95_ms": 209.71,
+          "p99_ms": 214.4,
+          "max_ms": 220.6,
+          "mean_ms": 83.75,
+          "errors": {},
+          "bytes": 10305
+        },
+        "GET /skills": {
+          "n": 100,
+          "p50_ms": 48.89,
+          "p95_ms": 173.19,
+          "p99_ms": 176.52,
+          "max_ms": 177.86,
+          "mean_ms": 64.64,
+          "errors": {},
+          "bytes": 28285
+        },
+        "GET /tools": {
+          "n": 100,
+          "p50_ms": 40.47,
+          "p95_ms": 147.4,
+          "p99_ms": 160.88,
+          "max_ms": 161.44,
+          "mean_ms": 57.65,
+          "errors": {},
+          "bytes": 37159
+        },
+        "GET /settings": {
+          "n": 100,
+          "p50_ms": 48.48,
+          "p95_ms": 140.12,
+          "p99_ms": 150.52,
+          "max_ms": 150.59,
+          "mean_ms": 56.87,
+          "errors": {},
+          "bytes": 3366
+        },
+        "GET /memories/recall": {
+          "n": 100,
+          "p50_ms": 60.69,
+          "p95_ms": 201.88,
+          "p99_ms": 205.02,
+          "max_ms": 213.68,
+          "mean_ms": 96.05,
+          "errors": {},
+          "bytes": 2258
+        }
+      },
+      "connections": {
+        "peak_connections": 24,
+        "peak_active": 6,
+        "samples": 27
+      },
+      "elapsed_s": 5.4
+    },
+    "runs-scale": {
+      "levels": [
+        {
+          "loadgen_runs": 1000,
+          "total_runs": 1131,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 12.46,
+            "p95_ms": 15.2,
+            "p99_ms": 16.04,
+            "max_ms": 16.25,
+            "mean_ms": 12.78,
+            "bytes": 51838,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 7.37,
+            "p95_ms": 8.83,
+            "p99_ms": 8.89,
+            "max_ms": 8.9,
+            "mean_ms": 7.56,
+            "bytes": 9542,
+            "errors": 0
+          }
+        },
+        {
+          "loadgen_runs": 10000,
+          "total_runs": 10131,
+          "GET /runs": {
+            "n": 15,
+            "p50_ms": 14.29,
+            "p95_ms": 17.69,
+            "p99_ms": 19.01,
+            "max_ms": 19.33,
+            "mean_ms": 14.32,
+            "bytes": 51838,
+            "errors": 0
+          },
+          "GET /conversations": {
+            "n": 15,
+            "p50_ms": 10.18,
+            "p95_ms": 13.46,
+            "p99_ms": 14.9,
+            "max_ms": 15.26,
+            "mean_ms": 10.72,
+            "bytes": 9592,
+            "errors": 0
+          }
+        }
+      ],
+      "elapsed_s": 1.7
+    },
+    "chat": {
+      "model": "fake:scripted",
+      "levels": [
+        {
+          "concurrency": 5,
+          "wall_s": 0.92,
+          "statuses": {
+            "completed": 5
+          },
+          "submit": {
+            "n": 5,
+            "p50_ms": 39.63,
+            "p95_ms": 49.28,
+            "p99_ms": 50.96,
+            "max_ms": 51.38,
+            "mean_ms": 41.75
+          },
+          "end_to_end_completed": {
+            "n": 5,
+            "p50_ms": 916.84,
+            "p95_ms": 921.15,
+            "p99_ms": 921.29,
+            "max_ms": 921.32,
+            "mean_ms": 915.91
+          },
+          "throughput_runs_per_s": 5.43,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 19,
+            "peak_active": 4,
+            "samples": 5
+          }
+        },
+        {
+          "concurrency": 10,
+          "wall_s": 2.19,
+          "statuses": {
+            "completed": 10
+          },
+          "submit": {
+            "n": 10,
+            "p50_ms": 294.88,
+            "p95_ms": 370.03,
+            "p99_ms": 372.15,
+            "max_ms": 372.68,
+            "mean_ms": 286.26
+          },
+          "end_to_end_completed": {
+            "n": 10,
+            "p50_ms": 1932.06,
+            "p95_ms": 2189.8,
+            "p99_ms": 2190.27,
+            "max_ms": 2190.39,
+            "mean_ms": 2027.44
+          },
+          "throughput_runs_per_s": 4.56,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 24,
+            "peak_active": 5,
+            "samples": 11
+          }
+        },
+        {
+          "concurrency": 25,
+          "wall_s": 5.92,
+          "statuses": {
+            "completed": 25
+          },
+          "submit": {
+            "n": 25,
+            "p50_ms": 618.0,
+            "p95_ms": 800.77,
+            "p99_ms": 856.4,
+            "max_ms": 871.35,
+            "mean_ms": 644.17
+          },
+          "end_to_end_completed": {
+            "n": 25,
+            "p50_ms": 4727.55,
+            "p95_ms": 5910.16,
+            "p99_ms": 5910.66,
+            "max_ms": 5910.73,
+            "mean_ms": 4458.64
+          },
+          "throughput_runs_per_s": 4.22,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 24,
+            "peak_active": 7,
+            "samples": 30
+          }
+        },
+        {
+          "concurrency": 50,
+          "wall_s": 14.71,
+          "statuses": {
+            "completed": 49,
+            "http_503": 1
+          },
+          "submit": {
+            "n": 50,
+            "p50_ms": 804.42,
+            "p95_ms": 1531.01,
+            "p99_ms": 1570.4,
+            "max_ms": 1582.02,
+            "mean_ms": 907.51
+          },
+          "end_to_end_completed": {
+            "n": 49,
+            "p50_ms": 10254.95,
+            "p95_ms": 14636.28,
+            "p99_ms": 14688.1,
+            "max_ms": 14689.19,
+            "mean_ms": 9805.89
+          },
+          "throughput_runs_per_s": 3.33,
+          "sample_errors": [
+            "{\"detail\":\"server at capacity: 8 running, 33 queued (run_max_concurrent=8, run_queue_max=32) \u2014 retry later\"}"
+          ],
+          "connections": {
+            "peak_connections": 24,
+            "peak_active": 11,
+            "samples": 73
+          }
+        }
+      ],
+      "elapsed_s": 31.8
+    },
+    "sse": {
+      "paused_run": {
+        "run_id": "15c41479-c1e0-4d0b-91e8-0cfba2411ee3",
+        "status": "paused_hitl",
+        "error": null
+      },
+      "chat_stream": {
+        "path": "/api/v1/chat/stream/15c41479-c1e0-4d0b-91e8-0cfba2411ee3",
+        "step": 5,
+        "max_attempted": 60,
+        "levels": [
+          {
+            "streams_attempted": 5,
+            "streams_open": 5,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 15.13,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 10,
+            "streams_open": 10,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.4,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 15,
+            "streams_open": 15,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 10.48,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 20,
+            "streams_open": 20,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 11.57,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 25,
+            "streams_open": 25,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.17,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 30,
+            "streams_open": 30,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 12.94,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 35,
+            "streams_open": 35,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 14.81,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 40,
+            "streams_open": 40,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 14.68,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 45,
+            "streams_open": 45,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 10.24,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 50,
+            "streams_open": 50,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 10.93,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 55,
+            "streams_open": 55,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 10.66,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          },
+          {
+            "streams_attempted": 60,
+            "streams_open": 60,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 14.23,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 14,
+              "idle": 14
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 60,
+        "first_failure_at_streams": null,
+        "recovery_after_close_ms": 43.3
+      },
+      "ambient_stream": {
+        "path": "/api/v1/ambient/stream",
+        "step": 20,
+        "max_attempted": 120,
+        "levels": [
+          {
+            "streams_attempted": 20,
+            "streams_open": 0,
+            "probe": {
+              "ok": 3,
+              "failed": 0,
+              "p50_ms": 47.79,
+              "codes": [
+                200,
+                200,
+                200
+              ]
+            },
+            "connections": {
+              "total": 13,
+              "idle": 13
+            }
+          }
+        ],
+        "max_streams_with_healthy_probe": 0,
+        "first_failure_at_streams": 20,
+        "recovery_after_close_ms": 74.9
+      },
+      "elapsed_s": 16.8
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 0",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 30093",
+    "runs": "DELETE 10090",
+    "conversations": "DELETE 191"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  }
+}

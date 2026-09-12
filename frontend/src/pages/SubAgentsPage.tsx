@@ -15,7 +15,7 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from '../api/types'
-import { OverlapDialog } from '../components/OverlapDialog'
+import { OverlapDialog, unjudgedNotice } from '../components/OverlapDialog'
 import { RegistryTable } from '../components/RegistryTable'
 import { ModelOverrideFields } from './SkillsPage'
 import {
@@ -26,6 +26,7 @@ import {
   Field,
   KindBadge,
   PageHeader,
+  SaveNotice,
   Select,
   SourceBadge,
   StaticNotice,
@@ -183,7 +184,13 @@ export function WorkflowPreview({ workflow }: { workflow: Workflow }) {
 
 // ── builder ──────────────────────────────────────────────────────
 
-function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => void }) {
+function AgentEditor({
+  agent,
+  onDone,
+}: {
+  agent: SubAgent | null
+  onDone: (notice?: string | null) => void
+}) {
   const { data: skills = [] } = useSkills()
   const invalidate = useInvalidate()
   const navigate = useNavigate()
@@ -217,7 +224,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
       edges: workflow.edges.map((e, j) => (j === i ? { ...e, ...patch } : e)),
     })
 
-  const doSave = async () => {
+  const doSave = async (notice: string | null = null) => {
     const body = {
       name,
       description,
@@ -231,7 +238,7 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
       if (agent) await api.patch(`/sub-agents/${agent.id}`, body)
       else await api.post('/sub-agents', body)
       invalidate('sub-agents', 'skills')
-      onDone()
+      onDone(notice)
     } catch (e) {
       setError(e)
     }
@@ -241,6 +248,9 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
     setError(null)
     // pre-save overlap guard (spec §4) — advisory, so check failures fall
     // through to a normal save
+    // a judge that did not run is a distinct state (spec §4): the save
+    // goes through, reported as unjudged, never silently
+    let notice: string | null = null
     try {
       const check = await api.post<OverlapCheck>('/sub-agents/check-overlap', {
         name,
@@ -252,10 +262,11 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
         setOverlap(check)
         return
       }
-    } catch {
-      // judge unavailable — never block the save on it
+      if (check.judge_available === false) notice = unjudgedNotice(check.reasoning)
+    } catch (e) {
+      notice = unjudgedNotice(e instanceof Error ? e.message : String(e))
     }
-    await doSave()
+    await doSave(notice)
   }
 
   const validate = async () => {
@@ -276,10 +287,12 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
           entity="sub agent"
           onConfirm={async () => {
             // M44: saving past the warning is a captured, content-free event
-            void api.post('/skills/overlap-ack', {
-              draft_type: 'sub_agent',
-              overlap_percent: overlap.overlap_percent,
-            }).catch(() => {})
+            void api
+              .post('/skills/overlap-ack', {
+                draft_type: 'sub_agent',
+                overlap_percent: overlap.overlap_percent,
+              })
+              .catch(() => {})
             setOverlap(null)
             await doSave()
           }}
@@ -444,9 +457,11 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
                 className="max-w-28"
                 onChange={(ev) => setEdge(i, { from: ev.target.value })}
               >
-                {nodeIds.filter((x) => x !== 'END').map((id) => (
-                  <option key={id}>{id}</option>
-                ))}
+                {nodeIds
+                  .filter((x) => x !== 'END')
+                  .map((id) => (
+                    <option key={id}>{id}</option>
+                  ))}
               </Select>
               <span className="text-slate-600">→</span>
               <Select
@@ -455,9 +470,11 @@ function AgentEditor({ agent, onDone }: { agent: SubAgent | null; onDone: () => 
                 className="max-w-28"
                 onChange={(ev) => setEdge(i, { to: ev.target.value })}
               >
-                {nodeIds.filter((x) => x !== 'START').map((id) => (
-                  <option key={id}>{id}</option>
-                ))}
+                {nodeIds
+                  .filter((x) => x !== 'START')
+                  .map((id) => (
+                    <option key={id}>{id}</option>
+                  ))}
               </Select>
               <TextInput
                 placeholder="condition (optional)"
@@ -611,6 +628,7 @@ export function SubAgentsPage() {
   const [searchParams] = useSearchParams()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -618,12 +636,18 @@ export function SubAgentsPage() {
     if (focus) setSelectedId(focus)
   }, [searchParams])
 
+  const done = (close: () => void) => (n?: string | null) => {
+    close()
+    setNotice(n ?? null)
+  }
+
   const selected = agents.find((a) => a.id === selectedId) ?? null
   const runCount = (agentId: string) =>
     runs.filter((r) => JSON.stringify(r.plan ?? {}).includes(agentId)).length
 
   return (
     <div className="p-6">
+      {notice && <SaveNotice text={notice} onDismiss={() => setNotice(null)} />}
       <PageHeader
         title="Sub Agents"
         subtitle="Persona + hard workflow DAG over skills — compiled by the worker factory, validated at save."
@@ -668,7 +692,9 @@ export function SubAgentsPage() {
           },
           {
             header: 'Model',
-            render: (a) => <code className="text-[11px] text-slate-400">{a.model ?? 'default'}</code>,
+            render: (a) => (
+              <code className="text-[11px] text-slate-400">{a.model ?? 'default'}</code>
+            ),
           },
           {
             header: 'Skills',
@@ -709,7 +735,7 @@ export function SubAgentsPage() {
         ]}
       />
       <Drawer open={creating} onClose={() => setCreating(false)} title="New sub agent" wide>
-        {creating && <AgentEditor agent={null} onDone={() => setCreating(false)} />}
+        {creating && <AgentEditor agent={null} onDone={done(() => setCreating(false))} />}
       </Drawer>
       <Drawer
         open={selected !== null}
@@ -721,7 +747,11 @@ export function SubAgentsPage() {
           (selected.kind === 'native' ? (
             <NativeAgentCard agent={selected} />
           ) : (
-            <AgentEditor key={selected.id} agent={selected} onDone={() => setSelectedId(null)} />
+            <AgentEditor
+              key={selected.id}
+              agent={selected}
+              onDone={done(() => setSelectedId(null))}
+            />
           ))}
       </Drawer>
     </div>

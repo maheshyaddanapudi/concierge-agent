@@ -58,6 +58,20 @@ export interface Tool extends RegistryRecord {
   tool_key: string
   direct_exposure: boolean
   input_schema: Record<string, unknown> | null
+  // M53: what the MCP server last said — 'present' | 'missing'; null for
+  // native/a2a; 'changed' while the quarantine policy holds the tool out of
+  // service after a schema change
+  ingest_state?: string | null
+  // schema fingerprint (spec §3.2 drift): the hash and version of the input
+  // schema as last ingested; schema_changed_at is set while a change awaits
+  // the operator's acknowledgement
+  schema_hash?: string | null
+  schema_version?: number
+  schema_changed_at?: string | null
+  // description fingerprint: 'operator' once an operator edited the text —
+  // a re-ingest never overwrites it after that
+  description_hash?: string | null
+  description_source?: 'server' | 'operator'
 }
 
 export interface ModelParams {
@@ -75,6 +89,9 @@ export interface Skill extends RegistryRecord {
   model_params: ModelParams | null
   max_tool_iterations: number | null
   tools: Tool[]
+  // definition fingerprint: bumped when a field that shapes behaviour changes
+  definition_hash?: string | null
+  definition_version?: number
 }
 
 export interface WorkflowNode {
@@ -107,6 +124,8 @@ export interface SubAgent extends RegistryRecord {
   covers_skill_ids: string[] | null
   direct_exposure: boolean
   skills: Skill[]
+  definition_hash?: string | null
+  definition_version?: number
 }
 
 export interface RunStep {
@@ -114,10 +133,20 @@ export interface RunStep {
   parent_step_id: string | null
   sub_agent_id: string | null
   node_id: string | null
-  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate'
+  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate' | 'format'
   input: Record<string, unknown> | null
   output: Record<string, unknown> | null
   model: string | null
+  // the model parameters the step's call was made with, pinned on the record
+  model_params?: ModelParams | null
+  // the entity version the step ran against (a tool's schema version and
+  // hash on tool_call steps, a skill's or sub agent's definition version on
+  // skill / route steps) — the trace reads against the registry as it was
+  entity_version?: number | null
+  entity_hash?: string | null
+  // the entity's name AS IT WAS — a rename or delete since does not rewrite
+  // the trace
+  entity_name?: string | null
   input_tokens: number
   output_tokens: number
   status: string
@@ -137,14 +166,51 @@ export interface Run {
   plan: Record<string, unknown> | null
   snapshot?: Record<string, unknown> | null
   final_answer: string | null
-  answer_ui: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[] } | null
+  answer_ui: {
+    a2ui?: unknown[]
+    charts?: unknown[]
+    presentation?: string
+    coverage?: number
+    blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[]
+  } | null
   charts?: unknown[] | null
   error: string | null
   started_at: string | null
   finished_at: string | null
   total_input_tokens: number
   total_output_tokens: number
+  // M53 cost model: null when a model in play has no price
+  cost_usd?: number | null
+  // M54: the replica executing the run, and a cancel intent it has not yet acted on
+  owner_replica?: string | null
+  cancel_requested_at?: string | null
+  cost_priced?: boolean
+  // the prices the run was costed with, stamped at finish — a later price
+  // change never rewrites a finished run
+  price_snapshot?: {
+    prices?: Record<
+      string,
+      { input_per_m: number | null; output_per_m: number | null; source: string }
+    >
+    unpriced_tokens?: number
+  } | null
   steps?: RunStep[]
+}
+
+export interface SpendReport {
+  day: string
+  usd_today: number
+  runs_today: number
+  unpriced_tokens: number
+  by_kind: Record<string, number>
+  ceiling: { enabled: boolean; usd_per_day: number; remaining: number | null; reached: boolean }
+}
+
+export interface RetentionRow {
+  table: string
+  enabled: boolean
+  days: number
+  eligible: number
 }
 
 export interface Conversation {
@@ -159,7 +225,13 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error'
   content: string
   run_id: string
-  answer_ui?: { a2ui?: unknown[]; charts?: unknown[]; presentation?: string; coverage?: number; blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[] } | null
+  answer_ui?: {
+    a2ui?: unknown[]
+    charts?: unknown[]
+    presentation?: string
+    coverage?: number
+    blocks?: { a2ui?: unknown[]; chart?: unknown; tool_chart_ref?: number; table?: unknown }[]
+  } | null
   charts?: unknown[] | null
 }
 
@@ -191,6 +263,12 @@ export type Settings = Record<string, unknown> & {
   planner_model_params: ModelParams | null
   aggregator_model: string | null
   aggregator_model_params: ModelParams | null
+  overlap_judge_model?: string | null
+  overlap_judge_model_params?: ModelParams | null
+  eval_judge_model?: string | null
+  eval_judge_model_params?: ModelParams | null
+  registry_overlap_audit_enabled?: boolean
+  mcp_schema_change_policy?: 'warn' | 'quarantine'
   max_parallel_dispatch: number
   max_plan_steps: number
   max_tool_iterations: number
@@ -248,4 +326,7 @@ export interface OverlapCheck {
   match_id: string | null
   match_name: string | null
   reasoning: string
+  // false when no judge ran (provider down, no key): a distinct state from
+  // a real 0%, and the save is reported as unjudged
+  judge_available?: boolean
 }

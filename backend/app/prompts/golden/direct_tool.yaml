@@ -1,0 +1,12 @@
+# Golden set for direct_tool.md (spec §7.1 rung 1): one tool, one call.
+consumer: app/orchestrator/ladder.py
+render: format
+cases:
+  - name: single_call
+    vars:
+      task: "fetch https://example.com and return the title"
+    must_contain:
+      - "executing one step of a plan by calling a single tool"
+      - "Call the tool exactly once"
+      - "then stop"
+      - "fetch https://example.com and return the title"

@@ -7,10 +7,20 @@ inherited from the server; listChanged notifications trigger reconciliation;
 a ping loop (interval from settings, live) flips failing servers to 'error'.
 DB is the source of truth — startup loads and connects every non-deleted
 server, so dynamic records survive restarts.
+
+M53 (arch-H10): a server that fails to connect, or fails a health ping, is
+RECONNECTED automatically with exponential backoff (5 s doubling to 5 min)
+behind its own gate (`mcp_auto_reconnect_enabled`); after
+`mcp_reconnect_max_attempts` consecutive failures the circuit opens — the
+row says so and the operator's reconnect button resets it. Re-ingest keeps
+operator intent: a tool the operator disabled or deleted stays that way
+when the server still offers it; only a tool the SERVER dropped is marked
+inactive, and only that tool is reactivated when it comes back.
 """
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,13 +32,25 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app import obs
 from app.db import get_session_factory
 from app.models import McpServer, Tool
+from app.toolschema import (
+    QUARANTINED,
+    apply_description,
+    apply_schema,
+    schema_fingerprint,
+    text_fingerprint,
+)
 
 logger = structlog.get_logger("mcp.manager")
 
 CONNECT_TIMEOUT_S = 25.0
+# M54: per-server ingest lock (transaction-scoped) — its own classid
+INGEST_LOCK_CLASSID = 427020
 PING_TIMEOUT_S = 5.0
 
 # The MCP SDK spawns stdio servers with a minimal default environment, which
@@ -54,11 +76,13 @@ def _stdio_env(server_env: dict[str, Any] | None) -> dict[str, str]:
 
     from mcp.client.stdio import get_default_environment
 
+    from app.mcp.secrets import resolve_secret_map
+
     env = get_default_environment()
     for key, value in os.environ.items():
         if key in _STDIO_ENV_PASSTHROUGH or key.startswith(_STDIO_ENV_PREFIXES):
             env[key] = value
-    env.update({str(k): str(v) for k, v in (server_env or {}).items()})
+    env.update(resolve_secret_map(server_env))  # M52: env:VAR indirection
     return env
 
 
@@ -71,21 +95,48 @@ class _Connection:
         self.error: BaseException | None = None
 
 
+@dataclass
+class _Breaker:
+    """Per-server reconnect budget (M53)."""
+
+    attempts: int = 0
+    circuit_open: bool = False
+    task: asyncio.Task[None] | None = None
+    next_attempt_at: float | None = None
+
+
 class McpManager:
+    RECONNECT_BASE_S = 5.0
+    RECONNECT_CAP_S = 300.0
+
     def __init__(self) -> None:
         self._conns: dict[UUID, _Connection] = {}
+        self._breakers: dict[UUID, _Breaker] = {}
         self._health_task: asyncio.Task[None] | None = None
+        self._seen: set[UUID] = set()  # M54: servers this replica has attempted
 
     # ── lifecycle ────────────────────────────────────────────────
 
     async def start(self, connect_timeout: float = CONNECT_TIMEOUT_S) -> None:
         """Connect every non-deleted server (spec §5 startup) + health loop."""
         async with get_session_factory()() as db:
-            server_ids = list(
+            servers = list(
                 (
-                    await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
+                    await db.execute(select(McpServer).where(McpServer.deleted_at.is_(None)))
                 ).scalars()
             )
+            server_ids = [s.id for s in servers]
+            # rows from before the config hash: stamped at boot so the next
+            # edit is judged against something (review round 2)
+            stamped = 0
+            for server in servers:
+                if server.config_hash is None:
+                    server.config_hash = config_fingerprint(server)
+                    stamped += 1
+            if stamped:
+                await db.commit()
+                logger.info("mcp_config_hashes_stamped_at_boot", servers=stamped)
+        self._seen.update(server_ids)
         await asyncio.gather(
             *(self.connect_server(sid, timeout_s=connect_timeout) for sid in server_ids),
             return_exceptions=True,
@@ -99,18 +150,34 @@ class McpManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
             self._health_task = None
+        for breaker in self._breakers.values():
+            self._cancel_reconnect(breaker)
         for server_id in list(self._conns):
             await self._teardown(server_id)
+        self._publish_states()
 
     # ── connection ───────────────────────────────────────────────
 
     async def connect_server(self, server_id: UUID, timeout_s: float = CONNECT_TIMEOUT_S) -> None:
-        """(Re)connect, ingest tools, and record status on the server row."""
+        """(Re)connect, ingest tools, and record status on the server row.
+        An explicit connect — startup, the operator's button — resets the
+        reconnect budget and closes an open circuit; a failure schedules
+        the automatic retry (if the gate allows)."""
+        breaker = self._breaker(server_id)
+        self._cancel_reconnect(breaker)
+        breaker.attempts = 0
+        breaker.circuit_open = False
+        self._seen.add(server_id)
+        if not await self._connect_once(server_id, timeout_s):
+            await self._schedule_reconnect(server_id)
+        self._publish_states()
+
+    async def _connect_once(self, server_id: UUID, timeout_s: float = CONNECT_TIMEOUT_S) -> bool:
         await self._teardown(server_id)
         async with get_session_factory()() as db:
             server = await db.get(McpServer, server_id)
             if server is None or server.deleted_at is not None:
-                return
+                return True  # nothing to connect — not a failure to retry
         conn = _Connection()
         self._conns[server_id] = conn
         conn.task = asyncio.create_task(self._run_connection(server, conn))
@@ -120,12 +187,18 @@ class McpManager:
                 raise conn.error
             await self._ingest(server_id)
         except BaseException as exc:  # noqa: BLE001 - connection failure path
+            from app.mcp.secrets import secret_strings
+
             await self._teardown(server_id)
-            await self._record_status(server_id, "error", error=_describe(exc))
-            logger.warning("mcp_connect_failed", server_id=str(server_id), error=_describe(exc))
-            return
+            described = _describe(
+                exc, secrets=secret_strings(server.env) + secret_strings(server.headers)
+            )
+            await self._record_status(server_id, "error", error=described)
+            logger.warning("mcp_connect_failed", server_id=str(server_id), error=described)
+            return False
         await self._record_status(server_id, "active", connected=True)
         logger.info("mcp_connected", server_id=str(server_id), server_name=server.name)
+        return True
 
     async def _run_connection(self, server: McpServer, conn: _Connection) -> None:
         try:
@@ -137,8 +210,19 @@ class McpManager:
                 )
                 client_ctx: Any = stdio_client(params)
             else:
-                headers = {str(k): str(v) for k, v in (server.headers or {}).items()}
-                client_ctx = streamablehttp_client(server.url or "", headers=headers or None)
+                from app import egress
+                from app.mcp.secrets import resolve_secret_map
+
+                # M52: the server URL is judged by the egress policy before
+                # a connection is attempted, the SDK's own client carries
+                # the policy hook, and header secrets resolve env: here
+                egress.check_url_static(server.url or "")
+                headers = resolve_secret_map(server.headers)
+                client_ctx = streamablehttp_client(
+                    server.url or "",
+                    headers=headers or None,
+                    httpx_client_factory=egress.mcp_client_factory,
+                )
             async with client_ctx as streams:
                 read, write = streams[0], streams[1]
 
@@ -167,7 +251,110 @@ class McpManager:
                 await asyncio.wait_for(conn.task, timeout=5)
 
     async def disconnect_server(self, server_id: UUID) -> None:
+        """An operator's disconnect or delete: no automatic retry follows."""
+        breaker = self._breakers.pop(server_id, None)
+        if breaker is not None:
+            self._cancel_reconnect(breaker)
         await self._teardown(server_id)
+        self._publish_states()
+
+    # ── reconnection with backoff + circuit breaker (M53) ────────
+
+    def _breaker(self, server_id: UUID) -> _Breaker:
+        return self._breakers.setdefault(server_id, _Breaker())
+
+    @staticmethod
+    def _cancel_reconnect(breaker: _Breaker) -> None:
+        task, breaker.task = breaker.task, None
+        breaker.next_attempt_at = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def reconnect_state(self, server_id: UUID) -> dict[str, Any]:
+        breaker = self._breakers.get(server_id) or _Breaker()
+        return {
+            "attempts": breaker.attempts,
+            "circuit_open": breaker.circuit_open,
+            "scheduled": breaker.task is not None and not breaker.task.done(),
+            "next_attempt_at": breaker.next_attempt_at,
+        }
+
+    async def _reconnect_policy(self) -> tuple[bool, int]:
+        from app.registry_cache import get_cache
+
+        try:
+            enabled = bool(await get_cache().setting("mcp_auto_reconnect_enabled"))
+            max_attempts = max(int(await get_cache().setting("mcp_reconnect_max_attempts") or 1), 1)
+        except Exception:  # noqa: BLE001 — a settings hiccup must not stop a reconnect
+            enabled, max_attempts = True, 8
+        return enabled, max_attempts
+
+    async def _schedule_reconnect(self, server_id: UUID) -> None:
+        breaker = self._breaker(server_id)
+        if breaker.circuit_open or (breaker.task is not None and not breaker.task.done()):
+            return
+        enabled, _ = await self._reconnect_policy()
+        if not enabled:
+            return
+        breaker.task = asyncio.create_task(self._reconnect_loop(server_id))
+        self._publish_states()
+
+    async def _reconnect_loop(self, server_id: UUID) -> None:
+        breaker = self._breaker(server_id)
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                enabled, max_attempts = await self._reconnect_policy()
+                if not enabled:
+                    return
+                breaker.attempts += 1
+                delay = min(
+                    self.RECONNECT_BASE_S * 2 ** (breaker.attempts - 1), self.RECONNECT_CAP_S
+                )
+                breaker.next_attempt_at = loop.time() + delay
+                logger.info(
+                    "mcp_reconnect_scheduled",
+                    server_id=str(server_id),
+                    attempt=breaker.attempts,
+                    delay_s=round(delay, 3),
+                )
+                await asyncio.sleep(delay)
+                breaker.next_attempt_at = None
+                if await self._connect_once(server_id):
+                    breaker.attempts = 0
+                    obs.MCP_RECONNECTS.labels(outcome="ok").inc()
+                    logger.info("mcp_reconnected", server_id=str(server_id))
+                    return
+                obs.MCP_RECONNECTS.labels(outcome="failed").inc()
+                if breaker.attempts >= max_attempts:
+                    breaker.circuit_open = True
+                    obs.MCP_RECONNECTS.labels(outcome="circuit_open").inc()
+                    await self._record_status(
+                        server_id,
+                        "error",
+                        error=(
+                            f"circuit open after {breaker.attempts} failed reconnect attempts "
+                            f"(mcp_reconnect_max_attempts) — reconnect manually"
+                        ),
+                    )
+                    logger.warning(
+                        "mcp_circuit_open", server_id=str(server_id), attempts=breaker.attempts
+                    )
+                    return
+        finally:
+            breaker.task = None
+            breaker.next_attempt_at = None
+            self._publish_states()
+
+    def _publish_states(self) -> None:
+        connected = sum(1 for c in self._conns.values() if c.session is not None)
+        reconnecting = sum(
+            1 for b in self._breakers.values() if b.task is not None and not b.task.done()
+        )
+        circuit_open = sum(1 for b in self._breakers.values() if b.circuit_open)
+        obs.MCP_SERVERS.labels(state="connected").set(connected)
+        obs.MCP_SERVERS.labels(state="reconnecting").set(reconnecting)
+        obs.MCP_SERVERS.labels(state="circuit_open").set(circuit_open)
 
     # ── ingest / reconcile (spec §5 register + listChanged) ─────
 
@@ -180,9 +367,19 @@ class McpManager:
             raise RuntimeError(f"server {server_id} is not connected")
         result = await conn.session.list_tools()
         async with get_session_factory()() as db:
+            # M54 (scale-H6): N replicas ingest the same server at once — a
+            # per-server transaction advisory lock serializes the reconcile,
+            # and the insert upserts on (server, tool name) so a racer that
+            # got in first is folded into, never collided with
+            await db.execute(
+                sql_text("SELECT pg_advisory_xact_lock(:c, :o)"),
+                {"c": INGEST_LOCK_CLASSID, "o": server_id.int % (2**31)},
+            )
             server = await db.get(McpServer, server_id)
             if server is None:
                 return
+            if server.config_hash is None:
+                server.config_hash = config_fingerprint(server)  # first sighting
             existing = {
                 t.tool_name: t
                 for t in (
@@ -190,44 +387,102 @@ class McpManager:
                 ).scalars()
             }
             taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
+            # the LLM-facing name is the sanitized key: two keys that
+            # sanitize alike would bind first-wins and leave the newcomer
+            # silently unbound (spec §3.2 collision-safety applies to the
+            # bound name, not only the key)
+            from app.factory.worker import sanitize_tool_name
+
+            taken_names = {sanitize_tool_name(k) for k in taken_keys}
             seen: set[str] = set()
+            changed_ids: list[str] = []
+            # spec §3.2 drift: what a changed input schema does to the row —
+            # 'warn' flags it for acknowledgement, 'quarantine' also takes
+            # it out of service until an operator acknowledges the change
+            from app.registry_cache import get_cache
+
+            try:
+                policy = str(await get_cache().setting("mcp_schema_change_policy") or "warn")
+            except Exception:  # noqa: BLE001 — a settings hiccup must not block an ingest
+                policy = "warn"
+            changed: list[str] = []
             for spec in result.tools:
                 seen.add(spec.name)
                 row = existing.get(spec.name)
                 if row is None:
                     key = f"{server.name}.{spec.name}"
-                    if key in taken_keys:  # collision-safe (spec §3.2)
-                        key = f"{key}-{uuid4().hex[:6]}"
+                    if key in taken_keys or sanitize_tool_name(key) in taken_names:
+                        key = f"{key}-{uuid4().hex[:6]}"  # collision-safe (spec §3.2)
                     taken_keys.add(key)
-                    db.add(
-                        Tool(
-                            name=spec.name,
-                            description=spec.description or "",
-                            kind="mcp",
-                            source=server.source,  # inherited (spec §5)
-                            status="active",
-                            mcp_server_id=server_id,
-                            tool_name=spec.name,
-                            tool_key=key,
-                            input_schema=spec.inputSchema,
-                        )
+                    taken_names.add(sanitize_tool_name(key))
+                    stmt = pg_insert(Tool).values(
+                        id=uuid4(),
+                        name=spec.name,
+                        description=spec.description or "",
+                        description_hash=text_fingerprint(spec.description or ""),
+                        description_source="server",
+                        kind="mcp",
+                        source=server.source,  # inherited (spec §5)
+                        status="active",
+                        mcp_server_id=server_id,
+                        tool_name=spec.name,
+                        tool_key=key,
+                        direct_exposure=False,
+                        input_schema=spec.inputSchema,
+                        ingest_state="present",
+                        schema_hash=schema_fingerprint(spec.inputSchema),
+                        schema_version=1,
                     )
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["mcp_server_id", "tool_name"],
+                        index_where=sql_text("mcp_server_id IS NOT NULL"),
+                        set_={
+                            "input_schema": stmt.excluded.input_schema,
+                            "ingest_state": "present",
+                            "schema_hash": stmt.excluded.schema_hash,
+                        },
+                    )
+                    await db.execute(stmt)
                 else:
-                    row.description = spec.description or ""
-                    row.input_schema = spec.inputSchema
-                    row.status = "active"
-                    row.deleted_at = None
+                    described = apply_description(row, spec.description or "", source="server")
+                    if apply_schema(row, spec.inputSchema, policy=policy):
+                        changed.append(row.tool_key)
+                    if described or row.tool_key in changed:
+                        changed_ids.append(str(row.id))
+                    # M53: only the SERVER's absence is undone by its return;
+                    # an operator's inactive (or deleted) row stays as set —
+                    # and so does a row the quarantine policy took out of
+                    # service on a schema change (until acknowledged)
+                    if row.ingest_state == "missing" and row.deleted_at is None:
+                        row.status = "active"
+                    if row.ingest_state != QUARANTINED:
+                        row.ingest_state = "present"
             for name, row in existing.items():
-                if name not in seen and row.status != "inactive":
-                    row.status = "inactive"  # removed tools marked inactive
+                if name not in seen:
+                    if row.status == "active":
+                        row.status = "inactive"  # removed tools marked inactive
+                        row.ingest_state = "missing"
+                    elif row.ingest_state == "present":
+                        # the operator disabled it AND the server dropped it:
+                        # keep the operator's word — a return must not reactivate
+                        row.ingest_state = None
             await db.commit()
         from app.registry_cache import get_cache
 
         await get_cache().invalidate("tools")
+        # a changed description or schema is a changed retrieval text: the
+        # vector is refreshed now, not at the next restart
+        from app.retrieval import schedule_embedding
+
+        for tool_id in changed_ids:
+            schedule_embedding("tools", tool_id)
         logger.info(
             "mcp_tools_ingested",
             server_id=str(server_id),
             tool_count=len(result.tools),
+            schema_changed=changed,
+            content_changed=len(changed_ids),
+            config_hash=(server.config_hash or "")[:12],
         )
 
     def _handle_notification(self, server_id: UUID, message: Any) -> None:
@@ -251,21 +506,60 @@ class McpManager:
                 try:
                     await asyncio.wait_for(session.send_ping(), timeout=PING_TIMEOUT_S)
                     ok = True
-                except BaseException:  # noqa: BLE001
+                except BaseException:  # noqa: BLE001 — a ping failure of any kind marks the server unhealthy
                     ok = False
             if not ok:
                 await self._teardown(server_id)
                 await self._record_status(server_id, "error", error="health ping failed")
                 logger.warning("mcp_ping_failed", server_id=str(server_id))
+                await self._schedule_reconnect(server_id)  # M53
+        self._publish_states()
+
+    async def reconcile(self) -> dict[str, int]:
+        """M54 (spec §18.9): each replica reconciles ITS subprocess set
+        against the registry — a server registered through another replica
+        is connected here, one deleted elsewhere is torn down here. Servers
+        this replica already tried (in error, mid-reconnect, or with the
+        circuit open) are left to the reconnect machinery."""
+        async with get_session_factory()() as db:
+            wanted = set(
+                (
+                    await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
+                ).scalars()
+            )
+        connected = added = removed = 0
+        for server_id in list(self._conns):
+            if server_id not in wanted:
+                await self.disconnect_server(server_id)
+                self._seen.discard(server_id)
+                removed += 1
+        for server_id in wanted:
+            if server_id in self._conns or server_id in self._seen:
+                continue
+            self._seen.add(server_id)
+            await self.connect_server(server_id)
+            added += 1
+        connected = sum(1 for c in self._conns.values() if c.session is not None)
+        if added or removed:
+            logger.info("mcp_reconciled", added=added, removed=removed, connected=connected)
+        return {"added": added, "removed": removed, "connected": connected}
 
     async def _health_loop(self) -> None:
         from app.settings_store import get_setting
 
         while True:
-            async with get_session_factory()() as db:
-                interval = int(await get_setting(db, "mcp_health_interval_s"))
-            await asyncio.sleep(max(interval, 1))
-            await self.ping_all()
+            try:
+                async with get_session_factory()() as db:
+                    interval = int(await get_setting(db, "mcp_health_interval_s"))
+                await asyncio.sleep(max(interval, 1))
+                await self.reconcile()  # M54: the registry is the fleet's truth
+                await self.ping_all()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the health loop must survive anything
+                obs.LOOP_ERRORS.labels(loop="mcp_health").inc()
+                logger.warning("mcp_health_tick_failed", error=str(exc)[:200])
+                await asyncio.sleep(5)
 
     # ── invocation (spec §5): bound tools as LangChain tools ────
 
@@ -299,16 +593,40 @@ class McpManager:
             await db.commit()
 
 
-def _describe(exc: BaseException) -> str:
+def _describe(exc: BaseException, *, secrets: list[str] | None = None) -> str:
+    """Error text for the row — through the one sanitizer (M52), with the
+    server's own env/header values as extra secrets."""
+    from app.sanitize import sanitize_error
+
     if isinstance(exc, TimeoutError):
         return "connection timed out"
     if isinstance(exc, BaseExceptionGroup):
-        parts = [_describe(e) for e in exc.exceptions]
+        parts = [_describe(e, secrets=secrets) for e in exc.exceptions]
         return "; ".join(dict.fromkeys(parts))
-    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    raw = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return sanitize_error(raw, extra_secrets=secrets or ()) or raw
 
 
 _manager: McpManager | None = None
+
+
+def config_fingerprint(server: McpServer) -> str:
+    """A hash of what decides which process answers a server's tools:
+    transport, command, args, url, and the env / header KEYS (values are
+    secrets and are not part of the fingerprint)."""
+    import hashlib
+    import json
+
+    fields = {
+        "transport": server.transport,
+        "command": server.command,
+        "args": server.args,
+        "url": server.url,
+        "env_keys": sorted((server.env or {}).keys()),
+        "header_keys": sorted((server.headers or {}).keys()),
+    }
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def get_manager() -> McpManager | None:

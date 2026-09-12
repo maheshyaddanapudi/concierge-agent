@@ -7,6 +7,10 @@ os.environ["DATABASE_URL"] = os.environ.get(
     "postgresql+asyncpg://postgres:postgres@localhost:5433/concierge_test",
 )
 os.environ["FAKE_LLM_ENABLED"] = "1"
+# M52: the suite's in-process counterparties (MCP HTTP server, A2A stub) listen
+# on loopback; name them as the operator would name an internal server —
+# the SSRF tests clear this to exercise the bare `public` policy
+os.environ.setdefault("EGRESS_ALLOW_HOSTS", "127.0.0.1,localhost")
 os.environ.pop("ANTHROPIC_API_KEY", None)
 os.environ.pop("GOOGLE_API_KEY", None)
 os.environ.pop("OPENAI_API_KEY", None)
@@ -55,6 +59,10 @@ async def _clean_tables(_database: None) -> AsyncIterator[None]:
     # no §16.2 background task may cross a test boundary — settle them
     # BEFORE the truncate so none replays against the next test's world
     await memory_scheduler.drain()
+    # the same for the registry embedding backfill a settings change starts
+    from app.settings_store import drain_backfill
+
+    await drain_backfill()
     engine = get_engine()
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:

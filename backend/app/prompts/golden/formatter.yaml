@@ -1,0 +1,27 @@
+# Golden set for formatter.md (spec §7.1 formatter role, M8/M24): the
+# transformation contract — preserve everything, invent nothing, warnings
+# sacred — plus the component vocabulary and the injected chart rules.
+consumer: app/orchestrator/answer_ui.py
+render: replace
+placeholders: [task, answer, chart_rules, existing_charts]
+cases:
+  - name: transform_contract
+    vars:
+      task: "summarize Q3"
+      answer: "Revenue grew 12.4% to $3.2M (Q3), though churn rose to 5.1%. See https://example.com/q3 for details."
+      chart_rules: "- chart {title?, chart_kind, labels, series}"
+      existing_charts: ""
+    must_contain:
+      - "You are the FORMATTER"
+      - "TRANSFORM a finished chat answer into a structured document — not to summarize it"
+      - "1. PRESERVE EVERYTHING"
+      - "2. NEVER INVENT"
+      - "3. PROSE STAYS PROSE"
+      - "6. WARNINGS AND CAVEATS ARE SACRED"
+      - "7. SELF-CHECK before answering"
+      - "## Component vocabulary (the only allowed types)"
+      - "- text {markdown}"
+      - "- sources {urls: [..]}"
+      - "- chart {title?, chart_kind, labels, series}"
+      - "summarize Q3"
+      - "though churn rose to 5.1%"

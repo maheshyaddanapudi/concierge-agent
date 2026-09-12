@@ -23,6 +23,11 @@ COPY . .
 # Pure offline validation: no DB, no API keys, no network.
 RUN python -m app.doclint
 
+# prompt golden sets (M49, spec §15): a prompt edit that drops a binding
+# sentence or renames a placeholder fails HERE, not at request time. Same
+# offline discipline as doclint — no DB, no keys, no network.
+RUN python -m app.prompts.check
+
 # pre-warm the seeded MCP servers into local caches so first connect is fast
 # and works without registry access at runtime
 # This prewarm must SUCCEED, not silently pass. With `|| true` a network
@@ -69,4 +74,11 @@ RUN for dir in $(find /root/.cache/uv -type d -path '*readabilipy/javascript'); 
     done
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# M53 deploy lifecycle: uvicorn closes the listener at SIGTERM, waits for open
+# connections up to --timeout-graceful-shutdown (open SSE streams are ended at
+# once by sse-starlette; this bounds any straggler), THEN runs the lifespan
+# drain (SHUTDOWN_GRACE_S, default 25 s). 5 + 25 < the compose
+# stop_grace_period of 40 s, so the drain always gets its window before the
+# kill. Send SIGUSR1 first (deploy.sh does) to flip readiness while the port
+# is still open.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

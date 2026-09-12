@@ -10,7 +10,6 @@ import {
   Drawer,
   ErrorNote,
   Field,
-  MaskedValue,
   PageHeader,
   SourceBadge,
   StaticNotice,
@@ -220,24 +219,24 @@ function ServerDetail({ server, onClose }: { server: McpServer; onClose: () => v
         </Field>
       )}
       {server.env && Object.keys(server.env).length > 0 && (
-        <Field label="Env (masked — click to reveal)">
+        <Field label="Env (write-only — values never leave the server)">
           <div className="space-y-1">
-            {Object.entries(server.env).map(([k, v]) => (
+            {Object.keys(server.env).map((k) => (
               <div key={k} className="flex items-center gap-2 text-xs">
                 <code className="text-slate-400">{k}=</code>
-                <MaskedValue value={String(v)} />
+                <span className="text-slate-500">set</span>
               </div>
             ))}
           </div>
         </Field>
       )}
       {server.headers && Object.keys(server.headers).length > 0 && (
-        <Field label="Headers (masked — click to reveal)">
+        <Field label="Headers (write-only — values never leave the server)">
           <div className="space-y-1">
-            {Object.entries(server.headers).map(([k, v]) => (
+            {Object.keys(server.headers).map((k) => (
               <div key={k} className="flex items-center gap-2 text-xs">
                 <code className="text-slate-400">{k}:</code>
-                <MaskedValue value={String(v)} />
+                <span className="text-slate-500">set</span>
               </div>
             ))}
           </div>

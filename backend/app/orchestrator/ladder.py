@@ -43,6 +43,10 @@ class Resolution:
     entity_id: str | None
     entity_name: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # the version of the definition resolved (a tool's schema version, a
+    # skill's or sub agent's definition version) — pinned on the route step
+    definition_version: int | None = None
+    definition_hash: str | None = None
 
     def as_route(self) -> dict[str, Any]:
         return {
@@ -51,6 +55,8 @@ class Resolution:
             "entity_name": self.entity_name,
             "tier": self.tier,
             "kind": self.kind,
+            "definition_version": self.definition_version,
+            "definition_hash": self.definition_hash,
         }
 
 
@@ -74,7 +80,18 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
             source=tool["source"],
             entity_id=tool["id"],
             entity_name=tool["tool_key"],
-            payload={"tool_id": tool["id"]},
+            # the run's frozen snapshot (spec §3.6) keeps the schema the
+            # call was made against, not only the id of a row that may
+            # since have changed
+            payload={
+                "tool_id": tool["id"],
+                "tool_key": tool["tool_key"],
+                "schema_version": tool.get("schema_version"),
+                "schema_hash": tool.get("schema_hash"),
+                "input_schema": tool.get("input_schema"),
+            },
+            definition_version=tool.get("schema_version"),
+            definition_hash=tool.get("schema_hash"),
         )
 
     if ctx_type == "direct_skill":
@@ -90,6 +107,8 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                 entity_id=skill["id"],
                 entity_name=skill["name"],
                 payload={"skill": skill},
+                definition_version=skill.get("definition_version"),
+                definition_hash=skill.get("definition_hash"),
             )
         agents = await cache.sub_agents()
         # rung 2: native sub agent whose covers_skill_ids includes the skill
@@ -102,7 +121,9 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                     source=agent["source"],
                     entity_id=agent["id"],
                     entity_name=agent["name"],
-                    payload={"native_name": agent["name"]},
+                    payload={"native_name": agent["name"], "sub_agent": _agent_pin(agent)},
+                    definition_version=agent.get("definition_version"),
+                    definition_hash=agent.get("definition_hash"),
                 )
         # rung 3: first (created_at order) custom sub agent using the skill
         for agent in agents:
@@ -116,6 +137,8 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                     entity_id=agent["id"],
                     entity_name=agent["name"],
                     payload={"snapshot": snap},
+                    definition_version=agent.get("definition_version"),
+                    definition_hash=agent.get("definition_hash"),
                 )
         # rung 4: ephemeral dynamic worker
         return await _dynamic_resolution([skill["id"]])
@@ -132,7 +155,9 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
                 source=agent_rec["source"],
                 entity_id=agent_rec["id"],
                 entity_name=agent_rec["name"],
-                payload={"native_name": agent_rec["name"]},
+                payload={"native_name": agent_rec["name"], "sub_agent": _agent_pin(agent_rec)},
+                definition_version=agent_rec.get("definition_version"),
+                definition_hash=agent_rec.get("definition_hash"),
             )
         snap = await cache.sub_agent_snapshot(agent_rec["id"])
         return Resolution(
@@ -143,12 +168,26 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
             entity_id=agent_rec["id"],
             entity_name=agent_rec["name"],
             payload={"snapshot": snap},
+            definition_version=agent_rec.get("definition_version"),
+            definition_hash=agent_rec.get("definition_hash"),
         )
 
     if ctx_type == "spin_worker":
         return await _dynamic_resolution([str(s) for s in capability.get("skill_ids") or []])
 
     raise ResolutionError(f"unknown capability type {ctx_type!r}")
+
+
+def _agent_pin(agent: dict[str, Any]) -> dict[str, Any]:
+    """What a native sub agent's frozen payload can say about its definition
+    (its graph is code, so the card and its version are the definition)."""
+    return {
+        "id": agent["id"],
+        "name": agent["name"],
+        "native_ref": agent.get("native_ref"),
+        "definition_version": agent.get("definition_version"),
+        "definition_hash": agent.get("definition_hash"),
+    }
 
 
 async def _dynamic_resolution(skill_ids: list[str]) -> Resolution:
@@ -230,6 +269,7 @@ async def run_inline_skill(
 
     ctx = require_run_context()
     step_id: UUID | None = None
+    model_ref, params = await resolve_node_model(skill_snapshot, {})
     if record:
         step_id = await ctx.recorder.start_step(
             "skill",
@@ -241,11 +281,15 @@ async def run_inline_skill(
             parent_step_id=parent_step_id,
             input={"task": task},
             emit_dispatch=True,
+            # the definition and the model the loop ran with, on the row
+            model=model_ref,
+            model_params=params.model_dump(exclude_none=True) if params else None,
+            entity_version=skill_snapshot.get("definition_version"),
+            entity_hash=skill_snapshot.get("definition_hash"),
         )
     try:
         from app.registry_cache import get_cache
 
-        model_ref, params = await resolve_node_model(skill_snapshot, {})
         model = get_model(model_ref, params)
         max_iter = int(
             skill_snapshot.get("max_tool_iterations")
@@ -305,7 +349,7 @@ async def run_inline_skill(
         if step_id is not None:
             await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
         return {"status": "error", "error": msg}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — any step failure is recorded as the step's error, never a crash
         if step_id is not None:
             await ctx.recorder.finish_step(
                 step_id, status="failed", error=str(exc), emit_dispatch=True
@@ -326,7 +370,8 @@ async def run_direct_tool(
     from app.registry_cache import get_cache
 
     records = await get_cache().tools_by_ids([UUID(tool_id)])
-    record_kind = records[0]["kind"] if records else "mcp"
+    record = records[0] if records else {}
+    record_kind = str(record.get("kind") or "mcp")
     step_id = await ctx.recorder.start_step(
         "tool_call",
         tier="tool",
@@ -334,9 +379,13 @@ async def run_direct_tool(
         source="dynamic",
         entity_id=tool_id,
         entity_name=tool.name,
+        # the tool name on the step like every middleware-recorded call
+        node_id=tool.name,
         parent_step_id=parent_step_id,
         input={"task": task},
         emit_dispatch=True,
+        entity_version=record.get("schema_version"),
+        entity_hash=record.get("schema_hash"),
     )
     try:
         from app.factory.worker import resolve_node_model
@@ -382,7 +431,7 @@ async def run_direct_tool(
         )
         await ctx.recorder.finish_step(step_id, status="failed", error=msg, emit_dispatch=True)
         return {"status": "error", "error": msg}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — any step failure is recorded as the step's error, never a crash
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
@@ -441,6 +490,11 @@ async def invoke_worker_with_hitl(
                 parent_step_id=parent_step_id,
                 model=out.get("model") if isinstance(out, dict) else None,
                 effort=out.get("effort") if isinstance(out, dict) else None,
+                # the skill definition this node ran and the params it ran
+                # with, pinned on the row (spec §3.6)
+                model_params=out.get("model_params") if isinstance(out, dict) else None,
+                entity_version=out.get("definition_version") if isinstance(out, dict) else None,
+                entity_hash=out.get("definition_hash") if isinstance(out, dict) else None,
             )
             await ctx.recorder.finish_step(
                 step_id,
@@ -460,13 +514,7 @@ async def invoke_worker_with_hitl(
         # sibling's interrupt kept the orchestrator superstep open, so this
         # dispatch is replaying after the fact; return the recorded result
         # without re-running anything (steps were recorded when it ran)
-        outputs = (snapshot.values or {}).get("node_outputs", {})
-        parts = [
-            str(outputs[k].get("output", ""))
-            for k in sorted(outputs)
-            if not k.startswith("route:") and outputs[k].get("status") == "ok"
-        ]
-        return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
+        return worker_result((snapshot.values or {}).get("node_outputs", {}))
     if snapshot is not None and snapshot.next:
         for t in snapshot.tasks:
             if t.interrupts:
@@ -522,13 +570,47 @@ async def invoke_worker_with_hitl(
         if interrupts:
             pending_interrupt = interrupts[0].value
             continue
-        outputs = state.get("node_outputs", {})
-        parts = [
-            str(outputs[k].get("output", ""))
-            for k in sorted(outputs)
-            if not k.startswith("route:") and outputs[k].get("status") == "ok"
-        ]
-        return {"status": "ok", "output": "\n".join(p for p in parts if p) or "(no output)"}
+        return worker_result(state.get("node_outputs", {}))
+
+
+def worker_result(outputs: dict[str, Any]) -> dict[str, Any]:
+    """The dispatch result a worker's node outputs amount to.
+
+    The text is the successful nodes' outputs in node order. A gate the
+    human DENIED is part of the result too: the workflow stopped at that
+    node (spec §3.5 routes a deny to END), so the denial and its note ride
+    along in the text and the status is `denied` — the aggregator, the
+    agentic loop and the skill tools all see the refusal instead of the
+    last successful draft alone, which read as if the gated action had
+    happened."""
+    parts: list[str] = []
+    denials: list[dict[str, str]] = []
+    for node_id in sorted(outputs):
+        if node_id.startswith("route:"):
+            continue
+        out = outputs[node_id]
+        if not isinstance(out, dict):
+            parts.append(str(out))
+            continue
+        status = out.get("status")
+        if status == "ok":
+            text = str(out.get("output", ""))
+            if text:
+                parts.append(text)
+        elif status == "denied":
+            denials.append({"node_id": node_id, "note": str(out.get("note") or "denied")})
+    text = "\n".join(parts) or "(no output)"
+    if not denials:
+        return {"status": "ok", "output": text}
+    verdicts = "; ".join(
+        f"the human reviewer DENIED step '{d['node_id']}' with the note: {d['note']}"
+        for d in denials
+    )
+    text = (
+        f"{text}\n\n[human review] {verdicts}. The workflow stopped at the denied "
+        "gate: the gated action was NOT performed and no step after it ran."
+    )
+    return {"status": "denied", "output": text, "denied": denials, "error": verdicts}
 
 
 async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
@@ -556,6 +638,18 @@ async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
         return row.id if row is not None else None
 
 
+async def dispatch_step_pin(step_id: UUID) -> tuple[str | None, int | None]:
+    """The definition (hash, version) a dispatch step pinned when it ran —
+    the reference a HITL replay compares the live definition against."""
+    from app.models import RunStep
+
+    async with get_session_factory()() as session:
+        row = await session.get(RunStep, step_id)
+        if row is None:
+            return None, None
+        return row.entity_hash, row.entity_version
+
+
 async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -> dict[str, Any]:
     """Execute a resolved capability, recording a dispatch step (spec §7.1)."""
     ctx = require_run_context()
@@ -566,6 +660,10 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
 
     step_id = await find_running_dispatch(ctx.run_id, entry_id)
     if step_id is None:
+        definition = (resolution.payload.get("snapshot") or {}).get("sub_agent") or {
+            "definition_version": resolution.definition_version,
+            "definition_hash": resolution.definition_hash,
+        }
         step_id = await ctx.recorder.start_step(
             "skill",
             tier="sub_agent",
@@ -577,6 +675,9 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
             node_id=entry_id,
             input={"task": task},
             emit_dispatch=True,
+            # the agent definition's version this dispatch ran (spec §3.6)
+            entity_version=definition.get("definition_version"),
+            entity_hash=definition.get("definition_hash"),
         )
     try:
         checkpointer = await get_checkpointer()
@@ -608,5 +709,15 @@ async def execute_resolution(resolution: Resolution, task: str, entry_id: str) -
 
         if isinstance(exc, GraphInterrupt):
             raise
+        # the step row keeps the message; the traceback goes to the log —
+        # a failure in the worker plumbing (not in a skill node, which
+        # records its own error edge) is otherwise invisible to an operator
+        logger.warning(
+            "dispatch_failed",
+            run_id=str(ctx.run_id),
+            node_id=entry_id,
+            error=f"{type(exc).__name__}: {exc}",
+            exc_info=True,
+        )
         await ctx.recorder.finish_step(step_id, status="failed", error=str(exc), emit_dispatch=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}

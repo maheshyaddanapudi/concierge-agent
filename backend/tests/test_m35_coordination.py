@@ -68,6 +68,61 @@ class TestLeaderLease:
             await b.release()
 
 
+class TestDarkTick:
+    async def test_dark_tick_releases_a_held_lease_without_raising(self) -> None:
+        """One tick body, ambient dark, lease held: it must release and
+        return — never raise out of the tick. The regression this pins
+        was an UnboundLocalError on `obs` in exactly this branch."""
+        from app import obs
+
+        class FakeLease:
+            held = True
+            released = 0
+
+            async def release(self) -> None:
+                self.released += 1
+                self.held = False
+
+        class FakeCache:
+            async def setting(self, key: str) -> Any:
+                assert key == "ambient_enabled"
+                return False
+
+        lease = FakeLease()
+        errors_before = obs.LOOP_ERRORS.labels(loop="ambient")._value.get()
+        obs.AMBIENT_LEADER.set(1.0)
+        await drain_mod._tick(asyncio.Event(), asyncio.Event(), lease, lambda: FakeCache())
+        assert lease.released == 1 and not lease.held
+        assert obs.AMBIENT_LEADER._value.get() == 0.0
+        assert obs.LOOP_ERRORS.labels(loop="ambient")._value.get() == errors_before
+
+    async def test_loop_survives_a_tick_that_raises(self, monkeypatch: Any) -> None:
+        """Belt and braces: even a tick whose own error handling fails
+        must not end the loop — it is counted, logged and the loop goes on."""
+        from app import obs
+
+        calls: list[int] = []
+
+        async def broken_tick(*_a: Any, **_k: Any) -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("handler itself failed")
+
+        monkeypatch.setattr(drain_mod, "_tick", broken_tick)
+        errors_before = obs.LOOP_ERRORS.labels(loop="ambient")._value.get()
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_ambient_loop(stop, tick_s=0.05))
+        try:
+            await asyncio.sleep(0.4)
+            assert not task.done(), "the loop died on a raising tick"
+            assert len(calls) >= 3, "the loop stopped ticking after the raise"
+            assert obs.LOOP_ERRORS.labels(loop="ambient")._value.get() == errors_before + 1
+        finally:
+            stop.set()
+            if not task.done():
+                await task
+
+
 # ── two concurrent loops in one process ──────────────────────────
 
 
@@ -142,6 +197,44 @@ class TestTwoLoops:
             for task in (t1, t2):
                 if not task.done():
                     await task
+
+    async def test_off_then_on_leads_again(self, monkeypatch: Any) -> None:
+        """The Settings switch flips ambient_enabled off and back on. The
+        tick that sees it dark surrenders the lease; the next tick that
+        sees it lit must lead again. Before the fix the dark tick raised
+        inside `_tick` (a local `obs` import shadowed the module), the
+        handler raised on the same name, and the loop task died: no lease,
+        gauge 0, nothing logged, until a restart."""
+        from app import obs
+
+        await _ambient(True)
+        evaluator_calls: list[int] = []
+        drain_calls: list[int] = []
+        _install_probes(monkeypatch, evaluator_calls, drain_calls)
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_ambient_loop(stop, tick_s=0.1))
+        try:
+            await asyncio.sleep(0.5)
+            assert evaluator_calls, "the loop never led while lit"
+            await _ambient(False)
+            await asyncio.sleep(0.5)
+            assert not task.done(), "the loop task died on the dark tick"
+            assert obs.AMBIENT_LEADER._value.get() == 0.0
+            probe = LeaderLease()
+            try:
+                assert await probe.ensure() is True, "the dark loop must surrender the lease"
+            finally:
+                await probe.release()
+            evaluator_calls.clear()
+            await _ambient(True)
+            await asyncio.sleep(0.8)
+            assert not task.done(), "the loop task died after the dark→lit transition"
+            assert evaluator_calls, "the loop never led again after ambient came back"
+            assert obs.AMBIENT_LEADER._value.get() == 1.0
+        finally:
+            stop.set()
+            if not task.done():
+                await task
 
     async def test_dark_loop_holds_no_lease(self, monkeypatch: Any) -> None:
         await _ambient(False)

@@ -225,6 +225,9 @@ class Delivery(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     channel: Mapped[str | None] = mapped_column(String(32), default=None)
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    # the policy row whose tier override applied at insert (None when the
+    # category had none) — lineage that survives the policy's supersession
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     # supersede-collapse key (spec §17.5): pending items sharing it are
     # superseded by the newest arrival
     skey: Mapped[str | None] = mapped_column(String(255), default=None)

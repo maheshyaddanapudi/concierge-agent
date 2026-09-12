@@ -5,7 +5,6 @@ M22 — here a 'fired' verdict is the hand-off record). Every decision writes
 the fire/hold ledger. Silence is the default: anything unmatched holds.
 """
 
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
@@ -14,6 +13,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from app.ambient.regex_guard import safe_search
 from app.db import get_session_factory
 from app.models import AmbientEvent, Routine, Run, StandingIntent
 
@@ -27,6 +27,23 @@ class SignificanceOutput(BaseModel):
     urgency: int = Field(ge=1, le=5, default=2)
     reason: Literal["new_information", "matches_watch", "urgent_change", "routine", "noise"] = (
         "routine"
+    )
+
+
+def render_significance_prompt(*, watch: str, predicate: str, event: str) -> str:
+    """The significance-gate prompt through the one fence choke point
+    (M52): the candidate occurrence is untrusted and cannot close the fence."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    return untrusted.render(
+        load_prompt("ambient_significance"),
+        mode="format",
+        body_var="event",
+        body=event,
+        max_chars=2000,
+        watch=untrusted.neutralize(watch),
+        predicate=untrusted.neutralize(predicate),
     )
 
 
@@ -49,7 +66,7 @@ def match_filters(payload: dict[str, Any] | None, filters: list[dict[str, Any]])
             if op == "starts_with"
             else value in [str(v) for v in f.get("values", [])]
             if op == "one_of"
-            else re.search(expect, value) is not None
+            else safe_search(expect, value)  # M52: guarded + bounded, never the raw engine
             if op == "regex"
             else False
         )
@@ -83,28 +100,32 @@ def register_judge_usage_hook(fn: Any | None) -> None:
 
 
 async def _judge_significance(intent: StandingIntent, event: AmbientEvent) -> SignificanceOutput:
-    """Tier 2: ONE structured call, extraction role unless the intent
-    overrides. Any failure means held — silence is the default. Runs with
+    """Tier 2: ONE structured call — the intent's own judge model, else the
+    salience judge role (`ambient_salience_model`: the reader that decides
+    what reaches the human, so the model that COMPILED the predicate is not
+    the one applying it — review round 2), else the extraction role, else
+    the default. Any failure means held — silence is the default. Runs with
     include_raw so real token usage feeds the cost accounting (§18.1)."""
     from app.llm import ModelParams, get_model
-    from app.prompts import load_prompt
     from app.registry_cache import get_cache
 
     cache = get_cache()
     ref = (
         intent.judge_model_ref
+        or await cache.setting("ambient_salience_model")
         or await cache.setting("memory_extraction_model")
         or await cache.setting("default_model")
     )
     model = get_model(str(ref), ModelParams(effort="low"))
     structured = model.with_structured_output(SignificanceOutput, include_raw=True)
-    prompt = load_prompt("ambient_significance").format(
+    prompt = render_significance_prompt(
         watch=intent.text,
         predicate=intent.semantic_predicate or "(none)",
-        event=str(event.payload)[:2000],
+        event=str(event.payload),
     )
     out = await structured.ainvoke(prompt)
-    assert isinstance(out, dict)
+    if not isinstance(out, dict):
+        raise TypeError(f"expected dict, got {type(out).__name__}")
     parsed = out.get("parsed")
     if not isinstance(parsed, SignificanceOutput):
         raise ValueError(f"judge parse failed: {out.get('parsing_error')}")

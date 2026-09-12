@@ -8,9 +8,11 @@ import type {
   McpServer,
   ProviderInfo,
   RemoteAgent,
+  RetentionRow,
   Run,
   Settings,
   Skill,
+  SpendReport,
   SubAgent,
   Tool,
 } from './types'
@@ -53,11 +55,19 @@ export function useSubAgents(params = '') {
   })
 }
 
-export function useRuns() {
+const LIVE_STATUSES = new Set(['running', 'paused_hitl'])
+
+/** M50: polling backs off — 3 s while something is live, 15 s when the
+ * page is quiet. Background tabs never poll (TanStack default). */
+function runsBackoff(runs: Run[] | undefined): number {
+  return runs?.some((r) => LIVE_STATUSES.has(r.status)) ? 3000 : 15000
+}
+
+export function useRuns(limit = 100) {
   return useQuery({
-    queryKey: ['runs'],
-    queryFn: () => api.get<Run[]>('/runs'),
-    refetchInterval: 3000,
+    queryKey: ['runs', 'page', limit],
+    queryFn: () => api.get<Run[]>(`/runs?limit=${limit}`),
+    refetchInterval: (query) => runsBackoff(query.state.data),
   })
 }
 
@@ -66,7 +76,9 @@ export function useRun(runId: string | null) {
     queryKey: ['runs', runId],
     queryFn: () => api.get<Run>(`/runs/${runId}`),
     enabled: runId !== null,
-    refetchInterval: 2000,
+    // a terminal run never changes again — stop polling it
+    refetchInterval: (query) =>
+      query.state.data && !LIVE_STATUSES.has(query.state.data.status) ? false : 2000,
   })
 }
 
@@ -135,6 +147,33 @@ export function useRefreshCache() {
   })
 }
 
+/** M53: today's priced spend across every run kind + the ceiling state. */
+export function useSpend() {
+  return useQuery({
+    queryKey: ['spend'],
+    queryFn: () => api.get<SpendReport>('/spend'),
+    refetchInterval: 15000,
+  })
+}
+
+/** M53: per-table retention gate, window and what a purge would delete now. */
+export function useRetention() {
+  return useQuery({
+    queryKey: ['retention'],
+    queryFn: () => api.get<{ tables: RetentionRow[] }>('/retention'),
+    refetchInterval: 30000,
+  })
+}
+
+export function useRunRetention() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ deleted: Record<string, number>; skipped?: string }>('/retention/run'),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['retention'] }),
+  })
+}
+
 export function usePatchSettings() {
   const qc = useQueryClient()
   return useMutation({
@@ -143,6 +182,9 @@ export function usePatchSettings() {
       qc.setQueryData(['settings'], data)
       // registry_cache_mode lives in settings — reflect flips immediately
       void qc.invalidateQueries({ queryKey: ['cache-status'] })
+      // M53: retention windows and the spend ceiling are settings too
+      void qc.invalidateQueries({ queryKey: ['retention'] })
+      void qc.invalidateQueries({ queryKey: ['spend'] })
     },
   })
 }

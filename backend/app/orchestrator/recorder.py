@@ -11,11 +11,13 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy import update
 
 from app import obs
 from app.db import get_session_factory
 from app.models import Run, RunStep
 from app.orchestrator.context import EVENT_BUS
+from app.sanitize import sanitize_error
 
 logger = structlog.get_logger("run")
 
@@ -56,6 +58,9 @@ class RunRecorder:
         effort: str | None = None,
         input: dict[str, Any] | None = None,
         emit_dispatch: bool = False,
+        entity_version: int | None = None,
+        entity_hash: str | None = None,
+        model_params: dict[str, Any] | None = None,
     ) -> UUID:
         async with get_session_factory()() as session:
             step = RunStep(
@@ -66,6 +71,15 @@ class RunRecorder:
                 step_type=step_type,
                 input=input,
                 model=model,
+                # the name at run time and the params the step ran with —
+                # on the row, so a trace never resolves either live
+                entity_name=entity_name,
+                model_params=model_params,
+                # the entity's version pinned into the record (a tool's
+                # schema version and hash): the trace reads against the
+                # registry as it was when the step ran
+                entity_version=entity_version,
+                entity_hash=entity_hash,
                 status="running",
             )
             session.add(step)
@@ -98,6 +112,12 @@ class RunRecorder:
         for key, value in labels.items():
             if value is not None:
                 span.set_attribute(f"concierge.{key}", str(value))
+        # span attributes, not metric labels: the §10 label set (and its
+        # cardinality) stays as specified, the span still names the version
+        if entity_version is not None:
+            span.set_attribute("concierge.entity_version", int(entity_version))
+        if entity_hash:
+            span.set_attribute("concierge.entity_hash", entity_hash)
         self._spans[step_id] = span
         # live activity feed (spec §7.1): every step transition, so the chat
         # can show what the run is doing right now without exposing payloads
@@ -153,30 +173,39 @@ class RunRecorder:
             if step is not None:
                 step.status = status
                 step.output = output
-                step.error = error
+                step.error = sanitize_error(error)  # M52: one sanitizer before persistence
                 step.input_tokens = input_tokens
                 step.output_tokens = output_tokens
                 step.finished_at = datetime.now(UTC)
                 await session.commit()
-            run = await session.get(Run, self.run_id)
-            if run is not None and (input_tokens or output_tokens):
-                run.total_input_tokens += input_tokens
-                run.total_output_tokens += output_tokens
+            if input_tokens or output_tokens:
+                # M51: atomic in-database increment (the totals feed the ambient
+                # budget — a lost update under-counts spend)
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == self.run_id)
+                    .values(
+                        total_input_tokens=Run.total_input_tokens + input_tokens,
+                        total_output_tokens=Run.total_output_tokens + output_tokens,
+                    )
+                )
                 await session.commit()
         logger.info("step_finish", **labels)
-        tier = str(labels.get("tier") or "orchestrator")
-        kind = str(labels.get("kind") or "-")
-        source = str(labels.get("source") or "-")
-        obs.STEPS_TOTAL.labels(tier=tier, kind=kind, source=source, status=status).inc()
-        obs.STEP_DURATION.labels(tier=tier, kind=kind, source=source).observe(duration_ms / 1000)
+        # M53: the §10 label set's low-cardinality members on every series
+        dims = {
+            "tier": str(labels.get("tier") or "orchestrator"),
+            "kind": str(labels.get("kind") or "-"),
+            "source": str(labels.get("source") or "-"),
+            "model": str(labels.get("model") or "-"),
+            "effort": str(labels.get("effort") or "-"),
+        }
+        tier, kind, source = dims["tier"], dims["kind"], dims["source"]
+        obs.STEPS_TOTAL.labels(**dims, status=status).inc()
+        obs.STEP_DURATION.labels(**dims).observe(duration_ms / 1000)
         if input_tokens:
-            obs.STEP_TOKENS.labels(tier=tier, kind=kind, source=source, direction="input").observe(
-                input_tokens
-            )
+            obs.STEP_TOKENS.labels(**dims, direction="input").observe(input_tokens)
         if output_tokens:
-            obs.STEP_TOKENS.labels(tier=tier, kind=kind, source=source, direction="output").observe(
-                output_tokens
-            )
+            obs.STEP_TOKENS.labels(**dims, direction="output").observe(output_tokens)
         if status == "failed":
             obs.ERRORS_TOTAL.labels(tier=tier, kind=kind, source=source).inc()
             self.emit("error", {"step_id": str(step_id), "message": error or "step failed"})
@@ -208,7 +237,9 @@ class RunRecorder:
         kind: str | None = None,
         source: str | None = None,
     ) -> None:
-        """The ladder is deterministic and logged as a `route` step (spec §7.1)."""
+        """The ladder is deterministic and logged as a `route` step (spec §7.1).
+        The definition version the ladder resolved rides on the step when
+        `resolved_to` carries it (a Resolution.as_route())."""
         step_id = await self.start_step(
             "route",
             tier="orchestrator",
@@ -217,6 +248,8 @@ class RunRecorder:
             entity_id=resolved_to.get("entity_id"),
             entity_name=resolved_to.get("entity_name"),
             input={"capability": capability},
+            entity_version=resolved_to.get("definition_version"),
+            entity_hash=resolved_to.get("definition_hash"),
         )
         await self.finish_step(step_id, output={"rung": rung, "resolved_to": resolved_to})
         self.emit(

@@ -70,7 +70,9 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
 - `transport`: `'stdio' | 'http'`
 - stdio: `command`, `args (jsonb)`, `env (jsonb)`
 - http: `url`, `headers (jsonb)`
-- `last_connected_at`, `last_error`
+- `env` and `headers` are **write-only** (M52): every read returns them masked (`***`); a write that sends `***` keeps the stored value, `null` removes the key, anything else replaces it; a value `env:VAR_NAME` is resolved from the backend's environment at connect time (the §19.3 credentials pattern). An http `url` must pass the §13 egress policy at save and at connect.
+- `last_connected_at`, `last_error` (sanitized before it is stored, M52)
+- `config_hash (text, nullable)` (hardening wave) — a hash of what decides which process answers the server's tools: transport, command, args, url and the env / header **keys** (values are secrets and are not part of it). Stamped at creation (and at boot for rows from before it); a PATCH that moves it — or that writes `env` / `headers` at all, since a rotated secret's value is not in the fingerprint but the running process holds the old one — is logged (`mcp_server_config_changed`) and reconnects the server at once — the swap and its re-ingest happen at edit time, not at the next health ping.
 
 ### 3.2 tools
 - `kind`: `'mcp' | 'native'`
@@ -80,6 +82,8 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
 - `tool_key` (string, unique) — human-facing identifier. Defaults to `{server_name}.{tool_name}` for MCP tools (collision-safe across servers exposing the same tool name) and the registration name for native tools; auto-generated uuid string only if neither yields a unique key. **Editable later.** Internal references (skill_tools join) always use the immutable `id`, so renaming `tool_key` never breaks bindings.
 - `direct_exposure (bool, default false)` — when true, the orchestrator may call this tool itself, without a sub agent. Note: direct tool calls carry no skill persona — the tool runs under the orchestrator's own prompt.
 - `input_schema (jsonb)` — JSON Schema from `tools/list` (mcp) or derived from the callable/subgraph input schema (native)
+- **Schema drift** (post-1.0): `schema_hash (text, nullable)` — a content hash of `input_schema` as last written (key order and whitespace do not count); `schema_version (int, default 1)` — 1 at first sighting, +1 on every write whose hash differs; `schema_changed_at (timestamptz, nullable)` — set by such a write and cleared by the operator's acknowledgement (`POST /tools/{id}/acknowledge-schema`). Every write of `input_schema` (MCP ingest, native scan, A2A card refresh) goes through this rule, so a server renaming a parameter is logged (`tool_schema_changed`), counted (`concierge_tool_schema_changes_total{kind, policy}`), badged on the Tools page and versioned — never silent. The `mcp_schema_change_policy` setting (§3.7) decides whether a changed MCP tool merely warns (default) or is also **quarantined**: `status='inactive'` with `ingest_state='changed'`, which a re-ingest never undoes — only the acknowledgement puts it back in service. Rows from before this rule carry no hash; their next ingest records one as a first sighting rather than flagging every tool.
+- **Description drift** (hardening wave): the planner and retrieval route by a tool's description, so a server rewording it is a change worth a record, not a silent overwrite. `description_hash (text, nullable)` fingerprints the text as last written; `description_source ('server'|'operator', default 'server')` says whose words they are. Every ingest write (MCP, A2A card) goes through one rule: a changed server description is logged (`tool_description_changed`), counted (`concierge_tool_description_changes_total{kind, source}`) and re-embedded; an operator's own edit (`PATCH /tools/{id}` with `description`) marks the row `operator` and a re-ingest **never** overwrites it after that (a suppressed server rewording is logged, `tool_description_change_suppressed`; `PATCH description_source=server` hands the wording back so the next ingest re-adopts it). A `tool_key` rename re-embeds the skills bound to the tool (their retrieval text carries the key). `tool_key` renames are refused (409) when the new key is in use, when it binds under the same sanitized LLM-facing name as another tool (first-wins binding would silently drop one), or while a bound skill's instructions still mention `{tool:old.key}` — the skills to fix are named.
 
 ### 3.3 skills
 - `kind`: `'native' | 'custom'` — **native skills are markdown files** (`backend/app/native/skills/*.skill.md`, YAML frontmatter + body) scanned into the registry at startup; **custom skills are the same document shape** authored in the UI and stored in the registry. One format, two homes.
@@ -91,6 +95,7 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
 - `direct_exposure (bool, default false)` — when true, the orchestrator may execute this skill inline (skill persona + instructions + bound tools injected into an orchestrator tool-loop step) without spinning a sub agent.
 - `max_tool_iterations (int, nullable)` — per-skill override of the loop budget: this skill's tool loop may run this many iterations before the node fails (error-edge semantics unchanged). Null inherits the `max_tool_iterations` setting. Rationale: research-class skills legitimately need deeper loops (the static `web-research` skill ships with 20) without raising the global default.
 - **Strict id references**: every request that binds or invokes a skill (workflow nodes, skill endpoints) must carry an explicit `skill_id`; no name-based resolution. Missing/unknown `skill_id` → 422 rejected.
+- **Definition version** (hardening wave): `definition_hash (text, nullable)` — a hash of the fields that change what the skill does (description, persona, instructions, model + params, iteration budget, the bound tool ids), and `definition_version (int, default 1)` — +1 on every write whose hash differs. A status or exposure toggle is not a new version. Stamped by every write path (API create/patch, the seed scan at boot — a native document edited since the last boot bumps like an API edit, fallback mining) and read against the run record (§3.6). `overlap_audited_hash (text, nullable)` — the definition hash the §4 overlap audit last judged. A bound tool that is inactive, quarantined, deleted or missing from its server is flagged on the Skills list (§8.3) and at bind time (§7.0): the loop logs and counts it with the reason, records it on the run (`snapshot.context`, surface `skill_bind`), and a call to it is a failed step that takes a strict node's error edge — a name the loop never had is the model's own slip and gets the error message and the real tool list back instead. A skill toggled inactive after a workflow was saved takes the node's error edge instead of running. `origin ('human'|'mined', not patchable)` — who authored the definition: the §16.5 activation guard keys off it.
 
 ### 3.4 sub_agents
 - `kind`: `'native' | 'custom'`
@@ -102,6 +107,7 @@ Common columns on all registry tables: `id (uuid, immutable)`, `name`, `descript
 - `workflow (jsonb)` — DAG, schema below (custom only)
 - `sub_agent_skills` join table derived from workflow at save time (for badge queries)
 - `direct_exposure (bool, default false)` — when true, the sub agent can be **invoked directly** (§7.5): pinned from chat or called via `POST /sub-agents/{id}/invoke`, bypassing the planner/routing decision. Mirrors the tools/skills flag exactly, including the static-record rule: togglable on static records while the definition stays immutable. Static seed agents ship with it enabled so direct invocation works out of the box.
+- **Definition version** (hardening wave): `definition_hash` / `definition_version` / `overlap_audited_hash` exactly as for skills (§3.3), over description, persona, model + params, workflow and `native_ref`.
 
 ### 3.5 Workflow DAG schema (jsonb)
 
@@ -132,12 +138,19 @@ Rules:
 
 ### 3.6 conversations / runs / run_steps
 - `conversations`: `id`, `title (auto from first message)`, `created_at`, `updated_at`. Chat is multi-turn: every run belongs to a conversation, and the planner receives the **full conversation history** (all prior user messages + final answers in the conversation) as context.
-- `runs`: `id`, `conversation_id (FK)`, `chat_message`, `plan (jsonb)` (planner output), `snapshot (jsonb)` — resolved config frozen at dispatch: for each capability used, the persona/workflow/model/tool definitions as they were at run time, so later registry edits never rewrite trace history, `orchestrator_mode ('graph'|'agentic'|'direct')` — how the run executed: the orchestrator mode setting at creation, or `direct` for a pinned sub-agent invocation (§7.5), `target_sub_agent_id (uuid, nullable)` — set only on `direct` runs: the sub agent the user pinned, `include_history_summary (bool, default false)` — §7.5 opt-in: this direct run summarized conversation history into the worker's context, `answer_ui (jsonb, nullable)` — the formatter's structured artifact (§7.1 `answer_ui` event; persisted so conversation reload and the Runs page re-render it; the payload carries its own `presentation` and `coverage`, so history renders by what happened at run time, never by current settings), `charts (jsonb, nullable)` — chart specs produced by the `render_chart` native tool during the run, rendered with the primary answer in every formatter state, `status ('running'|'paused_hitl'|'completed'|'failed'|'cancelled')`, `started_at`, `finished_at`, `total_input_tokens`, `total_output_tokens`
-- `run_steps`: `id`, `run_id`, `parent_step_id (nullable — nested steps, e.g. inside a native subgraph tool)`, `sub_agent_id`, `node_id`, `step_type ('plan'|'route'|'skill'|'hitl'|'tool_call'|'aggregate'|'summary')`, `input (jsonb)`, `output (jsonb)`, `model`, `input_tokens`, `output_tokens`, `started_at`, `finished_at`, `error`
+- `runs`: `id`, `conversation_id (FK)`, `chat_message`, `plan (jsonb)` (planner output), `snapshot (jsonb)` — resolved config frozen at dispatch: for each capability used, the persona/workflow/model/tool definitions as they were at run time, so later registry edits never rewrite trace history, `orchestrator_mode ('graph'|'agentic'|'direct')` — how the run executed: the orchestrator mode setting at creation, or `direct` for a pinned sub-agent invocation (§7.5), `target_sub_agent_id (uuid, nullable)` — set only on `direct` runs: the sub agent the user pinned, `include_history_summary (bool, default false)` — §7.5 opt-in: this direct run summarized conversation history into the worker's context, `answer_ui (jsonb, nullable)` — the formatter's structured artifact (§7.1 `answer_ui` event; persisted so conversation reload and the Runs page re-render it; the payload carries its own `presentation` and `coverage`, so history renders by what happened at run time, never by current settings), `charts (jsonb, nullable)` — chart specs produced by the `render_chart` native tool during the run, rendered with the primary answer in every formatter state, `status ('queued'|'running'|'paused_hitl'|'completed'|'failed'|'cancelled')` — `queued` (M51) is a run the system admitted but that is waiting for an execution slot under `run_max_concurrent`: visible state, never an invented one, `started_at`, `finished_at`, `last_heartbeat_at` (M51 — refreshed every 30 s while the run executes, so the §17.4 reaper can tell a live run from a stalled one on any trigger kind), `total_input_tokens`, `total_output_tokens` (incremented atomically in the database, M51 — concurrent steps never lose an update)
+- `run_steps`: `id`, `run_id`, `parent_step_id (nullable — nested steps, e.g. inside a native subgraph tool)`, `sub_agent_id`, `node_id`, `step_type ('plan'|'route'|'skill'|'hitl'|'tool_call'|'aggregate'|'summary')`, `input (jsonb)`, `output (jsonb)`, `model`, `entity_version (int, nullable)` / `entity_hash (text, nullable)` — the version of the entity the step ran against, pinned into the record: on `tool_call` steps the tool's `schema_version` and `schema_hash` (§3.2), also set as `concierge.entity_version` / `concierge.entity_hash` span attributes (attributes, not §10 metric labels — the label set and its cardinality are unchanged), `input_tokens`, `output_tokens`, `started_at`, `finished_at`, `error`
+- **The snapshot in every mode** (post-1.0): graph mode freezes each plan entry's resolution at dispatch (above), and a `direct_tool` entry's payload now carries the tool's `input_schema`, `schema_version` and `schema_hash`, not only its id. A `direct` run freezes the pinned sub agent's resolution under the key `direct`, written once on the dispatch that started the run (a HITL resume never overwrites it). An `agentic` run, whose tools are resolved live by the registry middlewares at every model call, freezes under `catalog` what the loop could see when it started: every exposed tool with its schema version and hash, every exposed skill and every active sub agent with the `updated_at` that names its definition. A trace therefore reads against the registry as it was in all three modes. The dispatch-time write **merges** onto the snapshot (a wholesale write dropped the start-time pins on every routed run — caught live). A HITL replay in `direct` mode executes the resolution the run froze, never a definition edited during the pause — and reads the pin *before* the live gate, so an agent deleted, deactivated or unexposed during the pause no longer fails the approved run (third reading; what the registry holds now is logged as `definition_changed_during_pause` or `definition_unavailable_during_pause`); an agentic replay resolves live and logs `definition_changed_during_pause` when the definition the paused dispatch step pinned and the live record differ (the step's own pin, not the run-start catalog, is the reference). Plan entry ids may not name a pin (`settings`, `prompts`, `build`, `context`, `catalog_calls`, `catalog`, `resumes`, `direct`, `exemplar_vote` — `validate_plan` refuses them). Snapshot writes lock the run row for their read-modify-write. A cancelled or wall-clocked run pins its `context` and `catalog_calls` like every other terminal state, and a run's cost is stamped with the run's own start-time settings on every terminal path.
+- **Everything else the run read live** (hardening wave) is pinned too, so a trace never resolves anything against today's registry or today's configuration:
+  - `run_steps.entity_name` — the entity's name at run time (the Runs page's "sub agents involved" chips read the names the route steps pinned) (a sub agent renamed or deleted since still reads as it was, never as "ephemeral"); `run_steps.model_params` — the parameters the step's model call was made with; `entity_version` / `entity_hash` now also carry a skill's or sub agent's **definition version** on skill, dispatch and route steps (the ladder's `Resolution` resolves it, native sub agents and ephemeral workers pin what their payload can), and plan / aggregate / format steps carry their `model_params`; a failed node pins its definition like a completed one, and a dispatch's frozen payload carries `definition_hash` / `definition_version` for the agent and each of its skills.
+  - The **formatter is a recorded step** (`step_type='format'`): model, params, the presentation asked for, the artifact's shape (coverage, chart count), the attempts and the repair taken — its tokens roll up like every other model call, once.
+  - `runs.snapshot` gains `settings` (the whole §3.7 dict as the run saw it at start — no provider keys live there), `prompts` (a short hash per prompt file, so a deploy that edits a prompt is visible in the record rather than read as model nondeterminism), `build` (`APP_BUILD` when set), `context` (what each surface was actually told: the memory blocks per surface with their memory ids, the planner's exemplar ids and block, the history window's size and hash, the catalog hash and the prompt hash — capped) and `catalog_calls` (per model call and per registry projection — tools, skills, sub agents — the ids shown and the mode, a repeated identical slice counted rather than repeated, capped at 200, so a catalog frozen at start also says which slice ranking or an allowlist left each call). Both lists are **appended** across a HITL resume, never replaced; a resume also appends `resumes` (the settings and prompt hashes of that moment, since the resumed half runs under the settings of NOW). Every pin is best-effort: none can fail the run.
+  - **Cost stamped at finish**: `runs.cost_usd`, `runs.cost_priced` and `runs.price_snapshot` (the per-model prices and their source — override / provider / builtin — plus the unpriced token count) are written when the run finishes — completed, failed or cancelled; a later price-table change, override edit or provider feed refresh never rewrites a finished run or the day's spend it counted toward (§3.7 `spend_ceiling_*`). Runs from before the stamp are priced live, as before.
+  - **Ambient lineage**: an ambient run's `trigger` copies the event's `decision`, a hash of its payload and the routine as it was (name, prompt hash, allowlist, `updated_at`) instead of pointing at rows a delete or a retention purge removes; `deliveries.policy_id` records the §17.6 policy row that set a delivery's tier. The run **executes** under the pinned allowlist, not the live routine's (edited or deleted while the run sat queued).
 
 ### 3.7 app_settings
 
-Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, `memory_forget_enabled (default false — M44 §16.1 durable forgetting; off is byte-identical: user deletes stay physical and mode=forget is a 422 naming this key)`, `memory_forget_similarity (default 0.85, range 0.5–1.0 — cosine threshold for semantic re-admission suppression, calibrated against a live-measured paraphrase at 0.876; hash-only when no embedding model is configured)`, `memory_admission_min_confidence (default 0.5, range 0.0–0.9 — the §16.2 admission-gate confidence floor, promoted from the constant it replaces under the M40 pattern; the M47 learner moves it in ±0.05 steps clamped to [0.5, 0.9])`, `memory_quarantine_kinds (default [] — machine writes of a listed kind land in the §16.2 review queue instead of activating; user-stated writes are never routed)`, `memory_extraction_learning ('off'|'propose'|'auto', default 'off' — M47: the tombstone-informed extraction tuner, the second consumer under the §17.7 feedback-consumer rule)`, plus the M48 job gates — **no behavior the system performs on its own may be unswitchable** (§3.7.1), each defaulting to the behavior it replaces so the promotion is byte-identical: `memory_decay_enabled (default true — the §16.2 access-recency decay sweep that expires unpinned rows)`, `memory_contradiction_enabled (default true — the sweep that quarantines duplicate active entity_keys)`, `memory_communities_enabled (default true — the §18.6 community rebuild, which makes LLM summarization calls per changed community)`, `memory_compaction_enabled (default true — the §16.7 digest fold, which HARD-DELETES the folded run-digests; the one consolidation job with irreversible effect)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, `ambient_precision_rule_enabled (default true — gates the §17.3 rule-based precision auto-downgrade, the static-policy feedback consumer active while learning is off; false = feedback is still captured but never re-tiers a category; true is byte-identical to pre-M43c behavior)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, `ambient_pursuit ('off'|'away'|'always', default 'always' — whether the external channels named by that routing actually fire for a batch whose in-app broadcast reached nobody, §18.4/§17.5; 'always' is the pre-M41 presence-blind behavior, so the default is byte-identical)`, `ambient_salience_mode ('off'|'propose'|'auto', default 'off' — the §17.5 M42 content-salience pass over unseen tier ≤1 deliveries; off is byte-identical, propose queues verdicts for approval, auto applies them)`, `ambient_salience_min_urgency (default 3, range 1–5 — the deterministic prefilter floor before the judge is ever called)`, `ambient_salience_learning ('off'|'propose'|'auto', default 'off' — M45: the salience tuner, the first consumer of the M43b judge_reward ledger, entering under the §17.7 feedback-consumer rule)`, `ambient_salience_model` / `ambient_salience_model_params` (nullable — null falls back to `default_model`, like planner/aggregator/formatter), `ambient_anticipation_enabled (default true — M48: gates the §18.1 idle-time anticipation job. This is the only feature that INITIATES contact unprompted, so it gets an explicit switch rather than relying on the hit-rate floor to learn its way to silence; true is byte-identical to pre-M48)`, plus `evals_enabled (default true — M48: mounts the §15 eval surface; the feature is passive, so the gate exists to remove surface area, not to change behavior)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6; tick-bounded: the ambient leader tick invokes the poller, which no-ops until this interval has elapsed since its last poll, so the effective cadence is max(tick, interval))`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`, plus the M40 config-hardening keys: `ambient_tick_interval_s (default 60, min 15 — the ambient scheduler tick cadence; evaluators, drain heartbeat, and the parked-task poller all ride it)`, `rate_limit_burst (default 120)` / `rate_limit_per_s (default 10)` (the §18.8 token bucket, read live per refill), `overlap_threshold_percent (default 70, range 0–100 — the §4 overlap-guard gate; 100 effectively disables the dialog, 0 flags every save)`, `run_stall_after_s (default 300, min 60 — the §17.4 H3 reaper window before a silent ambient run is marked stalled)`, `agentic_recursion_limit (default 100, range 10–500 — the agentic loop's LangGraph recursion budget; the model-call limit stays derived from max_tool_iterations)`, `a2a_http_timeout_s (default 15, min 1 — the shared A2A HTTP client timeout, applied on the manager's next client build)`, `a2a_fence_max_chars (default 8000, min 500 — cap on fenced remote output, §19.5)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
+Key-value store (`key`, `value jsonb`, `updated_at`) read live at runtime — changes apply to the next run, no restart. Keys: `orchestrator_mode ('graph'|'agentic')`, `orchestrator_full_fallback_enabled (default true)`, `default_model`, `default_model_params`, `planner_model`, `planner_model_params`, `aggregator_model`, `aggregator_model_params`, `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations` (per skill-node tool loop; exceeded → node fails, error-edge semantics apply), `dynamic_worker_fallback_enabled`, `direct_exposure_cap_warning`, `formatter_enabled (default true — whether the formatter model call runs at all; off = raw answer rendered directly, no structured artifact produced)`, `formatter_presentation ('a2ui_first'|'raw_first', default 'a2ui_first')`, `formatter_model` / `formatter_model_params` (nullable — null falls back to `default_model`, single hop, like planner/aggregator), `formatter_coverage_flag_threshold (default 90 — visual flag only, never a render gate)`, `answer_ui_charts_enabled (default true)`, `mcp_health_interval_s`, `mcp_schema_change_policy ('warn'|'quarantine', default 'warn' — what a re-ingest does to an MCP tool whose input schema changed, §3.2: warn flags it until acknowledged, quarantine also takes it out of service until then, a tool that vanished and returns with a changed schema included; every change is versioned and logged either way)`, `overlap_judge_model` / `overlap_judge_model_params` (nullable — the §4 overlap judge's own model role, null falls back to `default_model` like the other roles; a judge that is not the model writing the skills — the operator's, or the §17.7 learner's — does not share the generator's blind spots), `eval_judge_model` / `eval_judge_model_params` (nullable — the §15 `llm_judge` grader's own model role; null falls back to the extraction role, then `default_model`, which is the model under test grading itself — a deployment scoring its default model should point this elsewhere), `registry_overlap_audit_enabled (default false — §4 after save time: a consolidation-class job re-judges every active skill and sub agent whose definition hash moved since it was last audited and posts an inbox item per flagged pair; born dark)`, `log_level`, `langsmith_enabled`, `langsmith_endpoint`, `langsmith_project`, `otlp_endpoint`, `registry_cache_mode ('bypass'|'memory'|'redis', default 'bypass', §7.3)`, `retrieval_enabled (default false, §7.4)`, `retrieval_threshold (default 30)`, `retrieval_top_k (default 10)`, `embedding_model (nullable 'provider:model', §2.1)`, plus the §16 memory keys: `memory_enabled (default false — master switch; off is byte-identical to pre-§16 behavior)`, `memory_extraction_enabled (default true — gates the L2 write pipeline when memory is on)`, `memory_reflection_enabled (default false)`, `procedural_learning_enabled (default false)`, `memory_injection_budget_tokens (default 1200)`, `memory_pinned_budget_tokens (default 400)`, `memory_recall_top_k (default 6)`, `memory_score_floor (default 0.35)`, `memory_extraction_model` / `memory_extraction_model_params` (nullable — null falls back to `default_model` at effort low), `memory_half_life_days (default 30.0)`, `memory_idle_minutes (default 10)`, `memory_digest_compact_days (default 14 — run-digests older than this fold into per-conversation period digests, §16.7)`, `memory_forget_enabled (default false — M44 §16.1 durable forgetting; off is byte-identical: user deletes stay physical and mode=forget is a 422 naming this key)`, `memory_forget_similarity (default 0.85, range 0.5–1.0 — cosine threshold for semantic re-admission suppression, calibrated against a live-measured paraphrase at 0.876; hash-only when no embedding model is configured)`, `memory_admission_min_confidence (default 0.5, range 0.0–0.9 — the §16.2 admission-gate confidence floor, promoted from the constant it replaces under the M40 pattern; the M47 learner moves it in ±0.05 steps clamped to [0.5, 0.9])`, `memory_quarantine_kinds (default [] — machine writes of a listed kind land in the §16.2 review queue instead of activating; user-stated writes are never routed)`, `memory_extraction_learning ('off'|'propose'|'auto', default 'off' — M47: the tombstone-informed extraction tuner, the second consumer under the §17.7 feedback-consumer rule)`, plus the M48 job gates — **no behavior the system performs on its own may be unswitchable** (§3.7.1), each defaulting to the behavior it replaces so the promotion is byte-identical: `memory_decay_enabled (default true — the §16.2 access-recency decay sweep that expires unpinned rows)`, `memory_contradiction_enabled (default true — the sweep that quarantines duplicate active entity_keys)`, `memory_communities_enabled (default true — the §18.6 community rebuild, which makes LLM summarization calls per changed community)`, `memory_compaction_enabled (default true — the §16.7 digest fold, which HARD-DELETES the folded run-digests; the one consolidation job with irreversible effect)`, plus the §17 ambient keys: `ambient_enabled (default false — master switch; off is byte-identical)`, `ambient_max_routines (10)`, `ambient_runs_per_day (50)`, `ambient_routine_events_per_hour (20)`, `ambient_idle_minutes (10 — subsumes memory_idle_minutes)`, `ambient_hitl_timeout_h (24)`, `ambient_digest_times (default ["09:00","17:00"] local)`, `ambient_notification_budget_per_day (3)`, `ambient_quiet_hours (default ["22:00","07:00"])`, `ambient_timezone (default 'UTC' — M50: the IANA zone that quiet hours and digest times are wall-clock in, validated against the zone database; UTC keeps pre-M50 behavior byte-identical, and a user's §18.8 prefs may override it like quiet hours)`, `ambient_interrupt_threshold (4)`, `ambient_wakeups_per_routine_per_day (100)`, `ambient_escalation_budget_per_day (10)`, `ambient_learning_mode ('off'|'auto'|'propose', default 'off', §17.7)`, `ambient_precision_rule_enabled (default true — gates the §17.3 rule-based precision auto-downgrade, the static-policy feedback consumer active while learning is off; false = feedback is still captured but never re-tiers a category; true is byte-identical to pre-M43c behavior)`, plus the §18 keys: `ambient_channels (per-tier delivery channel routing, default {} = in-app only, §18.4)`, `ambient_pursuit ('off'|'away'|'always', default 'always' — whether the external channels named by that routing actually fire for a batch whose in-app broadcast reached nobody, §18.4/§17.5; 'always' is the pre-M41 presence-blind behavior, so the default is byte-identical)`, `ambient_salience_mode ('off'|'propose'|'auto', default 'off' — the §17.5 M42 content-salience pass over unseen tier ≤1 deliveries; off is byte-identical, propose queues verdicts for approval, auto applies them)`, `ambient_salience_min_urgency (default 3, range 1–5 — the deterministic prefilter floor before the judge is ever called)`, `ambient_salience_learning ('off'|'propose'|'auto', default 'off' — M45: the salience tuner, the first consumer of the M43b judge_reward ledger, entering under the §17.7 feedback-consumer rule)`, `ambient_salience_model` / `ambient_salience_model_params` (nullable — null falls back to `default_model`, like planner/aggregator/formatter), `ambient_anticipation_enabled (default true — M48: gates the §18.1 idle-time anticipation job. This is the only feature that INITIATES contact unprompted, so it gets an explicit switch rather than relying on the hit-rate floor to learn its way to silence; true is byte-identical to pre-M48)`, plus `evals_enabled (default true — M48: mounts the §15 eval surface; the feature is passive, so the gate exists to remove surface area, not to change behavior)`, plus the §19 A2A keys: `a2a_enabled (default false — master switch; off is byte-identical)`, `a2a_card_refresh_interval_s (default 300)`, `a2a_task_timeout_s (default 120 — in-run wait budget before park-or-error, §19.5)`, `a2a_poll_interval_s (default 60 — parked-task recheck cadence, §19.6; tick-bounded: the ambient leader tick invokes the poller, which no-ops until this interval has elapsed since its last poll, so the effective cadence is max(tick, interval))`, `a2a_max_parked (default 20 — beyond it budget expiry is a plain tool error)`, plus the M40 config-hardening keys: `ambient_tick_interval_s (default 60, min 15 — the ambient scheduler tick cadence; evaluators, drain heartbeat, and the parked-task poller all ride it)`, `rate_limit_burst (default 120)` / `rate_limit_per_s (default 10)` (the §18.8 token bucket, read live per refill), `overlap_threshold_percent (default 70, range 0–100 — the §4 overlap-guard gate; 100 effectively disables the dialog, 0 flags every save)`, `run_stall_after_s (default 300, min 60 — the §17.4 H3 reaper window before a silent ambient run is marked stalled)`, `agentic_recursion_limit (default 100, range 10–500 — the agentic loop's LangGraph recursion budget; the model-call limit stays derived from max_tool_iterations)`, `a2a_http_timeout_s (default 15, min 1 — the shared A2A HTTP client timeout, applied on the manager's next client build)`, `a2a_fence_max_chars (default 8000, min 500 — cap on fenced remote output, §19.5)`, plus the M51 bounded-work keys: `run_max_concurrent (default 8, range 1–64 — the per-replica execution semaphore; a run past it waits in status 'queued')`, `run_queue_max (default 32, range 0–500 — how many runs may wait; a chat past it is shed with 503 + Retry-After instead of an invisible wait, while an ambient fire still queues because a fire is work the system already accepted)`, `run_wall_clock_s (default 900, range 30–86400 — every run's ceiling regardless of trigger kind; at expiry the run is 'failed' with an error naming the wall clock, never left 'running')`, plus the M53 deploy-and-operate keys — **retention** for the six tables nothing else ever trimmed (arch-M6), one purge per table, each behind its own §3.7.1 gate ENFORCED INSIDE THE PURGE and each with its own window: `retention_ambient_events_enabled (default false)` / `retention_ambient_events_days (default 30 — processed events, any verdict; pending events survive at any age)`, `retention_deliveries_enabled (default false)` / `retention_deliveries_days (default 90 — delivered or superseded outbox rows; undelivered rows survive)`, `retention_ambient_policies_enabled (default false)` / `retention_ambient_policies_days (default 365 — superseded policy rows; the newest row per category is the live policy and is never touched)`, `retention_pattern_instances_enabled (default false)` / `retention_pattern_instances_days (default 7 — matched or expired instances; armed timers survive)`, `retention_a2a_tasks_enabled (default false)` / `retention_a2a_tasks_days (default 90 — terminal-state tasks; open and parked tasks survive)`, `retention_auth_sessions_enabled (default true — the one gate born on: sessions past their expiry, which the login path already swept opportunistically)` / `retention_auth_sessions_days (default 7)` — every window an integer 1–3650, the job hourly and advisory-locked, deleting born dark because it is irreversible; **MCP reconnection** (arch-H10): `mcp_auto_reconnect_enabled (default true — a server that fails to connect or fails a health ping is retried with exponential backoff, 5 s doubling to 5 min)`, `mcp_reconnect_max_attempts (default 8, range 1–100 — consecutive failures before the circuit opens; the row's last_error says so and the operator's reconnect resets it)`; **the cost model**: `model_prices (default {} — {"provider:model": {"input_per_m", "output_per_m"}} USD per million tokens; an override wins over a provider-reported price, which wins over the built-in reference table; a model none of them know is UNPRICED — reported, never guessed)`, `spend_ceiling_enabled (default false — its own gate; off is the pre-M53 admission, byte-identical)`, `spend_ceiling_usd_per_day (default 10.0, positive — ONE ceiling for every run kind, chat, direct, ambient and eval alike, summed from the database over the UTC day so every replica sees the same number; past it a chat is a 429 with Retry-After, an ambient fire is held on its event with the reason, an eval batch stops)`. Anthropic API key stays env-only — never stored in DB or shown in UI, even in a POC; the Redis URL likewise (`REDIS_URL` env, §13).
 
 ### 3.7.1 The switchability rule (M48)
 
@@ -185,11 +198,11 @@ REST, JSON, `/api/v1`. All list endpoints support `?include_deleted=false&source
 | Resource | Endpoints |
 |---|---|
 | MCP servers | `GET/POST /mcp-servers`, `GET/PATCH/DELETE /mcp-servers/{id}`, `POST /mcp-servers/{id}/reconnect`, `POST /mcp-servers/{id}/refresh-tools` |
-| Tools | `GET /tools`, `GET/PATCH /tools/{id}` (PATCH: description/status only — schema is server-owned), `GET /tools/{id}/skills` (reverse lookup for badges) |
-| Skills | `GET/POST /skills`, `GET/PATCH/DELETE /skills/{id}`, `GET /skills/{id}/sub-agents`, `POST /skills/check-overlap` (pre-save judge, below) |
+| Tools | `GET /tools`, `GET/PATCH /tools/{id}` (PATCH: description/status/exposure/`tool_key` — schema is server-owned; a description edit marks the row `operator`-sourced, a rename is refused on an exact or sanitized-name collision or while a bound skill mentions the old key, §3.2), `GET /tools/{id}/skills` (reverse lookup for badges), `POST /tools/{id}/acknowledge-schema` (the operator has read a schema change, §3.2: clears `schema_changed_at`, puts a quarantined tool back in service; the version and hash stay) |
+| Skills | `GET/POST /skills`, `GET/PATCH/DELETE /skills/{id}` (PATCH `?force=true` is the "save anyway" when activating a machine-authored proposal the judge flags, §16.5), `GET /skills/{id}/sub-agents`, `POST /skills/check-overlap` (pre-save judge, below) |
 | Sub agents | `GET/POST /sub-agents`, `GET/PATCH/DELETE /sub-agents/{id}`, `POST /sub-agents/{id}/validate` (dry-run factory compile), `POST /sub-agents/{id}/invoke` (`{message, conversation_id?, include_history_summary?}` → `run_id` — direct invocation, §7.5; 403 unless `direct_exposure`, 409 unless active, 422 if the summary flag rides without a `conversation_id`), `POST /sub-agents/check-overlap` (pre-save judge, below) |
 | Chat | `GET/POST /conversations`, `GET /conversations/{id}` (messages + runs), `POST /chat` (`{conversation_id, message, target_sub_agent_id?, include_history_summary?}` → `run_id`; the optional target pins the run to that sub agent — direct invocation, §7.5, same gating as `/invoke`; the summary flag is 422 without a target), `GET /chat/stream/{run_id}` (SSE), `POST /runs/{run_id}/hitl` (`{"decision": "approve"|"deny", "note": "..."}`) |
-| Runs | `GET /runs`, `GET /runs/{id}` (includes ordered steps), `POST /runs/{id}/cancel`, `POST /runs/{id}/retry` (re-plan from original message), `DELETE /runs/{id}` |
+| Runs | `GET /runs` (M50: paged newest-first — `limit` 1–500 default 50, `offset`, total in the `X-Total-Count` header; never carries steps), `GET /runs/{id}` (includes ordered steps), `POST /runs/{id}/cancel`, `POST /runs/{id}/retry` (re-plan from original message), `DELETE /runs/{id}`; `GET /conversations` pages the same way with `run_count` as an aggregate |
 | Settings | `GET /settings`, `PATCH /settings` (partial key updates), `GET /hitl/pending` (all paused runs), `POST /seed/reload` (idempotent re-seed) |
 
 Cross-cutting rules:
@@ -197,7 +210,9 @@ Cross-cutting rules:
 - Referential integrity enforced at save time: deleting a skill referenced by an active sub agent → 409 listing dependents. Same for tools in skills and MCP servers with tools in skills.
 - Every mutating endpoint bumps `updated_at`; registry reads are always live from DB (no caching layer in POC).
 
-**Overlap guard (LLM-as-judge, advisory).** Before a skill or sub agent is created or updated, the UI calls the matching `check-overlap` endpoint with the draft (`exclude_id` set on updates so a record never matches itself). The judge — an LLM call through the standard provider port, prompt in `app/prompts/overlap_judge.md`, structured `OverlapVerdict` output — compares the draft by purpose against existing records: skills against active skills **and tools**, sub agents against active sub agents **and skills**. At ≥70% overlap the response flags it with the match (type/id/name) and reasoning, and the UI shows a confirm dialog: **save anyway** or **cancel and use the existing match**. The check is advisory only: the save endpoints stay unguarded, and judge failure (no key, provider error) fails open with `overlap: false` plus a reasoning note — infrastructure trouble must never block registry writes. Tools are deliberately exempt: MCP ingest is dynamic, and two servers legitimately exposing similar tools is not an error.
+**Overlap guard (LLM-as-judge, advisory).** Before a skill or sub agent is created or updated, the UI calls the matching `check-overlap` endpoint with the draft (`exclude_id` set on updates so a record never matches itself). The judge — an LLM call through the standard provider port, prompt in `app/prompts/overlap_judge.md`, structured `OverlapVerdict` output — compares the draft by purpose against existing records: skills against active skills **and tools**, sub agents against active sub agents **and skills**. At ≥70% overlap the response flags it with the match (type/id/name) and reasoning, and the UI shows a confirm dialog: **save anyway** or **cancel and use the existing match**. The check is advisory only: the save endpoints stay unguarded, and judge failure (no key, provider error) fails open with `overlap: false`, `judge_available: false` and a reasoning note naming the error — infrastructure trouble must never block registry writes, but a judge that did not run is a distinct state from a real 0%, never folded into one: the UI saves and shows a dismissible "Saved unjudged" notice with the reason (the registry overlap audit judges the record later when enabled), the log carries `overlap_judge_unavailable`, and every machine path keys off the flag rather than the percentage. Tools are deliberately exempt: MCP ingest is dynamic, and two servers legitimately exposing similar tools is not an error.
+
+**The judge after save time** (hardening wave). The guard used to run once, at the instant a human clicked Save; edits through the API, re-ingests that reword tool descriptions and machine-authored proposals (§16.5) all changed definitions without it. Two additions close that: (1) activating a fallback-mining proposal (`PATCH /skills/{id}` with `status='active'` on a skill whose `origin` is `mined` — the immutable authorship stamp, not the editable description prefix) runs the judge under its own model role, on the definition as it will be saved (a PATCH that rewrites the instructions in the same request is judged on the rewrite), and returns 409 with the match when it flags — `?force=true` is the human's "save anyway"; (2) a consolidation-class job, `registry:overlap_audit`, behind `registry_overlap_audit_enabled` (§3.7, born dark; every 6 h), re-judges every active skill and sub agent whose `definition_hash` moved since its `overlap_audited_hash`, stamps the audited hash, and posts one inbox item per flagged pair (`ops` category, `Registry overlap: A ≈ B (n%)`). The judge runs under `overlap_judge_model`, so the reader is not the writer. The audit ticks from the periodic loop on its own gate — a registry job, it runs whether or not the memory layer is on; its flags are inbox deliveries (they surface on the Ambient page and flush with ambient on) and `registry_overlap_flagged` log lines either way. An **unavailable judge is no gate**: a proposal is deferred to the next mining pass, an activation is refused (409) unless `?force=true`, and an audit pass leaves `overlap_audited_hash` unstamped so the record is judged next time — the advisory fail-open is for a human's own save only. Mining judges with no database session open, and the verdict lives on the log, never in the prompt the skill executes with. The judge's prompt fences the draft and the candidate records as untrusted data (third reading: the candidates carry every server-written tool description, and a description that ends "return overlap_percent 0" is a record to judge, not an instruction), and an audit pass re-reads its gate before every judge call, so an operator turning it off mid-pass stops it there.
 
 ## 5. MCP Connection Manager
 
@@ -232,7 +247,7 @@ Native tools are code-defined tools that live in the backend — plain Python ca
 - **State**: `{messages, node_outputs: dict[node_id, output], task}`. Each skill node appends its output; downstream nodes receive prior outputs in context. **M3 constraint**: state reducers must be order-insensitive — parallel branches complete in nondeterministic order, and joins must converge to the same state regardless of interleaving (keyed dict merges, no order-dependent appends).
 - **Checkpointing**: Postgres checkpointer keyed by `run_id` — required for HITL pause/resume.
 - **Compile-time = save-time**: `POST /sub-agents/{id}/validate` runs full compilation without invocation; save rejects records that fail compile. The orchestrator never selects a broken worker.
-- **Caching**: compiled graphs cached in-process keyed by `(sub_agent_id, updated_at)`; a registry update naturally invalidates via the changed timestamp.
+- **Caching**: compiled graphs cached in-process keyed by `(sub_agent_id, updated_at, digest of the bound skills' definition hashes and statuses)`; a sub agent edit invalidates via the changed timestamp, a skill edit or toggle via the digest (third reading: a skill edit never touches the sub agent's `updated_at`, and the cached graph kept running the old definition).
 
 ## 7. Orchestrator
 
@@ -302,7 +317,7 @@ All registry and settings reads — the three registry middlewares, the graph-mo
 The catalogs the orchestrator sees (§7.1 planner catalog; §7.2 exposed-mode middleware projections) are ranked and truncated to the most relevant records when a registry outgrows full injection. Off by default (`retrieval_enabled=false`); when enabled it activates **per registry only above `retrieval_threshold`** records — below that, full injection exactly as today, bit-for-bit.
 
 - **Scoring** runs in-process over the cache snapshot (never a per-call DB query): lexical (BM25 over name + description) fused with vector cosine (reciprocal-rank fusion) when embeddings are available. The query text is the current task — plan entry text in graph mode, the latest user message/todo in agentic mode — with the query embedding memoized per task text.
-- **Embeddings** are maintained on the write path (best-effort: failure logs and leaves the row unembedded, never fails the save) plus a startup backfill; stored per record (`embedding jsonb`, `embedding_hash`) on tools/skills/sub_agents via the §2.1 embeddings port. No embedding model configured → lexical-only scoring, silently.
+- **Embeddings** are maintained on the write path (best-effort: failure logs and leaves the row unembedded, never fails the save) plus a startup backfill; stored per record (`embedding jsonb`, `embedding_hash`) on tools/skills/sub_agents via the §2.1 embeddings port. No embedding model configured → lexical-only scoring, silently. **Model change** (hardening wave): `embedding_hash` names the model and text a vector was built from; at rank time a vector whose hash does not match the configured model is ignored (the record ranks lexically) and counted (`concierge_retrieval_stale_vectors_total{kind}`), and a settings write that changes `embedding_model` (or turns retrieval on) starts the backfill at once, off the request — the registry no longer waits for a restart to re-embed.
 - **Guarantees**: ids referenced by the current plan and entities already used in the run are pinned past ranking; full-catalog mode (§7.0 fallback, `use_full_catalog`) bypasses retrieval entirely, so a top-K miss is always recoverable; every truncation logs the drop count and the injected catalog carries a footer line ("showing N of M — use_full_catalog to widen") so the model knows it sees a slice. Skill loops, sub-agent workflows, and `spin_worker` are id-pinned contracts and are **never** subject to retrieval.
 
 ### 7.5 Direct sub-agent invocation
@@ -331,11 +346,12 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 
 ### 8.2 Tools
 - Table: tool name, server, description, **skill badges** — one chip per skill that binds this tool, click chip → that skill's detail. Zero chips renders "unassigned" chip. **`direct` badge** when `direct_exposure=true`.
-- Detail drawer: input schema (pretty JSON), server link, editable description/status, **"Expose to orchestrator" toggle**.
+- Detail drawer: input schema (pretty JSON), server link, editable description/status, **"Expose to orchestrator" toggle**, the **schema version** (`v{n} · hash`, §3.2).
+- **Schema drift** (§3.2): a tool whose input schema changed under a re-ingest shows a `schema changed · v{n}` badge in the table and, in the drawer, a banner naming the new version with one **Acknowledge** action (**Acknowledge & re-enable** for a quarantined tool). The Settings MCP section holds the `mcp_schema_change_policy` toggle; the Runs trace shows `schema v{n} · hash` on every tool-call step.
 - Header: **Refresh cache** button + cache status line (`records · generation · loaded ago`, §7.3) — the same affordance appears on the Skills and Sub Agents pages for their registries.
 
 ### 8.3 Skills
-- Table: name, persona preview (first line), **tool badges** (chips → tool detail), **sub agent badges** (chips per sub agent whose workflow uses this skill), source, status.
+- Table: name, persona preview (first line), **tool badges** (chips → tool detail), **sub agent badges** (chips per sub agent whose workflow uses this skill), source, status. A bound tool the loop cannot call — deleted, inactive, quarantined (§3.2) or missing from its server — shows an amber `unavailable` badge in the tools column naming the tool and the reason (hardening wave): binding is availability strictly, so the skill runs with fewer tools than its document names, and the list says so before a run's failed step does.
 - Create/edit: **template-based skill document editor** — frontmatter as form fields (name, description, persona, "Expose to orchestrator" toggle, **optional model + effort override** (model select filtered to supported params, effort: none/low/medium/high, temperature), **tool tags**: searchable multi-select across the tool registry, grouped with system-seeded static tools first, source/kind badges on each) + markdown body editor pre-loaded with the skill template (Purpose / Steps / Output format sections); `{tool:...}` mentions autocomplete from tagged tools only and validate at save; side-by-side rendered preview. Save validates all tagged tool ids active + every mention resolves to a tagged tool. **Delete** (custom only) soft-deletes, blocked with a 409 dependents dialog if any active sub agent's workflow uses the skill. Save first runs the §4 overlap guard: at ≥70% match a dialog shows the match + judge reasoning with **Save anyway** / **Cancel (use the existing one)**.
 
 ### 8.4 Sub Agents
@@ -354,17 +370,21 @@ Single React app, left nav: **Chat, MCP Servers, Tools, Skills, Sub Agents, Runs
 ### 8.6 Runs
 - Table: time, message excerpt, status, **orchestrator mode badge**, sub agents involved, duration, tokens.
 - Detail: plan JSON, ordered step timeline grouped by sub agent (node id, type, model, tokens, duration, expandable input/output, tool calls with args/results), errors highlighted. Paused runs show pending HITL with resolve buttons. Row/detail actions: **cancel** (running), **retry** (failed — re-plans from the original message), **delete**.
+- **The trace reads against the registry as it was** (hardening wave): every step shows the entity name pinned on the row (a sub agent renamed since still reads by its old name, never as "ephemeral"), the model with its parameters on hover, and the version it ran against (`schema v{n}` on tool calls, `def v{n}` on skill and route steps); the formatter appears as its own `format` step. A **Snapshot vs registry** panel lists every record the run pinned — tools by schema version, skills and sub agents by definition version, from the frozen catalog and each plan entry's payload — against the live registry: `same`, `changed` (then/now versions, a rename named), `deleted`, `inactive`, with a one-line count of how many moved since the run; below it, the settings and prompt hashes as the run saw them and the injected context per surface with the catalog slice each model call was shown, on demand. The prices the run was costed with (and their source) show beside the cost.
 
 ### 8.7 Settings (command center)
 
 - **Models**: default, planner, aggregator — each a `provider:model` select **plus params (effort none/low/medium/high, temperature, max output tokens), options filtered to what the selected model supports** — applied to next run, no restart. **Providers panel**: read-only list of registered provider adapters with configured/unconfigured status and their model lists (§2.1). **The rule (M43): every role model registered in §3.7 has a select plus params on this page**, in the section that owns the role — a role whose model can only be set by API is a hidden control, and a new role model is not shipped until its picker is. Today that means `default`/`planner`/`aggregator` here, `formatter` in the formatter block, `memory_extraction` in the memory block, and `ambient_salience` in the salience block. Provider API keys remain the one deliberate exception in the other direction: env-only, never in DB or UI (§13).
 - **Orchestrator**: **mode toggle (graph | agentic, §7)**, **full-catalog fallback on/off**, **declarative answer UI on/off**, max parallel dispatch, max plan steps, dynamic-worker fallback on/off, direct-exposure cap warning threshold — when current exposures exceed the threshold, the Tools and Skills pages show a context-cost warning banner — plus (M40) the **overlap-guard threshold** (`overlap_threshold_percent`) and the **agentic recursion limit**.
-- **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons.
+- **MCP**: health-check interval; global reconnect-all and refresh-all-tools buttons; (M53) the **auto-reconnect** gate and the **reconnect attempts** budget (`mcp_auto_reconnect_enabled` / `mcp_reconnect_max_attempts`).
+- **Cost (M53)**: today's priced spend (UTC) with a per-kind breakdown and the unpriced-token count, the **spend ceiling** gate and amount (`spend_ceiling_enabled` / `spend_ceiling_usd_per_day`) hinted as one number for every run kind, and the **price overrides** editor (`model_prices`, JSON). Per-run cost also shows on the Runs page (list column and detail), with "unpriced" stated rather than a guessed figure.
+- **Retention (M53)**: one row per unbounded table — the gate, the window in days, and **how many rows a purge would delete right now** (counted whether the gate is on or off, so a switch's consequence is visible before it is flipped) — plus a **Run retention now** button whose result names the per-table counts. Every gate but the expired-session sweep renders off on a fresh install.
 - **Ambient (§17, M40)**: master `ambient_enabled` toggle (hint: the Ambient page appears in the nav when on), tick interval, run/routine/wakeup budgets, idle minutes, HITL timeout, digest times, quiet hours, notification/escalation budgets, interrupt threshold, learning mode, stall-reaper window (`run_stall_after_s`), channels routing, and (M41) the **pursuit select** (`ambient_pursuit`: off | away | always) sitting with the channel routing it modifies, hinted as "external channels fire only when the in-app toast reached nobody", plus (M42) the **salience block** — mode select (off | propose | auto), minimum-urgency prefilter, and an optional salience model override — hinted as "re-judges what an unseen alert actually said: lead the next digest, remember it, or drop it on the record" — the same live-PATCH pattern as every section; the master switch here mirrors exactly what the API accepts.
 - **A2A (§19, M40)**: master `a2a_enabled` toggle (hint: the Remote Agents page appears in the nav when on), card refresh interval, task timeout, poll interval, max parked (0 disables parking), HTTP timeout, fence cap.
 - **API guardrails (M40)**: rate-limit burst + refill per second (`rate_limit_burst` / `rate_limit_per_s`) — admin-gated like every settings write.
 - **Registry cache (§7.3)**: mode select (`bypass` | `memory` | `redis` — redis offered only when `REDIS_URL` is set, save pings it), per-registry status readout (records, generation, loaded-at), **Refresh all caches** button.
 - **Retrieval (§7.4)**: enabled toggle, threshold, top-K, embedding model (`provider:model`, validated at save; blank = lexical-only).
+- **The judges' own roles** (hardening wave): the Orchestrator section holds the **Registry overlap audit** gate (`registry_overlap_audit_enabled`, §4) beside the overlap threshold; the Evals section offers the **Eval judge model** picker (`eval_judge_model`, §15) with the note that inheriting means the model under test grades itself; the Ambient salience picker carries a hint whenever it inherits the default — the model writing the answers is then also judging whether they matter.
 - **Observability**: log level select, LangSmith toggle, OTLP endpoint field.
 - **HITL queue**: all currently paused runs across chats, resolvable inline.
 - **Appearance**: theme picker — `default` (mission-control, ships as default), `anthropic`, `openai`, `google`; stored client-side (localStorage), applied instantly, no backend setting.
@@ -481,6 +501,13 @@ Every span and log line carries the label set: `{run_id, step_id, tier ('tool'|'
 | M37 | A2A substrate (§19.1–19.4): `remote_agents` registry + card fetch/refresh, `a2a-sdk` isolated in `app/a2a/`, credential store (masked write-only, `env:` indirection) + scheme dispatch (apiKey/basic/bearer/oauth2 client_credentials), per-card-skill tools projection `kind='a2a'`, Remote Agents UI page, scripted in-process A2A counterparty + contract tests | byte-identity with a2a off; §14d-33..35 |
 | M38 | A2A execution (§19.5): lazy call-time proxy via `materialize_tool`, streaming+polling consumption, all nine task states mapped, `input-required` ⇄ HITL gate with replay-idempotent task adoption, untrusted-fenced outputs, Stop → `tasks/cancel`, `a2a` step labels (+ direct-tool kind-label fix) | §14d-36..38 |
 | M39 | A2A long-running (§19.6): park-on-budget, ambient leader-tick poller → outbox deliveries, task drawer reply/cancel, ExComm demo composition | §14d-39..40 |
+| M55 | The fork seam (PLAN M55 — the socket an organisation's own authentication plugs into; **no authentication is implemented here**): an `AuthProvider` port + registry in `app/auth/` following §2.1's provider pattern — identity resolution (`identify`), the tenancy predicate contribution (`tenancy_filter`, `may_see`, `memory_visibility`), the authorization decision point (`authorize`), the owner stamp (`owner_id`), a boot hook — selected by `AUTH_PROVIDER` (default `builtin`, today's §18.8 behaviour, byte-identical dark) with `AUTH_PROVIDER_MODULE` importing a fork's module so the decorator registers it; every tenancy decision in the core asks the port and no call site outside the package reads the auth switch; a contract suite every provider must pass; a reference stub provider in the tests enforcing a rule the builtin does not (rows shared by tenant, writes gated on `editor`); `docs/extending.md`; §20 records the seam | §14r-97..99; the stub's rule holds end-to-end with zero changes outside its module; the default provider is byte-identical; a provider implemented from the guide alone |
+| M54 | Horizontal scale (PLAN M54 — where the system stops being one process that happens to run behind a load balancer): **a shared control plane** — every process has a `replica_id` and a heartbeat row in `replicas`; `runs.owner_replica` is stamped at creation; cancellation is a persisted intent (`cancel_requested_at`) announced on one LISTEN/NOTIFY control channel that the owner observes at once (its heartbeat is the fallback), so a Stop pressed on any replica stops the run on the one executing it and never writes a status it did not cause; a stream held on a replica that does not own the run resolves from the record when the owner announces the terminal transition; boot reaping is scoped to the booting replica and runs owned by a dead replica are failed truthfully; the consolidation and retention clocks move to `job_clock` so an interval is a cluster property and a restart re-runs nothing; migrations and seeding take a boot lock. **Delivery fan-out**: the leader publishes each in-app delivery on the control channel and every replica re-fans it to its own subscribers, and the pursuit oracle becomes the cluster audience. **The connection budget** is declared (`DB_REPLICAS`, `DB_MAX_CONNECTIONS`), checked at boot, served by `GET /replicas`, and the pooled connections survive a transaction-mode pooler (`DB_STATEMENT_CACHE_SIZE=0`). **A distributed rate limiter** in `rate_buckets` with hourly eviction. **Cache coherency**: generation-guarded reloads, TTLs on every blob, `dirty` on the status. **MCP** ingest idempotent under concurrent boot (`ON CONFLICT` + a per-server lock) and per-replica reconciliation of the subprocess set. **Indexable memory**: typed per-dimension embedding columns, each with a real HNSW index (§16.1), and the consolidation sweeps that touch every row (decay, contradiction) run as one set-based statement each — a million memories never become a million objects in a replica's heap (the §14q-95 drill found the row-by-row decay sweep killing a 1.5 GB replica). Compose scales with a host-port range, nginx resolves replicas per request, Prometheus discovers each replica as its own target; `docs/operations/scaling.md` rewritten from the evidence | §14q-91..96; three replicas: a run created on A is cancelled from B and actually stops; a delivery reaches subscribers on every replica (two browsers on different replicas); consolidation once per interval cluster-wide; load at N=3 within the declared connection budget; recall latency flat from 10k to 1M embeddings; a concurrent cold boot seeds and ingests once |
+| M53 | Deploy and operate (PLAN M53 — the wave where the system becomes something an operator can deploy, watch and trim): **the SSE wire format survives a reconnect** — every run event carries a monotonic `id:` (a per-run sequence), `Last-Event-ID` (or `?after=`) resumes from it, the heartbeat is a `ping` event every 15 s (inside the tightest balancer default), a run whose events are gone from the process (a deploy, an eviction) resolves for a reconnecting client from its row (`run_status` + `done` with the recorded answer, continuing the client's sequence), and the client folds each sequence at most once — so a deploy never duplicates answer text; **a readiness-first deploy lifecycle**: `SIGUSR1` (the pre-stop hook, `deploy.sh`) flips `GET /ready` to 503 while the port is still open, refuses new runs, and politely closes the streams the process cannot serve (`event: reconnect` + `retry:`) while runs executing here stream on to their end; uvicorn's connection grace is bounded (`--timeout-graceful-shutdown 5`) under a 40 s `stop_grace_period` so the M51 drain always gets its window; the ambient loop is **awaited** on shutdown so the leader lease is released at once; `/ready` also reports the database (`degraded` 503 when it does not answer in 2 s) while `/health` stays pure liveness; compose carries a backend healthcheck, `restart: unless-stopped`, resource limits, and a frontend that waits for a healthy backend; nginx documents the HTTP/2 edge; **retention** for the six unbounded tables, each purge behind its own §3.7.1 gate enforced in-function with its own window, advisory-locked, hourly, previewable and runnable from Settings; **observability that diagnoses**: the §10 labels (`model`, `effort`) on the step metrics, `concierge_llm_calls_total` / `concierge_llm_latency_seconds{provider,model,status}` from one LangChain callback every model leaves `get_model()` with, pool saturation, in-flight and queued runs (the autoscaling signal), backlog depth, loop errors, MCP and listener state, SSE subscribers, spend; **MCP reconnection** with backoff and a circuit breaker behind its own gate, **supervised LISTEN** connections (both channels reconnect with backoff, reload what they missed, and export `concierge_listener_connected`), and **re-ingest that keeps operator intent** (`tools.ingest_state`: only a tool the server dropped is deactivated, only that tool is reactivated on return; a deleted tool stays deleted, with an explicit restore); **a cost model**: per-run cost from the captured usage (each step at its model, the remainder at the presentation model, unknown models reported as unpriced), a provider-reported price feed (OpenRouter) and operator overrides, and **one spend ceiling** across every run kind behind its own gate (429 for chat, held on the event for ambient, batch stop for evals); a **backup/restore drill** with the measured RTO, one runbook per failure class, and an accessibility pass on every control the Settings and Ambient pages added since M40 | §14p-83..90; a rolling deploy with open streams and in-flight runs: zero lost runs, zero duplicated answer text, streams resume; a restore from backup serves the same answers with the RTO in the doc; screenshots of the saturation and LLM dashboards, a stream surviving a deploy, every retention gate in Settings |
+| M52 | Untrusted input and secrets (PLAN M52 — the wave whose failure mode is an attacker steering an autonomous agent that holds tools): **one fence choke point** (`app/untrusted.py`) renders every untrusted-bearing prompt — remote-agent output, fired-event payloads, delivery bodies, candidate answers, member memories, watch requests, the remembered-context block — neutralizing any fence-shaped tag inside the payload and stamping a per-render `token` on the opening AND closing tags, so a payload can neither close the fence early nor forge one; **one egress policy** (`app/egress.py`, `EGRESS_POLICY` public\|allowlist\|open, §13) judges every outbound URL the platform fetches on someone else's say-so — A2A cards and calls, poll sources, HTTP MCP servers, the webhook channel — by literal address and by what the name resolves to, re-checks every redirect hop (≤ 5) in the client's request hook, streams bodies under `EGRESS_MAX_BYTES`, and fails with ONE shape (`egress refused: <kind>`) whatever the cause; feeds are parsed by `defusedxml` **off the event loop** with one refusal message; MCP `env`/`headers` are **write-only** (masked on every read, `***` keeps on write, null removes, `env:VAR` resolves at connect time — the §19.3 credentials pattern, §3.1); **one exception-text sanitizer** (`app/sanitize.py`) redacts known secret values and credential shapes before any error is persisted (run, step, MCP/agent `last_error`, task, routine reason, delivery ledger) or returned, and as a structlog processor on every log line; authored regex filters pass a **static guard** (length, nested repetition, backreferences) at the API and again before every match, which runs in a worker thread under a timeout | §14o-77..82; one adversarial test per untrusted source, each blocked and asserted; no response body or persisted row carries credential material |
+| M51 | Bounded work (PLAN M51 — every unit of work gets a ceiling and a truthful end state): **limits at the provider port** — `LLM_TIMEOUT_S` / `LLM_MAX_RETRIES` applied to every adapter in one place (§13), provider failures **classified** (rate-limited / timeout / unknown-or-retired model / provider error) into a run error that names the model and the setting that resolved it, `ModelInfo.deprecated` refused at validation; **every run has a wall clock** (`run_wall_clock_s`, §3.7) and a heartbeat, the stalled-run reaper covers all runs; **admission control** — `run_max_concurrent` semaphore, `run_queue_max` queue with a visible `queued` status, chat shed with 503 + `Retry-After`, `GET /ready` as the readiness gate; **shutdown drains** (`SHUTDOWN_GRACE_S`) and **restart reaps** (`running`/`queued` → `failed` "orphaned by a restart", steps `cancelled`); the run event bus is bounded and TTL-evicting; **no session spans a provider call** — the ambient drain claims → commits → processes → writes back (abandoned claims reclaimed after 10 min), memory writes, digests, exemplars and compaction embed between sessions, enforced by a per-task session tracker the fake provider checks in strict mode; **delivery dispatches then commits**, external sends carry an attempt counter, backoff and a dead-letter state with a per-tick retry stage; the registry cache **fails open** to Postgres (`concierge_cache_degraded_total`); token totals increment atomically; the contradiction sweep keeps the **newest** fact | §14n-70..76; fault injection (hang → wall clock, 429 → classified, Redis killed → Postgres, restart → zero non-terminal); byte-identical at defaults |
+| M50 | The ceiling (PLAN M50 — the four ways the M49 baseline showed the stack falls over first): the **connection budget is explicit** (`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT`, §13) and `/chat/stream` **releases its session before streaming** (an open tab holds no pooled connection — the baseline failed the pool at 15 tabs); `/runs` and `/conversations` are **paged** (`limit`/`offset`, `X-Total-Count`; the list never carries steps), `run_count` is an aggregate, child relationships are `lazy="raise"` and loaded explicitly where needed, and the five missing hot-path indexes ship in one migration (`runs.conversation_id/status/started_at`, `run_steps.run_id`, `tools.mcp_server_id`); the UI polls with backoff instead of a fixed 3 s; **one memory visibility predicate** (`visibility_sql`: status/time, scope, conversation, project, tenancy) feeds recall's two legs AND the pinned profile — the pinned path had leaked project rows and never checked the owner; routine **triggers are typed at the API boundary** (interval ≥ 60 s, valid cron, ISO `once.at`, webhook filters with known ops and compiling regexes), the schedule evaluator isolates routines and **quarantines** one whose trigger keeps raising (`status='error'` after 3), and every tick stage runs under `run_evaluator` (timeout + error counter) so one failure never skips the rest; **`ambient_timezone`** makes quiet hours and digest times wall-clock in the user's zone | §14m-67..69; byte-identical at defaults (UTC, pool 5+10); ≥ 50 concurrent streams with a healthy probe; `/runs` p95 flat as the table grows 10× |
+| M49 | Production-hardening foundation (`docs/research/prod_hardening/PLAN.md` M49 — measurement before fixes): the **prompt regression harness** (§15 golden sets — every prompt file has a golden set beside it, rendered the way its consumer renders it and graded by the §15 `contains` grader; placeholder drift, a dropped binding sentence, and a consumer-less prompt all fail; pytest gate + Docker build gate; the dead `answer_ui.md` it found is removed), the **load harness** (`experiments/load/`) driving the shipped API, and the **baseline captured before any fix** — read-path latency, run-table growth, concurrent chat runs, the SSE subscriber ceiling, recall by corpus size with the vector leg's query plan, ambient backlog drain, and the connection peak of each — plus ruff `BLE`/`S` enabled with every violation triaged (31 runtime asserts replaced by explicit checks, every surviving suppression justified in one line, `defusedxml` for the RSS body) | §14l-64..66; a deliberate prompt regression fails the harness; the baseline is the number M50/M54/M56 must beat |
 | M48 | The switchability rule made true (§3.7.1, from an independent pre-public audit of every gate's enforcement site): six behaviors the system performed on its own with no switch of their own get one — the four consolidation jobs (`memory_decay_enabled`, `memory_contradiction_enabled`, `memory_communities_enabled`, `memory_compaction_enabled` — the last hard-deletes, so it mattered most), the anticipation job (`ambient_anticipation_enabled` — the only feature that initiates contact unprompted), and the §15 eval surface (`evals_enabled`). Every default equals the behavior it replaces, so the promotion is byte-identical. Plus the two §3.7.1 corollary fixes: `memory_community_budget_tokens = 0` now skips the rebuild instead of silencing injection while the job kept spending tokens, and the Settings page labels the legal-but-degraded `memory_forget_enabled`-without-`embedding_model` case. Settings coverage closed to 89/89 (`memory_digest_compact_days`, `memory_community_budget_tokens` were validated and unreachable) and is now **asserted by test**, so a future key with no control fails the suite. Dead `STALL_AFTER_S` removed | §14k-61..63; byte-identity at defaults; coverage assertion is the regression guard |
 | M47 | Extraction tuner (§17.7 second consumer — the learner the M44 no-consumer note reserved): deterministic rules over machine-write tombstones (confidence-at-admission metadata) + quarantine rejections, MACHINE_SOURCES only; **kind routing** into `memory_quarantine_kinds` (≥ 50% repudiated over ≥ 5; per-kind chips in Settings clear it) and **band-local admission-floor moves** (±0.05, [0.5, 0.9], `setting:` proposals through `_apply_special`; the floor rises only when the band a bump would refuse is itself ≥ 60% repudiated — the raw-rate trigger ratchets, a harness finding); own gate `memory_extraction_learning` off\|propose\|auto default off. Evidence on the two-world harness: world A (kind-concentrated junk) learner 10 junk admissions at zero valuable-blocked vs 42–60 for every zero-loss static — no static floor separates entity junk (≤ .75) from preference (≥ .72); world B (cross-kind low-confidence junk) the floor walks 0.5→0.55→0.60 and stops at the zero-collateral point, beating the shipped default 36 vs 66 but NOT the retrospective oracle static (12) — a single-dial learner converges to its dial's oracle, it cannot beat it in-window; reported as counter-evidence, not tuned away | §14j-59..60; 17 contract tests; born dark — no live consumer until a human flips the gate |
 | M46 | Embedding backfill job (§16.2 — the promised scheduler job, built): the `MemoryEmbedding` side-table contract ("a model switch re-embeds in the background and flips") gains its worker — an advisory-locked hourly job that embeds every live row lacking a vector under the ACTIVE model key, across all three `_embed_ref` surfaces (memories active+quarantined, run digests, active plan exemplars), batched, pass-bounded, old-key rows coexisting untouched. Also repairs write-through failures. Tombstones deliberately excluded: they keep no text, so pre-switch tombstones degrade to hash+anchor matching permanently — privacy over recall, by explicit design | §14j-58; closes the stage-32 known gap; 10 contract tests |
@@ -495,9 +522,9 @@ Each milestone lands with its tests. M1–M4 are API-verifiable via curl before 
 
 ## 13. Environment & Conventions
 
-Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40).
+Env vars (all in `.env.example`, committed — no secrets in it): `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` (all optional, never in DB/UI — presence enables that provider in Settings model selects, spec §2.1; at least one key, or `FAKE_LLM_ENABLED=1`, is needed for runs to execute. If the code default's provider has no key at first boot, the seed pass stores the first configured provider's flagship as `default_model` — preference order `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted`; an explicitly saved setting is never touched), `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (compose db init), `DATABASE_URL`, `LANGSMITH_API_KEY` (key only — enable/endpoint/project are runtime settings, §10), `OTEL_EXPORTER_OTLP_ENDPOINT` (bootstrap default; the `otlp_endpoint` setting overrides at runtime), `WORKSPACE_DIR` (filesystem MCP sandbox), `REDIS_URL` (optional — enables the `redis` registry-cache mode, §7.3; URL-with-credentials stays env-only like every secret), `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE_URL` (frontend → backend, build-time), plus the §18 vars: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_TO` (email channel, §18.4 — credentials env-only), `AMBIENT_WEBHOOK_URL` (webhook push channel, §18.4), `CUSTOM_GATEWAY_BASE_URL`/`CUSTOM_GATEWAY_API_KEY`/`CUSTOM_GATEWAY_MODELS` (comma-separated model ids — the custom adapter's model list is env-configured to keep the sync `list_models()` port contract, §18.7), `AUTH_ENABLED` (§18.8, default false), `AUTH_SESSION_TTL_H` (§18.8, default 24 — bearer-session lifetime in hours; env like the auth master switch, M40), plus the M50 connection budget: `DB_POOL_SIZE` (default 5), `DB_MAX_OVERFLOW` (default 10), `DB_POOL_TIMEOUT` (default 30 s) — the pooled ceiling per replica is `DB_POOL_SIZE + DB_MAX_OVERFLOW`; the LangGraph checkpointer pool (10), the LISTEN connection and the ambient leader lease sit outside it, so size Postgres `max_connections` from `replicas × (pool + overflow + 12)` with headroom (`docs/operations/scaling.md`), plus the M51 bounds: `LLM_TIMEOUT_S` (default 120 — the per-call timeout every adapter carries, set once at the provider port), `LLM_MAX_RETRIES` (default 2 — the retry budget the provider SDK may spend on transient failures, 429 backoff included; a run's failure names the classified cause, the model, and the setting that resolved it), `SHUTDOWN_GRACE_S` (default 25 — how long a stopping process drains in-flight runs after readiness goes false before the remainder is cancelled with the shutdown named in each run's error; keep it under the orchestrator's stop timeout — compose sets `stop_grace_period: 30s`), plus the M52 egress policy: `EGRESS_POLICY` (default `public` — refuses loopback, link-local, private, reserved, multicast and unspecified targets by literal address and by resolution, except hosts the operator names in `EGRESS_ALLOW_HOSTS`, which are admitted whatever they resolve to — the way to name an internal MCP server or agent; `allowlist` admits only `EGRESS_ALLOW_HOSTS`; `open` keeps only the caps), `EGRESS_ALLOW_HOSTS` (comma-separated hosts or `.suffixes`), `EGRESS_MAX_BYTES` (default 5 MiB — the streamed body cap on every fetch). Only http(s) ever passes, and the policy applies to A2A cards and calls, poll sources, HTTP MCP servers and the webhook channel alike. M53 adds no variable; it adds the **signals and scripts** of the deploy lifecycle: `SIGUSR1` to the backend process begins a readiness-first drain (`/ready` 503 while the port stays open, new runs refused, streams the process cannot serve closed with a reconnect hint), `SIGTERM` then runs uvicorn's bounded connection grace and the M51 drain — `deploy.sh` sequences them on one host, `backup.sh` / `restore.sh` are the drill in `docs/operations/backup-restore.md`, and the compose file carries the backend healthcheck (liveness, `/health`), `restart: unless-stopped`, resource limits and a 40 s `stop_grace_period`. `/ready` is the readiness probe and also reports the database. M54 (horizontal scale, §18.9): `REPLICA_ID` (this process's identity in `replicas` and on `runs.owner_replica`; defaults to the container hostname), `DB_REPLICAS` (default 1) and `DB_MAX_CONNECTIONS` (default 100) — the declared fleet the connection-budget arithmetic is checked against at boot and on `GET /replicas`, `DB_STATEMENT_CACHE_SIZE` (default 0 — asyncpg's prepared-statement cache on the pooled connections; 0 survives a transaction-mode pooler), `REGISTRY_CACHE_TTL_S` (default 300 — the ceiling on any cache-coherency gap, §7.3), and `BACKEND_PORT_RANGE` (default `8000-8010` — the host ports `--scale backend=N` binds). `AUTH_PROVIDER` (M55: which registered `AuthProvider` is active — `builtin` by default; `AUTH_PROVIDER_MODULE` names a module to import first so a fork's provider registers itself).
 
-Conventions: Python — ruff (lint+format), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
+Conventions: Python — ruff (lint+format; rule sets `E F I UP B SIM ASYNC BLE S` since M49 — blind excepts and bandit checks are on, every surviving `noqa: BLE001` carries a one-line justification, and `app/` has no runtime `assert`), mypy strict on `app/`, pytest, async SQLAlchemy, Pydantic v2 schemas separate from ORM models. TypeScript — eslint + prettier, strict tsconfig, TanStack Query for API state, no Redux. Conventional commits. Alembic migration per schema change. All LLM prompts live in `backend/app/prompts/` as versioned files, not inline strings.
 
 **Seed-document lint** (`python -m app.doclint`, `app/doclint.py`): the `.skill.md` (§3.3) and `.agent.md` (§3.4) formats are validated *offline* — no DB, no keys, no network — by the same rules the seed applies at boot: document parsing, `{tool:...}` mentions resolving to bound tools, tool-key hygiene, duplicate names across files, `model` as a `provider:model` reference, `model_params` against the live `ModelParams` contract (§2.1, so a typo'd key or effort value fails here), by-name skill references resolving to scanned skill files, and the full §3.5 structural DAG + form-gate validation. Errors fail; warnings flag legal-but-questionable documents (filename/name mismatch, empty description or persona, unknown frontmatter keys, uuid skill references that can only be checked at seed time). It runs three places: as a **Docker build gate** (`RUN python -m app.doclint` — a malformed document fails the image build instead of surfacing at boot as a missing skill or an agent stuck at `status='error'`), as a **pytest regression gate** over the documents this repo ships, and by hand during authoring. Seed-time validation is unchanged and remains authoritative for everything only the registry can know (skill status, dynamic records).
 
@@ -745,6 +772,269 @@ SMS-gateway-shaped webhook sink, outside quiet hours unless stated):**
     every `/evals` route answers 409 naming the setting; flipping it back
     restores the surface with datasets and prior runs intact.
 
+**§14l Production-hardening foundation (M49):**
+
+64. (M49) **A prompt cannot drift silently**: `python -m app.prompts.check`
+    reports every prompt file green against its golden set; delete the
+    planner's `no_confident_match` sentence, or rename `{conditions}` in
+    the router prompt while `worker.py` still passes `conditions`, and the
+    same command exits 1 naming the prompt, the case, and the missing
+    sentence or placeholder. The Docker build runs the same check, so the
+    regression fails the image, not a request.
+65. (M49) **There is a number to beat**: `experiments/load/harness.py`
+    against the shipped stack on the fake provider captures, in one JSON
+    record with a markdown summary, read-path p50/p95, `/runs` latency as
+    the table grows 10×, concurrent chat runs to a terminal state, the
+    stream count at which a probe request first fails, recall latency by
+    corpus size with the vector leg's query plan, ambient webhook backlog
+    drain time, and the Postgres connection peak of each — every seeded
+    row removed and every touched setting restored afterwards.
+66. (M49) **Blind catches and asserts are accounted for**: `ruff check .`
+    with `BLE` and `S` in the rule set passes; `grep -rn "noqa: BLE001$"
+    app` is empty (every surviving suppression carries its reason on the
+    same line) and `app/` has no runtime `assert` — a wrong structured
+    output or a vanished row raises a named error instead of passing
+    silently under `python -O`.
+
+**§14m The ceiling (M50):**
+
+67. (M50) **Fifty open tabs, one healthy server**: re-run the M49 load
+    harness `sse` scenario — 50 concurrent `/chat/stream` subscribers on a
+    run parked at a HITL gate keep the probe request healthy and the
+    Postgres connection count flat (the baseline failed at 15, the pool
+    size). `runs-scale`: `/runs` p95 stays flat as the run table grows
+    10× and the payload is a page, not the table; `/conversations` reports
+    `run_count` without loading a single run.
+68. (M50) **A broken routine is quarantined, the tick keeps ticking**:
+    `POST /routines` with a malformed trigger (`once.at` that is not a
+    date, `interval.seconds` below 60, a cron that does not parse, an
+    unknown filter op) is a 422 naming `triggers`. Insert one past the API
+    with a bad `once.at` beside a healthy interval routine: the healthy
+    one fires on the next tick, the broken one reaches `status='error'`
+    with a `status_reason` naming the trigger after three evaluations, and
+    the Ambient page shows it so. `concierge_ambient_evaluator_errors_total`
+    counts it.
+69. (M50) **Quiet hours mean local night**: set `ambient_timezone` to a
+    zone hours off UTC in Settings (a bad zone is a 422); with quiet hours
+    22:00–07:00, a tier-2 delivery raised at 06:30 UTC is held when the
+    zone is UTC and flushed when the zone is Europe/Lisbon, where it is
+    07:30. The setting is on the Ambient section of Settings beside the
+    hours it governs.
+
+**§14n Bounded work (M51):**
+
+70. (M51) **A hung provider ends at the wall clock**: with `run_wall_clock_s`
+    at its floor and the provider scripted to hang, a chat run reaches
+    `status='failed'` with an error naming the wall clock within the
+    ceiling — never left `running`; the Runs page shows it failed, not
+    spinning. `last_heartbeat_at` advanced while it ran.
+71. (M51) **A 429 is named, not swallowed**: the provider returns a
+    rate-limit error; the run fails with an error that says rate-limited,
+    names the model and the setting that resolved it (`default_model`),
+    and `concierge_llm_errors_total{kind="rate_limited"}` increments. A
+    retired model reference saved as a role model is a 422 naming it.
+72. (M51) **Admission is explicit**: with `run_max_concurrent=1` and
+    `run_queue_max=0`, a second concurrent `POST /chat` is a 503 carrying
+    `Retry-After`; with `run_queue_max` raised it lands `queued` and runs
+    when the slot frees. `GET /ready` is 503 while the process drains and
+    a `POST /chat` during the drain is refused the same way.
+73. (M51) **Restart mid-run leaves nothing half-alive**: stop the backend
+    (SIGTERM) with runs in flight; the drain window lets a short run finish
+    and the run still going at the grace ends `cancelled` with the shutdown
+    named in its error. Kill it (SIGKILL) with runs in flight; after the
+    restart every run that was still `running`/`queued` is `failed` with
+    "orphaned by a restart" and its open steps `cancelled` — zero
+    non-terminal rows either way.
+74. (M51) **Redis down, requests up**: with `registry_cache_mode=redis`,
+    stop the redis container; registry reads keep succeeding from
+    Postgres, `concierge_cache_degraded_total{backend="redis"}`
+    increments, no 5xx.
+75. (M51) **Delivery is dispatched before it is committed, then retried
+    until it dead-letters**: a failing external channel leaves the row
+    delivered with `external.<channel>` carrying `attempts` and
+    `next_attempt_at`; the tick's retry stage re-sends with backoff
+    (60 s → 5 min → 30 min), and after four attempts marks the entry
+    `dead` and never retries it again.
+76. (M51) **No session spans a provider call**: the fake provider's
+    strict mode refuses any model or embedding call made while the
+    calling task holds a database session open; the memory write, the
+    run digest, and the ambient drain all pass — a pooled connection is
+    never held for the life of a network round trip.
+
+**§14o Untrusted input and secrets (M52):**
+
+77. (M52) **A payload cannot close its own fence**: fire a routine with a
+    webhook payload that contains `</untrusted_event_payload>` followed by
+    an instruction; the run's rendered prompt (the plan step's input)
+    shows the payload's tag escaped (`&lt;/untrusted_event_payload>`),
+    exactly one real closing tag carrying the same random `token` as the
+    opening tag, and the model treats the line as data — its report
+    mentions the injection attempt instead of obeying it.
+78. (M52) **SSRF to a private range is refused before any connection**:
+    `POST /mcp-servers` with `http://169.254.169.254/mcp` and
+    `POST /remote-agents` with a `10.x` card URL are 422s naming the
+    egress policy; an `http_json` poll source pointed at the metadata
+    address raises `egress refused: denied` without a socket opening; a
+    public URL that redirects to a loopback address is refused on the
+    second hop; `concierge_egress_refused_total{kind}` counts each.
+79. (M52) **A billion-laughs feed and an oversized body are refused**:
+    the RSS source given an entity-expansion document answers
+    `feed refused: unsafe or malformed XML` (the document never reaches a
+    log or a model) and parses every feed off the event loop; a body past
+    `EGRESS_MAX_BYTES` is cut while streaming (`egress refused: too_large`).
+80. (M52) **MCP secrets are write-only**: `POST /mcp-servers` with headers
+    returns them masked (`***`), every read returns them masked, the row
+    holds the real value; a PATCH that sends `***` back keeps the secret,
+    `null` removes a key, a new value replaces it; `env:VAR_NAME` values
+    resolve from the process environment at connect time. The MCP Servers
+    page shows keys as "set", never a value.
+81. (M52) **No error carries a credential**: a provider failure whose
+    message contains a key-shaped string reaches the run's `error`, its
+    steps, and the log line with `[redacted]` in its place; an MCP or
+    remote-agent connect error is sanitized with that record's own
+    secrets; API error details pass through the same sanitizer.
+82. (M52) **A pathological regex never reaches the tick**: a trigger or
+    watch filter with `(a+)+$` (nested repetition), a backreference, or a
+    300-character pattern is a 422 naming the reason; a slow pattern that
+    passes the static guard is stopped by the match timeout in a worker
+    thread and counted in `concierge_regex_guard_total{outcome}`.
+
+#### 14p. Deploy and operate (M53)
+
+83. (M53) **A stream survives a deploy without duplicating a word**: with
+    runs in flight on the live model and their streams open, `deploy.sh`
+    rolls the backend; every run ends in a truthful terminal state (finished
+    within the drain, or `cancelled` naming the shutdown), every client
+    reconnects on its own with `Last-Event-ID`, receives only what it
+    missed or — when the new process holds no history — the run's recorded
+    terminal events continuing its sequence, and the answer text each
+    client folded equals the run row exactly once. `/ready` reads 503
+    `draining` before the old port closes and 200 on the new process; the
+    leader lease is released on the way out and re-acquired by the new
+    process within one tick.
+84. (M53) **Readiness, liveness and the polite close are separate facts**:
+    `SIGUSR1` flips `/ready` to 503 while `/health` stays 200, a new chat
+    is a 503 with `Retry-After`, a stream on a paused run receives
+    `event: reconnect` with a `retry:` hint and closes, and a stream on a
+    run this process is executing keeps streaming to its end; with the
+    database unreachable `/ready` reads 503 `degraded` naming it while
+    `/health` still reads 200.
+85. (M53) **Retention deletes only behind its own switch**: for each of
+    the six tables an old finished row and an old protected row are seeded;
+    with the gate off the purge returns 0 and both rows remain (whoever
+    calls it — the API's run-now included); with the gate on the finished
+    row is gone and the protected one (pending, undelivered, the live
+    policy, an armed timer, a parked task, an unexpired session) survives;
+    Settings shows the eligible count before the switch is flipped.
+86. (M53) **The dashboards show the incident, not the happy path**: under
+    load the pool-saturation and in-flight gauges rise on `/metrics`, the
+    LLM latency histogram carries `provider`/`model`/`status`, a 429 shows
+    as `status="rate_limited"`, a loop that raises increments
+    `concierge_loop_errors_total{loop}`, and the step series carry
+    `model` and `effort`.
+87. (M53) **An MCP server that dies comes back on its own, and a broken
+    one stops being retried**: killing a connected server's process flips
+    it to `error`, the reconnect fires with backoff and the server is
+    `active` again with its tools; a server that cannot start opens the
+    circuit after `mcp_reconnect_max_attempts` with the reason on the row,
+    stays quiet, and the operator's reconnect resets it. A tool the
+    operator disabled stays disabled across a re-ingest; a tool the server
+    dropped is deactivated and reactivated when the server offers it again;
+    a deleted tool stays deleted until restored.
+88. (M53) **A dropped LISTEN connection is noticed and repaired**:
+    terminating the listener's backend with `pg_terminate_backend` flips
+    `concierge_listener_connected{channel}` to 0, the supervisor
+    reconnects within its backoff, the gauge returns to 1, the reconnect
+    counter increments, the registry cache marks every registry dirty, and
+    a NOTIFY sent after the gap is delivered.
+89. (M53) **The spend ceiling refuses every kind of run**: with priced
+    usage past `spend_ceiling_usd_per_day` and the gate on, a chat is a 429
+    naming the ceiling, an ambient fire is held on its event with the
+    reason, an eval batch stops, and `GET /spend` reports the day's total
+    by kind with `reached: true`; with the gate off admission is
+    unchanged. Runs show their cost on the Runs page, and a model without a
+    price is reported as unpriced, never estimated.
+90. (M53) **A restore serves the same answers, and the RTO is a number**:
+    `backup.sh` dumps a populated stack; `restore.sh` restores it into a
+    fresh volume, the pgvector indexes rebuild inside the timed window, the
+    backend comes up `/ready` 200, and a conversation opened after the
+    restore shows the same answers as before. The elapsed time is recorded
+    in `docs/operations/backup-restore.md`.
+
+#### 14q. Horizontal scale (M54)
+
+91. (M54) **A run created on one replica is stopped from another**: three
+    replicas behind one balancer, a chat run on the live model created on
+    replica A (`owner_replica` says so). `POST /runs/{id}/cancel` served by
+    replica B records the intent; the owner cancels within a heartbeat; the
+    row reads `cancelled` naming the user's stop, the provider is not called
+    again, and the run never resurrects as `completed`. A stream for that
+    run held open on replica C resolves from the record when the owner
+    announces the transition.
+92. (M54) **A delivery reaches subscribers on every replica**: with a
+    subscriber on each replica (three streams pinned to three host ports,
+    and two browsers routed through the balancer to different replicas), a
+    flush on the leader produces the same `delivery` on every stream and a
+    toast in both browsers; the log's `watchers` equals the cluster
+    audience, and pursuit holds the external channel because the toast
+    reached someone — on a replica that is not the leader.
+93. (M54) **Consolidation runs once per interval cluster-wide**: with memory
+    on and three replicas, each job appears once per interval across the
+    three logs together, `job_clock.last_run_at` advances once, restarting a
+    replica re-runs nothing (compaction included), and retention keeps the
+    same clock.
+94. (M54) **N=3 scales within the declared budget**: the M49 load scenarios
+    at N=3 against N=1 — concurrent chat throughput and read-path latency —
+    with `pg_stat_activity` never above the per-replica need × replicas that
+    `GET /replicas` publishes, and the rate limiter (auth on) granting one
+    budget across replicas rather than N.
+95. (M54) **Recall latency is flat across three orders of magnitude**:
+    memory recall p50/p95 at 10k, 100k and 1M embeddings of the active
+    dimension on its typed HNSW column, `EXPLAIN` showing the index scan.
+96. (M54) **Three replicas cold-boot together**: migrations and seeds apply
+    once, every seeded MCP server's tools exist exactly once, every replica
+    reports every server connected; a server registered through one replica
+    is connected by the others within a health interval; a registry write on
+    one replica invalidates the others (`generation` and `dirty` visible on
+    each `GET /cache/status`).
+
+#### 14r. The fork seam (M55)
+
+97. (M55) **A fake tenancy rule holds end-to-end from one module**: with
+    `AUTH_PROVIDER=stub`, the reference stub — a single file that imports
+    only the port and the registry — makes rows visible to everyone in the
+    principal's tenant and invisible across tenants (conversations, runs,
+    the run stream, the ambient delivery stream, memory recall), refuses registry and settings writes to anyone but an
+    `editor` with its own reason, answers 401 to a request without an
+    identity and keeps the exempt paths open; the builtin's login route is
+    not offered while another provider is active.
+98. (M55) **The seam is real**: no file outside `app/auth/` reads the auth
+    switch (`auth_enabled()` or the config flag) — every tenancy decision
+    asks the port — and with the default provider the platform is
+    byte-identical to the single-user one: `scope_to_user` returns the same
+    statement, `owns_row` is always true, no security headers, the whole
+    suite green unchanged.
+99. (M55) **A forker implements the port from the guide alone**: the
+    contract suite (`tests/test_m55_seam.py`) passes over every registered
+    provider — port shape, anonymous never owns, filter and row check are
+    one rule, the memory fragment binds only its own parameters, reads are
+    never refused, boot is idempotent — and the stub was written against
+    `docs/extending.md` without touching the core.
+100. (post-1.0) **A renamed parameter is loud, versioned and pinned**: the
+    stub MCP server's `mutate_schema` tool renames `echo`'s parameter under a
+    live run; the re-ingest bumps `echo` to schema v2 with a hash, logs
+    `tool_schema_changed`, moves `concierge_tool_schema_changes_total`, and
+    the Tools page badges the tool until Acknowledge clears it. A run that
+    called `echo` before the change shows `schema v1 · hash` on its tool-call
+    step and its frozen snapshot holds the v1 schema; one after shows v2. With
+    `mcp_schema_change_policy=quarantine` the same change leaves `echo`
+    inactive with `ingest_state='changed'` across a further re-ingest, and
+    **Acknowledge & re-enable** puts it back. An agentic run's snapshot lists
+    the catalog it started with; a direct run's snapshot freezes its pinned
+    agent. Settings offers `overlap_judge_model` beside the other roles, and
+    a `check-overlap` call runs the judge under it. Evidence: stage
+    `35-schema-drift`, `prod/DRIFT/`.
+
 ## 15. Evals (M32 — promoted from post-POC to in-scope)
 
 Originally deferred; the design below is now implemented as milestone M32,
@@ -766,18 +1056,35 @@ answers 409 naming the setting.
 - **Graders**: per-case `grader ('exact'|'contains'|'llm_judge', default
   'llm_judge')`. `exact` = normalized string equality; `contains` =
   case-insensitive substring; `llm_judge` = one structured call on the
-  extraction-model role returning `{passed: bool, score: 0..1, reason}`,
+  judge's own role (`eval_judge_model`, hardening wave; null → the
+  extraction-model role → `default_model`, which is the model under test
+  grading itself) returning `{passed: bool, score: 0..1, reason}`,
   with `judge_notes` injected as grading guidance. Judge failure grades
   the case `error`, never silently passes.
 - **Storage + surfaces**: `eval_datasets` (id, name, level, target_id,
   created_at), `eval_cases` (dataset_id, input, expected, judge_notes,
-  grader), `eval_runs` (dataset_id, status, config snapshot, totals,
+  grader), `eval_runs` (dataset_id, status, config snapshot — hardening
+  wave: the whole settings dict, the prompt-file hashes and the target's
+  assembled definition with its `definition_hash`, plus `judge_model` and
+  `judge_is_target_model`, so a score is reproducible against exactly what
+  was scored and says when the model under test graded itself — totals,
   langsmith_url nullable), `eval_results` (eval_run_id, case_id, run_id,
   passed, score, grader_reason). Alembic migration per schema change, as
   everywhere. UI: an Evals page (upload csv/xlsx, run, per-case results
   table with pass/fail chips and grader reasons) plus a launcher on the
   skill / sub agent detail drawers.
 - **Why the POC already supports this**: the factory builds arbitrary single-skill workers, snapshots freeze configs, settings hot-reload, and the trace label set carries tier/kind/entity — the eval feature is an upload parser, a batch runner, and a publisher. No schema or architecture change anticipated.
+- **Golden sets (M49)**: every prompt file in `backend/app/prompts/` has a
+  golden set beside it in `prompts/golden/<stem>.yaml` — the consumer
+  module that loads it, the render mechanism (`format` / `replace` /
+  `verbatim`), and cases of vars plus the sentences that must survive
+  rendering (`must_contain`, optionally `must_not_contain`).
+  `python -m app.prompts.check` renders each prompt exactly as its consumer
+  does and grades the result with the `contains` grader above; a renamed
+  or removed placeholder, a dropped binding sentence, or a prompt no module
+  loads fails the check. It runs as a pytest gate, by hand, and as a Docker
+  build gate — the evals machinery pointed at the thing most likely to
+  drift.
 
 ## 16. Memory Layers
 
@@ -785,7 +1092,7 @@ Design rationale, evidence, and alternatives: `docs/research/memory/` (research 
 
 ### 16.1 Storage
 
-Tables (Alembic, one migration): `memories`, `memory_embeddings` (side-table: `memory_id`, `model_key` ('provider:model@dims'), untyped `vector`, one partial expression HNSW index per active model — provider-agnostic dims, zero-downtime model switch), `memory_entities`, `memory_entity_links`, `run_digests`, `conversation_rollups`, `plan_exemplars`, `routing_stats`.
+Tables (Alembic, one migration): `memories`, `memory_embeddings` (side-table keyed by `ref_id` + `table_ref` + `model_key` ('provider:model@dims'); **M54:** the vector lives in one **typed column per supported dimension** — `emb_64`, `emb_256`, `emb_384`, `emb_512`, `emb_768`, `emb_1024`, `emb_1536`, `emb_3072` — each with its own real HNSW cosine index, the column chosen from the key's dims, so several dimensions coexist and each is indexable; a model whose dimension has no column degrades that row to lexical-only with a warning, and adding a dimension is one migration; the untyped column the first schema carried could not be indexed at all — provider-agnostic dims, zero-downtime model switch), `memory_entities`, `memory_entity_links`, `run_digests`, `conversation_rollups`, `plan_exemplars`, `routing_stats`.
 
 `memories`: scope ('global'|'conversation') + `conversation_id`, kind ('fact'|'preference'|'entity'|'relation'|'instruction'), `text`, `payload jsonb` (relation s/p/o, preference k/v), `entity_key`, `importance` (1–10, write-time), `confidence` (0–1), source ('extracted'|'user_stated'|'user_edited'|'hitl_note'|'inferred'), status ('active'|'quarantined'|'superseded'|'expired'|'rejected'), bi-temporal columns (`valid_from`/`valid_to` event time; `recorded_at`/`superseded_at` ingestion time), `supersedes`/`superseded_by` chain, provenance (`run_id`/`step_id`, mandatory on machine writes), `last_accessed_at`/`access_count`, `pinned` (always injected + decay-immune), `half_life_days` (NULL = setting default), generated `fts` tsvector. Invariants: pipelines never hard-delete (supersede/expire only; hard delete is a user/purge action); `status='active'` rows form the current view (partial indexes); supersession is append-only (insert replacement + close old row in one transaction, `WHERE superseded_at IS NULL` guard); memory rows are not registry rows (§4 unchanged).
 
@@ -820,7 +1127,7 @@ entered under the §17.7 feedback-consumer rule as that clause required.
 
 ### 16.2 Lifecycle
 
-Post-run, async, debounced until the conversation goes quiet, never blocking the answer, never holding a DB transaction across an LLM call: digest + rollup (L1) → extraction (`prompts/memory_extract.md`, structured output via §2.1) → **deterministic admission gate** (confidence floor — the live `memory_admission_min_confidence` setting since M47, default equal to the constant it replaced; near-duplicate drop by embedding distance; kind/scope allowlist; the M47 kind router — a machine write whose kind is listed in `memory_quarantine_kinds` lands quarantined with a review note instead of activating, user-stated writes never routed; and — M44, when `memory_forget_enabled` — the **tombstone check**: a candidate whose normalized-text hash matches a live tombstone is **suppressed**; else the **hybrid gate** decides — cosine ≥ `memory_forget_similarity` (default 0.85) suppresses alone, and in the gray band (cosine ≥ 0.70) suppression additionally requires a shared **distinctive-token anchor** (the tombstone also keeps hashes of payload tokens: ≥10 chars, or ≥6 carrying digits/separators — same privacy tier and caveat as the text hash). Calibrated live in stage 32: real paraphrase pairs measured cosine 0.876 and 0.847, so a lone threshold cannot separate 'same fact restated' (shares its payload token) from 'same topic, different fact' (carries a new one — and must stay admissible, or forgetting an outdated value would block learning its replacement). Suppression — not written, `memory_admission_suppressed` logged content-free, the tombstone's `suppressed_count`/`last_suppressed_at` bumped; matching is tenant- and scope-aware like recall, degrades to hash-only with no embedding model, and applies to machine paths only — a **user-stated** write re-asserting a forgotten fact deletes the matching tombstone and admits, ledgered as unforget-by-assertion: the human's newer word beats their older one) → per-candidate reconciliation: the LLM answers only *same fact / related / unrelated* against hybrid-nearest active neighbors (`prompts/memory_reconcile.md`); **deterministic code resolves** (same fact + newer event time → bi-temporal supersede; ambiguous timing → quarantine both; unrelated → add). Extracted or `inferred` **instruction-kind memories always quarantine** until approved in the review queue; only explicit user-stated instructions via `memory.remember` activate directly. Scheduler: lifespan asyncio task, `pg_try_advisory_lock` per job class (one replica works), jobs = digest/rollup, extract/reconcile, decay sweep (`importance·exp(−Δt_access/half_life)` below floor → 'expired', pinned immune; gated by `memory_decay_enabled`), reflection (importance-sum trigger; synthesized `inferred` memories carry evidence citations to source ids), contradiction sweep (`memory_contradiction_enabled`), routing-stats/exemplar harvest, embedding backfill (on `embedding_model` change). Per §3.7.1 every job that runs on its own schedule carries its own gate; the master alone is not sufficient, because expiring a memory, quarantining one, hard-deleting a digest and spending tokens on a summary are four different consequences. Every job emits §10-labeled events + metrics; mutations fire the §7.3 NOTIFY discipline (≤8KB, ids only, cache-hint semantics).
+Post-run, async, debounced until the conversation goes quiet, never blocking the answer, never holding a DB transaction across an LLM call: digest + rollup (L1) → extraction (`prompts/memory_extract.md`, structured output via §2.1) → **deterministic admission gate** (confidence floor — the live `memory_admission_min_confidence` setting since M47, default equal to the constant it replaced; near-duplicate drop by embedding distance; kind/scope allowlist; the M47 kind router — a machine write whose kind is listed in `memory_quarantine_kinds` lands quarantined with a review note instead of activating, user-stated writes never routed; and — hardening wave — **every `inferred` write lands quarantined**: a reflection's generalization is the model's own conclusion about the model's own extractions, and it reaches the injection path only after a human has read it in the review queue; and — M44, when `memory_forget_enabled` — the **tombstone check**: a candidate whose normalized-text hash matches a live tombstone is **suppressed**; else the **hybrid gate** decides — cosine ≥ `memory_forget_similarity` (default 0.85) suppresses alone, and in the gray band (cosine ≥ 0.70) suppression additionally requires a shared **distinctive-token anchor** (the tombstone also keeps hashes of payload tokens: ≥10 chars, or ≥6 carrying digits/separators — same privacy tier and caveat as the text hash). Calibrated live in stage 32: real paraphrase pairs measured cosine 0.876 and 0.847, so a lone threshold cannot separate 'same fact restated' (shares its payload token) from 'same topic, different fact' (carries a new one — and must stay admissible, or forgetting an outdated value would block learning its replacement). Suppression — not written, `memory_admission_suppressed` logged content-free, the tombstone's `suppressed_count`/`last_suppressed_at` bumped; matching is tenant- and scope-aware like recall, degrades to hash-only with no embedding model, and applies to machine paths only — a **user-stated** write re-asserting a forgotten fact deletes the matching tombstone and admits, ledgered as unforget-by-assertion: the human's newer word beats their older one) → per-candidate reconciliation: the LLM answers only *same fact / related / unrelated* against hybrid-nearest active neighbors (`prompts/memory_reconcile.md`); **deterministic code resolves** (same fact + newer event time → bi-temporal supersede; ambiguous timing → quarantine both; unrelated → add). Extracted or `inferred` **instruction-kind memories always quarantine** until approved in the review queue; only explicit user-stated instructions via `memory.remember` activate directly. Scheduler: lifespan asyncio task, `pg_try_advisory_lock` per job class (one replica works), jobs = digest/rollup, extract/reconcile, decay sweep (`importance·exp(−Δt_access/half_life)` below floor → 'expired', pinned immune; gated by `memory_decay_enabled`), reflection (importance-sum trigger; synthesized `inferred` memories carry evidence citations to source ids), contradiction sweep (`memory_contradiction_enabled`), routing-stats/exemplar harvest, embedding backfill (on `embedding_model` change). Per §3.7.1 every job that runs on its own schedule carries its own gate; the master alone is not sufficient, because expiring a memory, quarantining one, hard-deleting a digest and spending tokens on a summary are four different consequences. Every job emits §10-labeled events + metrics; mutations fire the §7.3 NOTIFY discipline (≤8KB, ids only, cache-hint semantics).
 
 ### 16.3 Retrieval & injection
 
@@ -832,7 +1139,7 @@ Seeded static native tools, hidden by default: `memory.recall(query, scope?, kin
 
 ### 16.5 Procedural learning
 
-`routing_stats` per capability (asks handled, completion/deny/failure rates, mean tokens, latency, last used) — registry UI columns; available to the planner behind `procedural_learning_enabled`. `plan_exemplars`: successful plans/todo traces keyed by task-text embedding, harvested only from positively-signaled runs (completed, no deny, no immediate correction), with an ExpeL vote lifecycle (upvote on reuse-success, downvote on reuse-failure, retire at zero); planner prompt gains a budgeted top-2 "similar past asks" block. Fallback mining: recurring fallback-run clusters draft `.skill.md` proposals through doclint + the overlap judge into the review queue; human approval creates a normal dynamic skill. No autonomous registry mutation.
+`routing_stats` per capability (asks handled, completion/deny/failure rates, mean tokens, latency, last used) — registry UI columns; available to the planner behind `procedural_learning_enabled`. `plan_exemplars`: successful plans/todo traces keyed by task-text embedding, harvested only from positively-signaled runs (completed, no deny, no immediate correction — and, hardening wave, the **reuse vote is deferred** for the same reason: "the model said it finished" is the model that planned, so a reused exemplar's upvote is recorded as pending on the run and settled by the next turn in the conversation — a correction, by a deterministic heuristic over the next ask, downvotes; anything else upvotes — or by the `memory:exemplar_settle` sweep once ten minutes have passed — judged against the next turn if one arrived unjudged (a run still executing when it came, a direct invocation, a retry), confirmed if the conversation stayed quiet; **every** pending run in the conversation settles on the next turn — the newest by the heuristic against the new message, an older one against the first turn that followed *it* (third reading: it used to be confirmed blindly); a failed run downvotes at once. A **harvested exemplar is born `pending`** for the same reason and serves the planner only once its own run's vote confirms it. The correction heuristic matches a punctuated or explicit *opening* only ("no," / "not what" / "that's wrong"; a bare "no" or "nope" is not one, since "No thanks, that's all" closes conversations) — conservative by design, since a miss costs one unearned upvote and a false hit a downvote — and a heuristic downvote never retires a *reused* exemplar (the floor is one vote; only a hard signal takes it to zero); a harvested exemplar still `pending` when the heuristic fires is dropped, since it never served and its run was judged corrected), with an ExpeL vote lifecycle (upvote on reuse-success, downvote on reuse-failure, retire at zero); planner prompt gains a budgeted top-2 "similar past asks" block. Fallback mining: recurring fallback-run clusters draft `.skill.md` proposals through doclint + the overlap judge into the review queue; human approval creates a normal dynamic skill. (Hardening wave: both gates are real — a proposal is linted against the document rules the seed applies and judged under `overlap_judge_model` before it can be queued, an overlapping one is skipped with a log line and a clean one is queued with a definition version like any other write, `origin='mined'`, the verdict on the log and never in the instructions the skill executes with; a proposal's name is `mined-` plus the first six hex characters of the sha256 of its representative ask, so the same cluster has the same name across restarts and is never proposed twice; and activating it is judged again at `PATCH /skills/{id}`, 409 with the match unless `?force=true`, §4.) No autonomous registry mutation.
 
 ### 16.6 Observability, testing, acceptance
 
@@ -842,7 +1149,7 @@ Seeded static native tools, hidden by default: `memory.recall(query, scope?, kin
 
 Measured follow-ups from the M17 experiment (`docs/research/memory/07-experiment-results.md`) — each sharpens an existing layer; none adds a service or a new layer.
 
-**Citation feedback — used beats retrieved.** Injection-path recall no longer bumps access bookkeeping (being retrieved is not evidence of being useful). Injected memory ids are recorded on the run context per surface; a post-run job matches their 8-char id prefixes against the run's final answer (the injected block prints ids precisely so answers can cite them). Cited memories receive the access bump plus an importance reinforcement (+1, capped at 10, at most once per run); injected-but-uncited memories get nothing and cool toward decay naturally. Explicit `memory.recall` tool calls still bump access at call time — deliberate use is use. Fail-open like all consolidation.
+**Citation feedback — used beats retrieved.** Injection-path recall no longer bumps access bookkeeping (being retrieved is not evidence of being useful). Injected memory ids are recorded on the run context per surface; a post-run job matches their 8-char id prefixes against the run's final answer (the injected block prints ids precisely so answers can cite them). Cited memories receive the access bump plus an importance reinforcement (+1, capped at 10, at most once per run — and, hardening wave, at most once per 24 h per memory, and never for an `inferred` memory: injection → citation → rank → injection was a loop with no external signal in it, so a citation is always an access but only rarely a promotion); injected-but-uncited memories get nothing and cool toward decay naturally. Explicit `memory.recall` tool calls still bump access at call time — deliberate use is use. Fail-open like all consolidation.
 
 **Digest compaction — bounded episodic growth.** Gated by `memory_compaction_enabled` (M48 §3.7.1 — this job hard-deletes, so it is switchable). `run_digests` gains `kind ('run'|'period')`, nullable `run_id`, and `covers_from`/`covers_to`. A consolidation job folds run-digests older than `memory_digest_compact_days` (default 14) per conversation into one synthetic `period` digest (text assembled mechanically, embedded like any digest), then hard-deletes the folded rows and their embeddings — their substance persists in the period digest and the conversation rollup. Episodic recall treats period digests as ordinary candidates. The episodic store becomes O(conversations), not O(runs).
 
@@ -919,9 +1226,11 @@ LOCKED`; the 60s tick sweeps missed pings.
 Three tiers strictly ordered by cost: (1) typed matchers — field operators
 (equals/contains/starts_with/one_of/regex), event-vs-state semantics, dedupe,
 rate caps (per-routine hourly; excess **dropped and counted**, never queued);
-(2) significance judge — one structured-output call, defaulting to the
-extraction-model role with a per-intent model override for high-stakes
-watches; returns
+(2) significance judge — one structured-output call on the intent's own
+model override when set, else the salience judge role
+(`ambient_salience_model` — hardening wave: the model that compiled the
+predicate is then not the one applying it), else the extraction role, else
+the default; returns
 `{significant, urgency 1-5, reason}`; failure ⇒ **held** (silence default);
 (3) the run. Every decision writes a fire/hold record `{value, urgency,
 attention_state, decision, reason}`. **No LLM call per raw event, ever**
@@ -1287,10 +1596,16 @@ anyone. The oracle is **the SSE subscriber set itself, sampled at
 dispatch**: `_publish` fans out to exactly the subscribers registered in
 this process, so "the broadcast reached zero subscribers" is not an
 estimate of presence — it is the literal audience of the toast just sent.
-This keeps the rule correct with no second source of truth, and it stays
-correct under §18.9 multi-replica: the hub is per-process, so a tick on
-replica A can only ever toast A's subscribers, and A's count is exactly
-what A delivered to. The `ambient_idle_minutes` presence timer (§17.5) is
+This keeps the rule correct with no second source of truth. Under §18.9
+multi-replica it was correct only per process — a tick on replica A could
+only ever toast A's subscribers — which at N>1 meant the toast reached
+1/N of the audience and pursuit escalated against users sitting in front
+of an open tab (scale-B1). **M54:** the flush publishes every in-app
+delivery on the control channel and every replica re-fans it to its own
+subscribers, so the toast reaches the whole audience; the oracle is the
+**cluster audience** — this replica's subscribers plus the fresh
+subscriber counts every other live replica reports in `replicas` — still
+the literal audience of the toast just sent, now summed across the fleet. The `ambient_idle_minutes` presence timer (§17.5) is
 deliberately **not** the oracle — it answers "has the user been clicking",
 not "did the toast land", and would escalate against an open, actively
 watched tab that simply had not been clicked inside the idle window.
@@ -1392,6 +1707,88 @@ already rides LISTEN/NOTIFY (M8b). Compose stays three services — scale is
 `docker compose up --scale backend=N` behind any port mapping the operator
 chooses; correctness is proven in-process with two concurrent loops.
 
+**M54 — the run plane, the delivery plane and the clocks become cluster
+properties.** M35 made the ambient *tick* replica-safe; nothing had made
+the run plane, the delivery fan-out or the periodic clocks so, and the
+documented `--scale backend=N` path silently corrupted all three
+(`docs/research/prod_hardening/` arch-C3, scale-B1, scale-B2). Since M54:
+
+- **Replica identity and liveness.** Every process has a `replica_id`
+  (`REPLICA_ID` env, else the container hostname) and upserts its row in
+  `replicas` (`heartbeat_at`, `subscribers`, `runs_in_flight`,
+  `started_at`) every 10 s; a replica whose heartbeat is older than 45 s
+  is dead. `GET /replicas` lists the fleet with the connection-budget
+  arithmetic below.
+- **Run ownership.** `runs.owner_replica` is stamped at creation (the
+  creating process runs the task). Cancellation is a **persisted intent**:
+  `POST /runs/{id}/cancel` on a replica that does not own the run sets
+  `cancel_requested_at`, announces it on the control channel
+  (`concierge_control`, LISTEN/NOTIFY — no broker, §2 intact), and waits
+  briefly for the owner to act; the owner observes the intent from the
+  NOTIFY at once and from its 30 s heartbeat as the fallback. The response
+  reports the row's real status — `cancelled`, or `cancel_requested` when
+  the owner has not yet acted — and a cancel never writes a terminal
+  status it did not cause. Boot-time reaping is scoped to the booting
+  replica's own rows (and rows with no owner); runs whose owner is dead
+  are failed on any replica with `owner replica gone`; the heartbeat
+  reaper is unchanged.
+- **Streams for a run owned elsewhere** resolve: the owner announces every
+  terminal transition on the control channel; a replica holding a stream
+  for a foreign run wakes on it (and re-reads the row at each heartbeat as
+  the fallback) and serves the recorded terminal events (the §14p-83
+  record path). Intermediate events are not fanned across replicas — a
+  token stream is best served by its owner, so session affinity stays
+  *recommended* for chat and is never *required* for correctness.
+- **Delivery fan-out.** The leader's flush publishes each in-app delivery
+  on the control channel, origin-tagged; every replica re-fans it to its
+  own SSE subscribers and ignores its own origin. The pursuit oracle
+  (§18.4) becomes the **cluster audience**: this replica's subscribers plus
+  the fresh `subscribers` count of every other live replica.
+- **Persisted job clock.** The consolidation jobs and the retention job
+  keep `last_run_at` in `job_clock` (one row per job) instead of a
+  per-process monotonic dict, so an interval is a cluster property: a job
+  runs once per interval whichever replica leads it, and a restart no
+  longer re-runs every job — the irreversible compaction included — at
+  boot. Advisory locks still guard concurrency; the clock guards
+  scheduling.
+- **Boot lock.** Migrations and seeding run under a session advisory lock
+  (classid 427019), so N replicas booting together apply the schema once
+  and seed once.
+- **Connection budget.** Per replica: `DB_POOL_SIZE` + `DB_MAX_OVERFLOW`
+  pooled, the checkpointer pool (10), and the session connections that
+  cannot go through a transaction-mode pooler — the two supervised
+  LISTENs, the control listener and the leader lease. `DB_REPLICAS` and
+  `DB_MAX_CONNECTIONS` declare the fleet; the arithmetic is logged at
+  boot, served by `GET /replicas`, and a fleet the declared Postgres
+  cannot seat is a boot warning naming the numbers.
+  `DB_STATEMENT_CACHE_SIZE` (default 0) keeps asyncpg's prepared
+  statements out of the pooled connections so they survive a pooler; the
+  session connections are direct by design.
+- **Distributed rate limiter.** The §18.8 token bucket lives in
+  `rate_buckets` (one upsert per request), so N replicas grant one budget;
+  keys idle for an hour are evicted by the periodic loop — the key space is
+  bounded, and a database hiccup fails open with a log rather than closed.
+- **Cache coherency** (§7.3). A reload discards the dirty flag — and, in
+  redis mode, writes the blob — only if the generation it started from is
+  unchanged; the redis blob carries a TTL (`REGISTRY_CACHE_TTL_S`, default
+  300 s) and memory-mode entries expire on the same clock, so no coherency
+  bug can outlive it; `GET /cache/status` reports `dirty` beside
+  `generation`.
+- **MCP under N replicas.** Ingest is idempotent (`ON CONFLICT` on
+  `(mcp_server_id, tool_name)` under a per-server advisory lock), and each
+  replica reconciles its own subprocess set against the registry on every
+  health tick — a server registered or deleted through another replica is
+  connected or torn down here within one interval. Every replica still
+  holds its own connection to every server: a tool call is served
+  wherever the run executes.
+- **The edge.** `docker compose up --scale backend=N` binds each replica to
+  a host port from `BACKEND_PORT_RANGE`; the frontend's nginx resolves
+  `backend` per request through Docker's DNS, so replicas join and leave
+  without a restart; Prometheus discovers each replica as its own target
+  (`dns_sd_configs`), so counters are never mixed across processes.
+  Compose recreates every replica together on a deploy — a rolling roll at
+  N>1 is an orchestrator's job (`deploy.sh` documents the mapping).
+
 
 ### 18.10 Acceptance ceremony (M36)
 
@@ -1402,7 +1799,7 @@ provider. Scope, in order: the original §14 ten-step script; §14c steps
 one live chat run through the `custom` provider pointed at a real
 OpenAI-compatible endpoint); and the §11 byte-identity suites with
 `ambient_enabled=false`, `memory_enabled=false`, `auth_enabled=false`.
-Evidence lands in `docs/acceptance/ceremony_m36/` (curl transcripts + UI
+Evidence lands in `docs/acceptance/prod/M56/` (curl transcripts + UI
 frames), and a closing report updates the README status line. The ceremony
 re-earns the definition of done end-to-end; nothing ships from this wave
 without it.
@@ -1444,7 +1841,7 @@ timestamps), and nullable `tools.remote_agent_id`. Registration fetches
 the card from `<url>/.well-known/agent-card.json`, validates it, stores
 it, and ingests; a refresh loop (`a2a_card_refresh_interval_s`) re-fetches
 each active agent's card — fetch failure sets `status='error'` +
-`last_error`, recovery restores `active`. `remote_agents` is manager-held
+`last_error`, recovery restores `active` — an operator's `inactive` is never undone by a refresh (the loop skips disabled agents, and the call path refuses one; hardening wave). The agent's tools follow its status (third reading): disabling it takes every active tool out of the catalog under `ingest_state='agentoff'`, re-enabling it brings exactly those back — never a tool the operator disabled on its own, and never through a card refresh. `card_hash` / `card_version` (hardening wave): a card that differs under a refresh bumps the version, logs the changed keys (`a2a_card_changed`) and counts (`concierge_a2a_card_changes_total`). `remote_agents` is manager-held
 like `mcp_servers` and does not join the §7.3 cached registries; its
 projected tools do, automatically.
 
@@ -1520,3 +1917,64 @@ header/query/cookie, basic, bearer, oauth2 client_credentials incl. the
 token cache and `env:` indirection), task lifecycle across all nine
 states, adoption idempotency on resume replay, fencing, park → poll →
 delivery, cancel propagation, and byte-identity with `a2a_enabled=false`.
+
+## 20. The Auth Seam (M55)
+
+**No authentication ships in this repository.** What ships is the boundary an
+organisation's own authentication and tenancy layer plugs into — a port with
+the same weight as §2.1's provider port, so that "fork it and add your auth"
+is one module, not surgery in fifty places.
+
+### 20.1 The port
+
+`app/auth/port.py` defines `Principal` (an `id`, a `role`, a `username`, a
+`tenant`, free-form `claims`) and the `AuthProvider` protocol:
+
+| method | the decision it owns | the builtin's answer |
+|---|---|---|
+| `enabled()` | is the platform multi-user at all | `AUTH_ENABLED` |
+| `identify(request) → Principal \| None` | identity resolution from a request | bearer / `?token=` session lookup |
+| `owner_id(principal) → UUID \| None` | what new rows are stamped with | the principal's id |
+| `tenancy_filter(model, principal) → clause \| None` | the SQL predicate per-user work queries add (`scope_to_user`) | `model.user_id == principal.id`; `None` when dark |
+| `may_see(row, principal) → bool` | the same rule for one loaded row (`owns_row`) | `row.user_id == principal.id`; always true when dark |
+| `memory_visibility(principal) → (fragment, params)` | the memory visibility predicate's tenancy clause (§16.3, aliased `m`) | `m.user_id = :auth_user_id OR m.user_id IS NULL` |
+| `authorize(principal, method, path) → reason \| None` | the authorization decision point on a request; a reason is a 403 | registry and settings writes need `admin` |
+| `on_boot()` | anything the provider needs at start | the one-time bootstrap admin |
+
+What the core keeps (and a provider never re-implements): the request
+contextvar carrying the principal and its re-binding to a run's owner
+(§18.8), the rate limiter keyed by the owner id (M54 `rate_buckets`), the
+security headers, the exempt paths (`/health`, `/metrics`, login, routine
+fire), and the shape of every `user_id` column. What the core guarantees:
+every per-user store asks `scope_to_user` / `owns_row`, every memory read
+goes through `visibility_sql`, every new work row is stamped with
+`owner_id`, and the middleware calls `identify` before anything else and
+`authorize` before the handler — so a rule expressed in the port reaches
+every surface at once. What it will never do: read the auth switch outside
+the package, thread a user parameter through call sites, or special-case
+a provider.
+
+### 20.2 The registry
+
+`@auth_provider` registers a class by its `provider_id`; `AUTH_PROVIDER`
+selects the active one (default `builtin`); `AUTH_PROVIDER_MODULE` names a
+module the registry imports before resolving, so a fork's provider
+registers itself from its own file. An unknown id fails at boot with the
+registered ids in the message. `get_auth_provider()` is the only way the
+core reaches a provider.
+
+### 20.3 The contract
+
+`tests/test_m55_seam.py` runs the same suite over every registered provider
+and is the definition of "implements the port": shape and coroutine-ness,
+anonymous never owns, `tenancy_filter` and `may_see` are one rule, the
+memory fragment references only the `m` alias and binds its own parameters,
+reads are never refused by `authorize`, `on_boot` is idempotent. The
+reference stub in `tests/auth_stub.py` is the worked example: one module,
+a rule the builtin does not have, proven end-to-end (§14r-97).
+
+### 20.4 Non-goals
+
+SSO, OIDC, SAML, API keys, RBAC beyond a role string, per-row ACLs,
+tenant-aware schemas: all of them are a provider's business and none of
+them are in this repository. `docs/extending.md` is the forker's guide.

@@ -1,0 +1,142 @@
+{
+  "meta": {
+    "label": "live-sample",
+    "captured_at": "2026-09-10T21:31:48+00:00",
+    "git_sha": "8d5424c",
+    "base_url": "http://localhost:8000",
+    "model": "openrouter:qwen/qwen3.8-max",
+    "scenarios": [
+      "chat"
+    ],
+    "args": {
+      "base_url": "http://localhost:8000",
+      "model": "openrouter:qwen/qwen3.8-max",
+      "label": "live-sample",
+      "out": "/tmp/claude-0/-home-user-concierge-agent/42b28fd8-c8ea-5ded-b71d-aa8262ee5dbc/scratchpad/prod/M49/live-sample.json",
+      "scenarios": [
+        "chat"
+      ],
+      "api_requests": 100,
+      "api_concurrency": 10,
+      "runs_sizes": [
+        1000,
+        10000
+      ],
+      "runs_requests": 15,
+      "chat_concurrency": [
+        3,
+        6
+      ],
+      "chat_deadline": 240.0,
+      "sse_step": 5,
+      "sse_max": 60,
+      "probe_timeout": 5.0,
+      "recall_sizes": [
+        1000,
+        10000,
+        100000
+      ],
+      "recall_requests": 40,
+      "ambient_events": 40,
+      "ambient_deadline": 300.0,
+      "keep_data": false
+    },
+    "settings_before": {
+      "default_model": "openrouter:qwen/qwen3.8-max",
+      "embedding_model": null,
+      "memory_enabled": false,
+      "ambient_enabled": true,
+      "ambient_routine_events_per_hour": 20,
+      "ambient_runs_per_day": 50
+    }
+  },
+  "scenarios": {
+    "chat": {
+      "model": "openrouter:qwen/qwen3.8-max",
+      "levels": [
+        {
+          "concurrency": 3,
+          "wall_s": 6.83,
+          "statuses": {
+            "completed": 3
+          },
+          "submit": {
+            "n": 3,
+            "p50_ms": 26.43,
+            "p95_ms": 26.89,
+            "p99_ms": 26.93,
+            "max_ms": 26.94,
+            "mean_ms": 26.46
+          },
+          "end_to_end_completed": {
+            "n": 3,
+            "p50_ms": 5773.67,
+            "p95_ms": 6726.13,
+            "p99_ms": 6810.79,
+            "max_ms": 6831.96,
+            "mean_ms": 6126.33
+          },
+          "throughput_runs_per_s": 0.44,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 14,
+            "peak_active": 3,
+            "samples": 34
+          }
+        },
+        {
+          "concurrency": 6,
+          "wall_s": 6.65,
+          "statuses": {
+            "completed": 6
+          },
+          "submit": {
+            "n": 6,
+            "p50_ms": 73.1,
+            "p95_ms": 268.07,
+            "p99_ms": 319.76,
+            "max_ms": 332.68,
+            "mean_ms": 115.96
+          },
+          "end_to_end_completed": {
+            "n": 6,
+            "p50_ms": 4824.61,
+            "p95_ms": 6392.38,
+            "p99_ms": 6600.5,
+            "max_ms": 6652.53,
+            "mean_ms": 5129.78
+          },
+          "throughput_runs_per_s": 0.9,
+          "sample_errors": [],
+          "connections": {
+            "peak_connections": 22,
+            "peak_active": 2,
+            "samples": 33
+          }
+        }
+      ],
+      "elapsed_s": 17.5
+    }
+  },
+  "at_rest": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  },
+  "cleanup": {
+    "memory_embeddings": "DELETE 0",
+    "memories": "DELETE 0",
+    "run_steps": "DELETE 9",
+    "runs": "DELETE 9",
+    "conversations": "DELETE 9"
+  },
+  "at_rest_after": {
+    "connections": {
+      "total": 14,
+      "idle": 14
+    },
+    "max_connections": 100
+  }
+}

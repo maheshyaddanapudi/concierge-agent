@@ -130,7 +130,7 @@ async def poll_parked_tasks() -> int:
             continue
         try:
             outcome = await client_port.get_task_outcome(row.remote_agent_id, row.remote_task_id)
-        except Exception as exc:  # recheck failure — retry next tick
+        except Exception as exc:  # noqa: BLE001 — recheck failure of any kind: retry next tick
             await tasks.update_task(row.id, parked=True, error=f"recheck failed: {exc}")
             _ops("poll", "recheck_failed")
             continue

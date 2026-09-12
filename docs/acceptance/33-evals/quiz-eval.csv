@@ -1,0 +1,4 @@
+level,target_id,input,expected,judge_notes,grader
+skill,6c81d4df-b8fa-4f86-94f7-c83f66f95551,"What is the capital of France? Answer with one word.",Paris,,exact
+skill,6c81d4df-b8fa-4f86-94f7-c83f66f95551,"What is the chemical symbol for gold? One word.",Au,,contains
+skill,6c81d4df-b8fa-4f86-94f7-c83f66f95551,"Why is the sky blue? Two sentences.","explains that sunlight is scattered by the atmosphere (shorter wavelengths scatter more)","Rayleigh need not be named; any correct scattering explanation passes",llm_judge

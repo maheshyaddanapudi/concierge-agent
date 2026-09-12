@@ -22,3 +22,7 @@ class McpServer(RegistryRecord):
         DateTime(timezone=True), default=None
     )
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    # a hash of the connection config (transport, command, args, url, env
+    # and header KEYS): a change is a different binary behind the same tool
+    # rows, logged and reconnected at once rather than at the next ping
+    config_hash: Mapped[str | None] = mapped_column(String(64), default=None)

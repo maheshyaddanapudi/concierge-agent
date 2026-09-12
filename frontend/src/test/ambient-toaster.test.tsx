@@ -9,16 +9,21 @@ vi.mock('../api/hooks', () => ({
 
 class FakeEventSource {
   static instances: FakeEventSource[] = []
-  onmessage: ((e: MessageEvent) => void) | null = null
+  listeners: Record<string, ((e: MessageEvent) => void)[]> = {}
   closed = false
   constructor(public url: string) {
     FakeEventSource.instances.push(this)
   }
+  addEventListener(type: string, fn: (e: MessageEvent) => void) {
+    ;(this.listeners[type] ??= []).push(fn)
+  }
   close() {
     this.closed = true
   }
+  // M53: deliveries arrive as named `delivery` events carrying an id
   emit(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent)
+    for (const fn of this.listeners.delivery ?? [])
+      fn({ data: JSON.stringify(data) } as MessageEvent)
   }
 }
 

@@ -18,6 +18,7 @@ from app.config import get_config
 from app.models import McpServer, Skill, SubAgent, Tool
 from app.native.provider import native_sub_agents, native_tools, scan_native
 from app.skilldoc import scan_skill_files
+from app.toolschema import apply_description, apply_schema, schema_fingerprint, text_fingerprint
 
 logger = structlog.get_logger("seed")
 
@@ -88,18 +89,26 @@ async def upsert_native_tools(session: AsyncSession) -> None:
                 Tool(
                     name=name,
                     description=entry.description,
+                    description_hash=text_fingerprint(entry.description),
                     kind="native",
                     source="static",
                     tool_name=name,
                     tool_key=name,
                     native_ref=entry.native_ref,
                     input_schema=entry.input_schema,
+                    schema_hash=schema_fingerprint(entry.input_schema),
+                    schema_version=1,
                 )
             )
         else:
-            tool.description = entry.description
+            # a native description changes only with a deploy — fingerprinted
+            # like an MCP one so the row's hash matches its text after an
+            # upgrade (review round 3); a change is logged, never suppressed
+            apply_description(tool, entry.description, source="server")
             tool.native_ref = entry.native_ref
-            tool.input_schema = entry.input_schema
+            # a native schema changes only with a deploy — fingerprinted and
+            # versioned like an MCP one so the trace pins it; never quarantined
+            apply_schema(tool, entry.input_schema, policy="warn")
             if tool.status == "inactive":
                 tool.status = "active"
     for key, tool in by_key.items():
@@ -407,6 +416,29 @@ async def resolve_first_boot_default_model(session: AsyncSession) -> str | None:
     return None
 
 
+async def stamp_all_definitions(session: AsyncSession) -> dict[str, int]:
+    """The definition version (spec §3.6) on every skill and sub agent the
+    seeds touched, plus any row from before the hardening wave: a first
+    stamp records the hash at version 1; a seed that changed a native
+    definition since the last boot bumps it like an API edit would."""
+    from app.api.skills import stamp_skill
+    from app.api.sub_agents import stamp_sub_agent
+
+    bumped = {"skills": 0, "sub_agents": 0}
+    for skill in (await session.execute(select(Skill).where(Skill.deleted_at.is_(None)))).scalars():
+        if stamp_skill(skill, [t for t in skill.tools if t.deleted_at is None]):
+            bumped["skills"] += 1
+    for agent in (
+        await session.execute(select(SubAgent).where(SubAgent.deleted_at.is_(None)))
+    ).scalars():
+        if stamp_sub_agent(agent):
+            bumped["sub_agents"] += 1
+    await session.commit()
+    if any(bumped.values()):
+        logger.info("definition_versions_bumped_at_boot", **bumped)
+    return bumped
+
+
 async def seed_all(session: AsyncSession) -> dict[str, int]:
     await seed_mcp_servers(session)
     await upsert_native_tools(session)
@@ -414,6 +446,7 @@ async def seed_all(session: AsyncSession) -> dict[str, int]:
     await seed_sub_agents(session)
     await seed_agent_files(session)
     await upsert_native_sub_agents(session)
+    await stamp_all_definitions(session)
     await resolve_first_boot_default_model(session)
     counts: dict[str, int] = {}
     for label, model in {

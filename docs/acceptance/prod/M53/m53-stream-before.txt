@@ -1,0 +1,12 @@
+id: 1
+event: run_status
+data: {"type": "run_status", "run_id": "a7794327-0149-43de-b084-d088728ffceb", "ts": "2026-09-10T21:20:03.454864+00:00", "payload": {"status": "running"}, "seq": 1}
+
+id: 2
+event: activity
+data: {"type": "activity", "run_id": "a7794327-0149-43de-b084-d088728ffceb", "ts": "2026-09-10T21:20:03.492834+00:00", "payload": {"step_id": "4c5b06d6-5046-49ae-b791-1dd4f24fe3a3", "parent_step_id": null, "step_type": "plan", "tier": "orchestrator", "kind": null, "entity_name": null, "node_id": null, "status": "running"}, "seq": 2}
+
+id: 3
+event: activity
+data: {"type": "activity", "run_id": "a7794327-0149-43de-b084-d088728ffceb", "ts": "2026-09-10T21:20:03.505992+00:00", "payload": {"label": "memory: injected 0 memories, 3 episodes (~285 tok) into planner"}, "seq": 3}
+

@@ -51,3 +51,10 @@ class SkillOut(RegistryOut):
     model_params: dict[str, Any] | None
     max_tool_iterations: int | None = None
     tools: list[ToolOut] = []
+    # definition fingerprint (hardening wave): the hash and version of the
+    # fields that shape behaviour, so a run's snapshot reads against the
+    # registry as it was rather than as it is
+    definition_hash: str | None = None
+    definition_version: int = 1
+    # 'human' | 'mined' — a fallback-mining proposal is judged again at activation
+    origin: str = "human"

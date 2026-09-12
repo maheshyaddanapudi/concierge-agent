@@ -28,6 +28,12 @@ async def _target_snapshot(dataset: EvalDataset) -> dict[str, Any]:
     cache = get_cache()
     if dataset.level == "skill":
         return dict(await cache.skill_by_id(str(dataset.target_id)) or {})
+    # the definition the eval actually runs (spec §15 "reproducible against
+    # the exact definition evaluated"): the assembled snapshot with every
+    # skill's persona, instructions and bound tools, not only the workflow
+    snapshot = await cache.sub_agent_snapshot(str(dataset.target_id))
+    if snapshot is not None:
+        return dict(snapshot)
     return dict(await cache.sub_agent_by_id(str(dataset.target_id)) or {})
 
 
@@ -44,17 +50,19 @@ async def _await_run(run_id: UUID) -> Run:
                 await asyncio.wait_for(asyncio.shield(task), timeout=CASE_TIMEOUT_S)
         async with get_session_factory()() as session:
             run = await session.get(Run, run_id)
-            assert run is not None
+            if run is None:
+                raise RuntimeError("run vanished mid-operation")
             status = run.status
         if status == "paused_hitl":
             logger.info("eval_hitl_auto_approve", tier="evals", kind="hitl", run_id=str(run_id))
             await resume_run(run_id, "approve", "eval mode auto-approve", None)
             await asyncio.sleep(_POLL_S)
             continue
-        if status != "running":
+        if status not in {"running", "queued"}:
             async with get_session_factory()() as session:
                 final = await session.get(Run, run_id)
-                assert final is not None
+                if final is None:
+                    raise RuntimeError("final vanished mid-operation")
                 return final
         if asyncio.get_event_loop().time() > deadline:
             raise TimeoutError(f"eval case run {run_id} exceeded {CASE_TIMEOUT_S}s")
@@ -85,16 +93,41 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
             session.add(eval_run)
         else:
             eval_run = await session.get(EvalRun, eval_run_id)  # type: ignore[assignment]
-            assert eval_run is not None
+            if eval_run is None:
+                raise RuntimeError("eval_run vanished mid-operation")
             eval_run.total_cases = len(cases)
         settings = await load_settings_snapshot()
+        from app.evals.grade import _judge_model
+        from app.orchestrator.snapshot import prompt_hashes
+
+        target_snapshot = await _target_snapshot(dataset)
+        judge_ref, _judge = await _judge_model()
+        target_model = str(
+            (target_snapshot.get("sub_agent") or {}).get("model")
+            or target_snapshot.get("model")
+            or settings.get("default_model")
+            or ""
+        )
+        # every model the target can resolve to: a workflow skill with its
+        # own model runs under it (review round 3 — the flag looked only at
+        # the sub agent's), so the judge is "the model under test" when it
+        # is any of them
+        target_models = {target_model} | {
+            str(s.get("model"))
+            for s in (target_snapshot.get("skills") or {}).values()
+            if isinstance(s, dict) and s.get("model")
+        }
         eval_run.config_snapshot = {
-            "settings": {
-                k: v
-                for k, v in settings.items()
-                if isinstance(v, str | int | float | bool | type(None))
-            },
-            "target": await _target_snapshot(dataset),
+            # every setting, structured ones included (model params, prices,
+            # quarantine kinds): the knobs that shaped the scores
+            "settings": dict(settings),
+            "prompts": prompt_hashes(),
+            "target": target_snapshot,
+            # the judge that graded, and whether it is the model under test
+            # grading itself (review round 2: said on the record, not only
+            # in the Settings hint)
+            "judge_model": judge_ref,
+            "judge_is_target_model": judge_ref in target_models,
             "level": dataset.level,
             "target_id": str(dataset.target_id),
         }
@@ -159,13 +192,15 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
                     )
                 )
                 row = await session.get(EvalRun, run_row_id)
-                assert row is not None
+                if row is None:
+                    raise RuntimeError("row vanished mid-operation")
                 row.passed_cases, row.failed_cases, row.error_cases = passed, failed, errored
                 await session.commit()
         langsmith_url = await _maybe_publish(run_row_id)
         async with get_session_factory()() as session:
             row = await session.get(EvalRun, run_row_id)
-            assert row is not None
+            if row is None:
+                raise RuntimeError("row vanished mid-operation")
             row.status = "completed"
             row.langsmith_url = langsmith_url
             row.finished_at = datetime.now(UTC)
@@ -176,7 +211,8 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
         logger.warning("eval_run_failed", tier="evals", kind="run", error=str(exc))
         async with get_session_factory()() as session:
             row = await session.get(EvalRun, run_row_id)
-            assert row is not None
+            if row is None:
+                raise RuntimeError("row vanished mid-operation") from exc
             row.status = "failed"
             row.finished_at = datetime.now(UTC)
             await session.commit()

@@ -12,7 +12,6 @@ from sqlalchemy import select
 
 from app.api.deps import SessionDep
 from app.auth import (
-    auth_enabled,
     create_session,
     hash_password,
     revoke_session,
@@ -26,7 +25,14 @@ PREF_KEYS = {"ambient_quiet_hours", "ambient_digest_times"}
 
 
 def _require_on() -> None:
-    if not auth_enabled():
+    """These routes are the builtin provider's (spec §20): 404 while another
+    provider is active, 409 while the builtin is dark."""
+    from app.auth.registry import get_auth_provider
+
+    provider = get_auth_provider()
+    if provider.provider_id != "builtin":
+        raise HTTPException(404, "login is not offered by the active auth provider")
+    if not provider.enabled():
         raise HTTPException(409, "auth is disabled (AUTH_ENABLED=false)")
 
 

@@ -6,7 +6,7 @@ Date: 2026-08-07
 
 ## Context
 
-The stage-19 acceptance campaign (docs/acceptance/19-provider-agnostic/)
+The stage-19 acceptance campaign (docs/acceptance/19-multi-turn-conversations/)
 drove the whole system on `openai:gpt-5.6-terra` with reasoning effort set
 through the normalized `ModelParams` (ADR-0002). It immediately flushed out a
 real provider-behavior bug — exactly what the campaign existed to find:

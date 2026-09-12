@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -24,11 +24,22 @@ class Conversation(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    runs: Mapped[list["Run"]] = relationship(back_populates="conversation", lazy="selectin")
+    # M50 (code-H1): children load only where asked (selectinload at the
+    # call site); an implicit load raises instead of fanning out
+    runs: Mapped[list["Run"]] = relationship(
+        back_populates="conversation", lazy="raise", passive_deletes=True
+    )
 
 
 class Run(Base):
     __tablename__ = "runs"
+    # M50 (arch-C2): list by time, filter by status, join by conversation —
+    # the hot paths had no index in 23 migrations
+    __table_args__ = (
+        Index("runs_conversation_idx", "conversation_id"),
+        Index("runs_status_idx", "status"),
+        Index("runs_started_at_idx", "started_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
@@ -58,12 +69,25 @@ class Run(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # M54 (spec §18.9): the replica executing this run — stamped at creation
+    # (the creating process runs the task); a cancel from any other replica
+    # is a persisted INTENT the owner observes (NOTIFY first, heartbeat as
+    # the fallback), never a status written by a process that cannot stop it
+    owner_replica: Mapped[str | None] = mapped_column(String(128), default=None)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     final_answer: Mapped[str | None] = mapped_column(Text, default=None)
     # the formatter's structured artifact (spec §7.1 answer_ui) — carries its
     # own presentation + coverage so history renders by run-time facts
     answer_ui: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # chart specs from the render_chart native tool — formatter-independent
     charts: Mapped[list[Any] | None] = mapped_column(default=None)
+    # the cost stamped at finish with the prices it was computed from — a
+    # later price change never rewrites history or the spend ceiling
+    cost_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    cost_priced: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    price_snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -72,12 +96,16 @@ class Run(Base):
 
     conversation: Mapped[Conversation] = relationship(back_populates="runs")
     steps: Mapped[list["RunStep"]] = relationship(
-        back_populates="run", lazy="selectin", order_by="RunStep.started_at"
+        back_populates="run",
+        lazy="raise",
+        order_by="RunStep.started_at",
+        passive_deletes=True,
     )
 
 
 class RunStep(Base):
     __tablename__ = "run_steps"
+    __table_args__ = (Index("run_steps_run_idx", "run_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
@@ -91,6 +119,15 @@ class RunStep(Base):
     input: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     output: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     model: Mapped[str | None] = mapped_column(String(255), default=None)
+    # the version of the entity this step ran against, pinned into the record
+    # (a tool's schema version and hash on tool_call steps) so a trace reads
+    # against the registry as it was, not as it is
+    entity_version: Mapped[int | None] = mapped_column(Integer, default=None)
+    entity_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # the entity's name at run time (a trace never resolves names live) and
+    # the model params the step ran with
+    entity_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    model_params: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="running")

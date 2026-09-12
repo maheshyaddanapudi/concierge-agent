@@ -35,6 +35,23 @@ DEFAULTS: dict[str, Any] = {
     "formatter_coverage_flag_threshold": 90,  # visual flag only, never a gate
     "answer_ui_charts_enabled": True,
     "mcp_health_interval_s": 30,
+    # spec §3.2 drift: what a changed tool input schema does on re-ingest —
+    # 'warn' flags the tool until acknowledged, 'quarantine' also takes it
+    # out of service until then
+    "mcp_schema_change_policy": "warn",
+    # the §4 overlap judge's model: null → default_model. A different model
+    # from the one that writes skills (the operator's, or the §17.7 learner's)
+    # keeps the judge from sharing the generator's blind spots
+    "overlap_judge_model": None,
+    "overlap_judge_model_params": None,
+    # the §15 eval judge's model: null → the extraction role → default. A
+    # judge that is not the model under test does not share its blind spots
+    "eval_judge_model": None,
+    "eval_judge_model_params": None,
+    # the §4 registry overlap audit (hardening wave): a consolidation-class
+    # job that re-judges changed skills and sub agents against the registry
+    # with the overlap judge role and posts an inbox item — born dark
+    "registry_overlap_audit_enabled": False,
     "log_level": "INFO",
     "langsmith_enabled": False,
     "langsmith_endpoint": "",
@@ -92,6 +109,14 @@ DEFAULTS: dict[str, Any] = {
     "ambient_digest_times": ["09:00", "17:00"],
     "ambient_notification_budget_per_day": 3,
     "ambient_quiet_hours": ["22:00", "07:00"],
+    # M50 (arch-M4): quiet hours and digest times are wall-clock in THIS
+    # zone; UTC keeps pre-M50 behavior byte-identical
+    "ambient_timezone": "UTC",
+    # M51 bounded work: admission (slots + visible queue) and the per-run
+    # wall clock; provider timeouts/retries are env (LLM_TIMEOUT_S, §13)
+    "run_max_concurrent": 8,
+    "run_queue_max": 32,
+    "run_wall_clock_s": 900,
     "ambient_interrupt_threshold": 4,
     "ambient_wakeups_per_routine_per_day": 100,
     "ambient_escalation_budget_per_day": 10,
@@ -135,6 +160,43 @@ DEFAULTS: dict[str, Any] = {
     "agentic_recursion_limit": 100,
     "a2a_http_timeout_s": 15,
     "a2a_fence_max_chars": 8000,
+    # M53 retention (arch-M6): the six unbounded tables, one purge each,
+    # every purge behind its own §3.7.1 gate enforced in-function. Deleting
+    # is destructive, so five are born dark; the expired-session sweep
+    # defaults on because the login path already did it opportunistically.
+    "retention_ambient_events_enabled": False,
+    "retention_ambient_events_days": 30,
+    "retention_deliveries_enabled": False,
+    "retention_deliveries_days": 90,
+    "retention_ambient_policies_enabled": False,
+    "retention_ambient_policies_days": 365,
+    "retention_pattern_instances_enabled": False,
+    "retention_pattern_instances_days": 7,
+    "retention_a2a_tasks_enabled": False,
+    "retention_a2a_tasks_days": 90,
+    "retention_auth_sessions_enabled": True,
+    "retention_auth_sessions_days": 7,
+    # M53 MCP reconnection: automatic, with backoff (5 s doubling to 5 min)
+    # and a circuit breaker after this many failed attempts; the operator's
+    # reconnect button resets the breaker. Its own gate, like every job.
+    "mcp_auto_reconnect_enabled": True,
+    "mcp_reconnect_max_attempts": 8,
+    # M53 cost model: operator price overrides ({"provider:model":
+    # {"input_per_m", "output_per_m"}} USD per 1M tokens) and ONE spend
+    # ceiling across every run kind, behind its own gate — off = the
+    # pre-M53 admission, byte-identical
+    "model_prices": {},
+    "spend_ceiling_enabled": False,
+    "spend_ceiling_usd_per_day": 10.0,
+}
+
+RETENTION_DAY_KEYS = {
+    "retention_ambient_events_days",
+    "retention_deliveries_days",
+    "retention_ambient_policies_days",
+    "retention_pattern_instances_days",
+    "retention_a2a_tasks_days",
+    "retention_auth_sessions_days",
 }
 
 _MODEL_KEYS = {
@@ -144,6 +206,8 @@ _MODEL_KEYS = {
     "formatter_model",
     "memory_extraction_model",
     "ambient_salience_model",
+    "overlap_judge_model",
+    "eval_judge_model",
 }
 _PARAMS_KEYS = {
     "default_model_params",
@@ -152,6 +216,8 @@ _PARAMS_KEYS = {
     "formatter_model_params",
     "memory_extraction_model_params",
     "ambient_salience_model_params",
+    "overlap_judge_model_params",
+    "eval_judge_model_params",
 }
 _INT_KEYS = {
     "max_parallel_dispatch",
@@ -203,7 +269,17 @@ _BOOL_KEYS = {
     "memory_communities_enabled",
     "memory_compaction_enabled",
     "ambient_anticipation_enabled",
+    "registry_overlap_audit_enabled",
     "evals_enabled",
+    # M53 gates
+    "retention_ambient_events_enabled",
+    "retention_deliveries_enabled",
+    "retention_ambient_policies_enabled",
+    "retention_pattern_instances_enabled",
+    "retention_a2a_tasks_enabled",
+    "retention_auth_sessions_enabled",
+    "mcp_auto_reconnect_enabled",
+    "spend_ceiling_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
@@ -259,6 +335,28 @@ def _validate_pair(merged: dict[str, Any], model_key: str, errors: list[str]) ->
     errors.extend(f"{model_key}: {e}" for e in validate_model_selection(ref, params))
 
 
+def _validate_model_prices(value: Any) -> list[str]:
+    """{"provider:model": {"input_per_m": n, "output_per_m": n}} — USD per
+    1M tokens, both non-negative numbers, keys shaped like model refs."""
+    if not isinstance(value, dict):
+        return ["model_prices must be an object of 'provider:model' → {input_per_m, output_per_m}"]
+    errors: list[str] = []
+    for ref, row in value.items():
+        if not isinstance(ref, str) or ":" not in ref or ref.startswith(":") or ref.endswith(":"):
+            errors.append(f"model_prices: {ref!r} is not a 'provider:model' reference")
+            continue
+        if not isinstance(row, dict):
+            errors.append(
+                f"model_prices[{ref!r}] must be an object with input_per_m and output_per_m"
+            )
+            continue
+        for field in ("input_per_m", "output_per_m"):
+            amount = row.get(field)
+            if not isinstance(amount, int | float) or isinstance(amount, bool) or float(amount) < 0:
+                errors.append(f"model_prices[{ref!r}].{field} must be a non-negative number")
+    return errors
+
+
 def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for key, value in updates.items():
@@ -289,6 +387,8 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append(f"log_level must be one of {sorted(_LOG_LEVELS)}")
         elif key == "formatter_presentation" and value not in _PRESENTATIONS:
             errors.append(f"formatter_presentation must be one of {sorted(_PRESENTATIONS)}")
+        elif key == "mcp_schema_change_policy" and value not in {"warn", "quarantine"}:
+            errors.append("mcp_schema_change_policy must be 'warn' or 'quarantine'")
         elif key == "formatter_coverage_flag_threshold" and (
             not isinstance(value, int) or not 1 <= value <= 100
         ):
@@ -374,6 +474,30 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
                                 f"ambient_channels[{mode!r}]: unknown channel(s) "
                                 f"{sorted(unknown)} — registered: {sorted(known)}"
                             )
+        elif key == "run_max_concurrent" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 64
+        ):
+            errors.append("run_max_concurrent must be an integer between 1 and 64")
+        elif key == "run_queue_max" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 500
+        ):
+            errors.append("run_queue_max must be an integer between 0 and 500")
+        elif key == "run_wall_clock_s" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 30 <= value <= 86400
+        ):
+            errors.append("run_wall_clock_s must be an integer between 30 and 86400 seconds")
+        elif key == "ambient_timezone":
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            if not isinstance(value, str) or not value:
+                errors.append(
+                    "ambient_timezone must be an IANA zone name string (e.g. Europe/Lisbon)"
+                )
+            else:
+                try:
+                    ZoneInfo(value)
+                except (ZoneInfoNotFoundError, ValueError):
+                    errors.append(f"ambient_timezone: unknown IANA zone {value!r}")
         elif key in {"ambient_digest_times", "ambient_quiet_hours"}:
             import re as _re
 
@@ -388,6 +512,20 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append("memory_half_life_days must be a positive number")
         elif key == "memory_community_budget_tokens" and (not isinstance(value, int) or value < 0):
             errors.append("memory_community_budget_tokens must be an integer ≥ 0 (0 disables)")
+        elif key in RETENTION_DAY_KEYS and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 3650
+        ):
+            errors.append(f"{key} must be an integer number of days between 1 and 3650")
+        elif key == "mcp_reconnect_max_attempts" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 100
+        ):
+            errors.append("mcp_reconnect_max_attempts must be an integer between 1 and 100")
+        elif key == "spend_ceiling_usd_per_day" and (
+            not isinstance(value, int | float) or isinstance(value, bool) or float(value) <= 0
+        ):
+            errors.append("spend_ceiling_usd_per_day must be a positive number of USD")
+        elif key == "model_prices":
+            errors.extend(_validate_model_prices(value))
         elif key in _BOOL_KEYS and not isinstance(value, bool):
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):
@@ -443,7 +581,32 @@ async def update_settings(session: AsyncSession, updates: dict[str, Any]) -> dic
         from app.obs import apply_otlp_endpoint
 
         apply_otlp_endpoint(str(updates["otlp_endpoint"]))
+    if "embedding_model" in updates or "retrieval_enabled" in updates:
+        # hardening wave: a new embedding model leaves every registry vector
+        # stale (the memory layer already re-embeds on model change; the
+        # registry used to wait for a restart) — re-embed now, off the
+        # request, and rank lexically in the meantime
+        import asyncio
+
+        from app.retrieval import backfill_embeddings
+
+        task = asyncio.create_task(backfill_embeddings())
+        _BACKFILL_TASKS.add(task)
+        task.add_done_callback(_BACKFILL_TASKS.discard)
     return await get_settings(session)
+
+
+_BACKFILL_TASKS: set[Any] = set()
+
+
+async def drain_backfill() -> None:
+    """Await every embedding backfill an `update_settings` started (tests
+    and shutdown: the task is fire-and-forget by design)."""
+    import asyncio
+
+    pending = [t for t in _BACKFILL_TASKS if not t.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _ping_redis() -> None:

@@ -1,0 +1,17 @@
+# Golden set for summarize_and_structure.md (spec §5b native tool): the
+# strict JSON shape the StructuredSummary schema expects.
+consumer: app/native/tools.py
+render: format
+cases:
+  - name: schema
+    vars:
+      text: "Acme Corp released Widget 2 in Lisbon on Monday."
+    must_contain:
+      - "convert raw text into a structured JSON summary"
+      - '"title"'
+      - '"summary": a faithful 2-4 sentence summary'
+      - '"key_points"'
+      - '"entities"'
+      - "Respond with the JSON object only"
+      - "Acme Corp released Widget 2 in Lisbon on Monday."
+      - "MUST be JSON arrays of strings"

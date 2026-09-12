@@ -230,3 +230,6 @@ frontend/dist/
 docs/acceptance/scripts/
 camp-a2a/
 camp-m40/
+
+# M53 backup.sh output (dumps carry the whole application state — keep them out of git)
+backups/

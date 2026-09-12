@@ -62,7 +62,6 @@ def _signature(members: list[str]) -> str:
 async def _summarize(member_ids: list[str]) -> str | None:
     """One generative summary via the extraction role; None on failure."""
     from app.memory.extract import _extraction_model
-    from app.prompts import load_prompt
 
     try:
         async with get_session_factory()() as session:
@@ -91,7 +90,7 @@ async def _summarize(member_ids: list[str]) -> str | None:
                 .scalars()
                 .unique()
             )
-        prompt = load_prompt("memory_community_summary").format(
+        prompt = render_summary_prompt(
             entities=", ".join(sorted(e.name for e in entities)[:_SUMMARY_MEMBER_CAP]),
             memories="\n".join(f"- {m.text}" for m in memory_rows) or "(none)",
         )
@@ -102,6 +101,22 @@ async def _summarize(member_ids: list[str]) -> str | None:
     except Exception as exc:  # noqa: BLE001 — memory never breaks anything
         logger.warning("memory_community_summary_failed", error=str(exc))
         return None
+
+
+def render_summary_prompt(*, entities: str, memories: str) -> str:
+    """The community-summary prompt through the one fence choke point
+    (M52): member memories are extracted text and cannot close the fence."""
+    from app import untrusted
+    from app.prompts import load_prompt
+
+    return untrusted.render(
+        load_prompt("memory_community_summary"),
+        mode="format",
+        body_var="memories",
+        body=memories,
+        max_chars=12_000,
+        entities=untrusted.neutralize(entities),
+    )
 
 
 async def rebuild_communities() -> int:

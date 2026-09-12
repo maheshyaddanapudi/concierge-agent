@@ -536,10 +536,60 @@ class TestHitlHappyPath:
         run_id = await send_chat(client, "deny flow")
         await wait_run(client, run_id, {"paused_hitl"})
         fake_llm.push_ai("Aggregated despite denial")
-        await client.post(f"{API}/runs/{run_id}/hitl", json={"decision": "deny", "note": "no"})
+        await client.post(
+            f"{API}/runs/{run_id}/hitl", json={"decision": "deny", "note": "do not save it"}
+        )
         run = await wait_run(client, run_id, {"completed", "failed"})
         assert run["status"] == "completed", run["error"]
         assert not any(s.get("node_id") == "save" for s in run["steps"])
+        # the denial is part of the sub agent's result, not dropped with the
+        # gate: the dispatch step carries it and the aggregator is told —
+        # before this the aggregator saw only the pre-gate draft and
+        # answered as if the gated action had happened
+        dispatch = next(
+            s for s in steps_of_type(run, "skill") if s.get("node_id") == "s1" and s.get("output")
+        )
+        assert dispatch["output"]["status"] == "denied"
+        assert "DENIED step 'gate'" in dispatch["output"]["output"]
+        assert "do not save it" in dispatch["output"]["output"]
+        assert "work output" in dispatch["output"]["output"]  # the draft is still reported
+        aggregator_prompts = [p for p in fake_llm.seen_prompts() if "You are the aggregator" in p]
+        assert aggregator_prompts, "the aggregator never ran"
+        told = aggregator_prompts[-1]
+        assert "[s1] status=denied" in told
+        assert "the gated action was NOT performed" in told
+        assert "do not save it" in told
+
+
+class TestWorkerResult:
+    """The dispatch result a worker's node outputs amount to (ladder.worker_result)."""
+
+    def test_successes_join_in_node_order(self) -> None:
+        from app.orchestrator.ladder import worker_result
+
+        outputs = {
+            "b": {"status": "ok", "output": "second"},
+            "route:a": {"targets": ["b"]},
+            "a": {"status": "ok", "output": "first"},
+        }
+        assert worker_result(outputs) == {"status": "ok", "output": "first\nsecond"}
+        assert worker_result({}) == {"status": "ok", "output": "(no output)"}
+
+    def test_a_denied_gate_is_part_of_the_result(self) -> None:
+        from app.orchestrator.ladder import worker_result
+
+        outputs = {
+            "work": {"status": "ok", "output": "Draft summary."},
+            "approve": {"node_type": "hitl", "status": "denied", "note": "Do not publish"},
+            "route:approve": {"targets": ["END"], "reason": "human denied — routed to END"},
+        }
+        result = worker_result(outputs)
+        assert result["status"] == "denied"
+        assert result["denied"] == [{"node_id": "approve", "note": "Do not publish"}]
+        assert result["output"].startswith("Draft summary.")
+        assert "DENIED step 'approve' with the note: Do not publish" in result["output"]
+        assert "the gated action was NOT performed and no step after it ran" in result["output"]
+        assert "Do not publish" in result["error"]
 
 
 class TestFallback:
