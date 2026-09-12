@@ -410,3 +410,51 @@ describe('Settings — the judges get their own roles', () => {
     ).toBeInTheDocument()
   })
 })
+
+describe('Skills — a save with the overlap judge down is reported, not silent', () => {
+  it('saves and shows the unjudged notice when judge_available is false', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (path: string) =>
+      path.endsWith('/check-overlap')
+        ? {
+            overlap: false,
+            threshold: 70,
+            overlap_percent: 0,
+            match_type: 'none',
+            match_id: null,
+            match_name: null,
+            reasoning: 'judge unavailable: provider exploded',
+            judge_available: false,
+          }
+        : {},
+    )
+    wrap(<SkillsPage />)
+    fireEvent.click(screen.getByText('clean-skill'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save skill' }))
+    const notice = await screen.findByRole('status', { name: '' })
+    expect(notice.textContent).toContain('Saved unjudged')
+    expect(notice.textContent).toContain('provider exploded')
+    expect(vi.mocked(api.patch)).toHaveBeenCalledWith('/skills/s2', expect.anything())
+    fireEvent.click(within(notice).getByText('dismiss'))
+    expect(screen.queryByText(/Saved unjudged/)).toBeNull()
+  })
+
+  it('stays silent when the judge ran and found nothing', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async () => ({
+      overlap: false,
+      threshold: 70,
+      overlap_percent: 0,
+      match_type: 'none',
+      match_id: null,
+      match_name: null,
+      reasoning: 'distinct',
+      judge_available: true,
+    }))
+    wrap(<SkillsPage />)
+    fireEvent.click(screen.getByText('clean-skill'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save skill' }))
+    await vi.waitFor(() => expect(vi.mocked(api.patch)).toHaveBeenCalled())
+    expect(screen.queryByText(/Saved unjudged/)).toBeNull()
+  })
+})

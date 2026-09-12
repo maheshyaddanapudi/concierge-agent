@@ -327,6 +327,23 @@ export function StaticNotice() {
   )
 }
 
+/** A save that went through with something the operator should know — the
+ * overlap judge did not run (spec §4: fail-open is for a human's own save,
+ * but never silently). Dismissible; `role=status` so it is announced. */
+export function SaveNotice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  return (
+    <div
+      role="status"
+      className="mb-3 flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300"
+    >
+      <span className="flex-1 whitespace-pre-wrap">{text}</span>
+      <button type="button" className="text-amber-200 underline" onClick={onDismiss}>
+        dismiss
+      </button>
+    </div>
+  )
+}
+
 export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null
   const message = error instanceof Error ? error.message : String(error)

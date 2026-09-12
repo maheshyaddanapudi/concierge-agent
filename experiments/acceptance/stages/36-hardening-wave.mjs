@@ -127,6 +127,30 @@ export default async function ({ page, nav, shot, get, post, patch, del, log, se
     const salience = page.getByRole('combobox', { name: 'Salience judge model' })
     await salience.scrollIntoViewIfNeeded()
     await shot(page, '10-settings-salience-judge-hint')
+
+    // ── a judge that did not run is a distinct state, never a silent 0% ──
+    // (third reading, named by a reader): the overlap judge given a one-token
+    // output budget (the settings API refuses a model that is not on the
+    // provider's list), so its structured verdict cannot parse and the
+    // judge is unavailable; a skill saved through the UI goes through and
+    // says so
+    const live = (await get('/settings')).json.default_model
+    await settings({ overlap_judge_model: live, overlap_judge_model_params: { max_output_tokens: 1 } })
+    const probe = (await post('/skills/check-overlap', { name: 'probe', description: 'x', instructions: 'y', tool_ids: [] })).json
+    log(`check-overlap with the judge down: judge_available=${probe.judge_available} overlap_percent=${probe.overlap_percent} reasoning=${String(probe.reasoning).slice(0, 90)}`)
+    await patch(`/tools/${echo.id}`, { status: 'active' })
+    await nav(page, 'skills')
+    const ssearch2 = page.getByPlaceholder(/search/i).first()
+    await ssearch2.fill('hw-echo-skill')
+    await page.waitForTimeout(700)
+    await page.getByText('hw-echo-skill', { exact: true }).first().click()
+    await page.waitForTimeout(800)
+    await page.getByRole('button', { name: 'Save skill' }).first().click()
+    const notice = page.getByRole('status').filter({ hasText: /Saved unjudged/ }).first()
+    await notice.waitFor({ timeout: 30000 })
+    log(`after Save with the judge down: ${((await notice.textContent()) || '').replace(/\s+/g, ' ').trim().slice(0, 220)}`)
+    await shot(page, '11-skill-saved-unjudged-judge-down')
+    await settings({ overlap_judge_model: null, overlap_judge_model_params: null })
   } finally {
     // ── restore ──
     await del(`/skills/${skill.id}`)
@@ -138,7 +162,9 @@ export default async function ({ page, nav, shot, get, post, patch, del, log, se
       eval_judge_model: null,
       eval_judge_model_params: null,
       registry_overlap_audit_enabled: false,
+      overlap_judge_model: null,
+      overlap_judge_model_params: null,
     })
-    log('restored: the stage skill deleted, echo active, settings as before, audit off, eval judge default')
+    log('restored: the stage skill deleted, echo active, settings as before, audit off, eval and overlap judges default')
   }
 }

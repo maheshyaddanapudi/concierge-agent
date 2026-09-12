@@ -326,4 +326,7 @@ export interface OverlapCheck {
   match_id: string | null
   match_name: string | null
   reasoning: string
+  // false when no judge ran (provider down, no key): a distinct state from
+  // a real 0%, and the save is reported as unjudged
+  judge_available?: boolean
 }
