@@ -40,14 +40,19 @@ async def registry_summaries(session: AsyncSession) -> dict[str, Any]:
     the registry cache (§7.3); over-threshold catalogs rank down to top-K
     (§7.4) with an explicit truncation note for the planner."""
     from app.registry_cache import get_cache
-    from app.retrieval import apply_retrieval, catalog_footer
+    from app.retrieval import apply_ambient_allowlist, apply_retrieval, catalog_footer
 
     cache = get_cache()
-    cards = await cache.sub_agent_cards()
+    # §17.4: a routine's allowlist narrows what its run may reach. It was
+    # applied in the agentic middleware only — and GRAPH is the default mode,
+    # so the planner in an ambient run saw the WHOLE exposed registry and
+    # planned against tools the routine was explicitly not given. Applied
+    # before ranking, as in the middleware, and refused again at resolution.
+    cards = apply_ambient_allowlist(await cache.sub_agent_cards(), kind="sub_agents")
     cards, cards_dropped = await apply_retrieval(cards, kind="sub_agents")
-    tools = await cache.tools(exposed_only=True)
+    tools = apply_ambient_allowlist(await cache.tools(exposed_only=True), kind="tools")
     tools, tools_dropped = await apply_retrieval(tools, kind="tools")
-    skills = await cache.skills(exposed_only=True)
+    skills = apply_ambient_allowlist(await cache.skills(exposed_only=True), kind="skills")
     skills, skills_dropped = await apply_retrieval(skills, kind="skills")
     direct = [
         {

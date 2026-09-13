@@ -1,6 +1,6 @@
 # Glossary
 
-The decoder ring for the Concierge Agent's invented and loaded vocabulary. Every term below is used in the repo; "where it lives" points at the defining spec section and/or code.
+The decoder ring for the Concierge Agent's invented and loaded vocabulary — **91 terms**. Every term below is used in the repo; "where it lives" points at the defining spec section and/or code. The first block is the M1–M12 core; the second covers the vocabulary the later waves introduced (memory §16, ambient §17/§18, A2A §19, the fork seam §20, and the production-hardening plan M49–M56).
 
 | Term | Definition | Where it lives |
 |---|---|---|
@@ -54,4 +54,49 @@ The decoder ring for the Concierge Agent's invented and loaded vocabulary. Every
 | **tool_key** | A tool's human-facing identifier — `{server}.{tool_name}` for MCP tools, the registration name for native ones. Renameable; internal bindings always use the immutable id. | spec §3.2 |
 | **top-K retrieval** | The opt-in progressive-disclosure ranker: above a threshold, orchestrator catalogs are ranked (BM25 + optional embeddings, RRF-fused) and truncated to the task's K most relevant records, with pinned ids kept and a "showing N of M" footer. | spec §7.4; `retrieval.py`; Settings → Retrieval |
 | **use_full_catalog** | The agentic-mode escalation tool that flips the registry middlewares into full-catalog mode mid-loop (logged as a `fallback` route); also the footer hint retrieval leaves on truncated catalogs. | spec §7.0, §7.4; `middleware.py` |
-| **worker factory** | `build_worker(record) → CompiledStateGraph`: compiles a workflow DAG into a LangGraph graph (`create_agent` at skill leaves, explicit StateGraph shell), validates at save time, caches by `(id, updated_at)`. | spec §6; `backend/app/factory/worker.py` |
+| **worker factory** | `build_worker(record) → CompiledStateGraph`: compiles a workflow DAG into a LangGraph graph (`create_agent` at skill leaves, explicit StateGraph shell), validates at save time, caches by `(id, "{updated_at}:{skills_digest}")` so a bound skill's edit invalidates it too. | spec §6; `backend/app/factory/worker.py` |
+
+## The later waves
+
+| Term | Definition | Where it lives |
+|---|---|---|
+| **admission** | The explicit front door for runs: a `run_max_concurrent` semaphore and a `run_queue_max` queue. Past the queue, `POST /chat` sheds with 503 + `Retry-After` rather than accepting work it cannot do. | M51; `orchestrator/admission.py` |
+| **ambient mode** | The behaviours the system performs without being asked — triggers observe, a decision plane judges, fires become ordinary runs, and an outbox delivers. Off by default (`ambient_enabled`). | spec §17; `backend/app/ambient/` |
+| **anticipation** | The one job that initiates contact unprompted: it composes a briefing and delivers it. Its own gate (`ambient_anticipation_enabled`), because silence has to be statable. | spec §17.5; `ambient/anticipate.py` |
+| **bi-temporal** | Memory stores *validity* time separately from *transaction* time, so a corrected fact supersedes rather than overwrites and "what did we believe on date X" stays answerable. | spec §16.1; `memory/store.py` |
+| **circuit open** | An MCP server past `mcp_reconnect_max_attempts` consecutive failed reconnects: the automatic retry stops and only an explicit reconnect resumes it. | M53; `mcp/manager.py` |
+| **control channel** | The one `pg_notify` channel every replica listens on, carrying a cancel intent, a terminal transition, or an in-app delivery to re-fan. The row is the truth; the message is the wake. | spec §18.9; `control.py` |
+| **digest** | A tier-2 batch of deliveries flushed at the configured `ambient_digest_times` instead of interrupting. | spec §17.5; `ambient/deliver.py` |
+| **egress policy** | One judgement for every outbound fetch made on someone else's say-so, by literal address **and** by resolution, re-checked on every redirect hop. `public` / `allowlist` / `open`. | M52; `egress.py` |
+| **erase vs forget** | Two deletion verbs. **Erase** is physical, no trace. **Forget** leaves a content-free tombstone whose hashes and suppression embedding stop the same fact being re-learned. | spec §16.1; `memory/store.py` |
+| **exemplar** | A positively-signalled plan kept as a few-shot for the planner, with a reuse-vote lifecycle. L3 procedural memory. | spec §16.5; `memory/procedural.py` |
+| **fence / fence token** | The one choke point through which every externally-authored string passes before a model sees it. Fence-shaped tags inside the payload are neutralized and both tags carry a per-render token, so a payload can neither close the fence early nor forge one. | M52; `untrusted.py` |
+| **fire / hold** | The decision plane's two verdicts on an observed event. A hold is recorded on the ledger with its reason — not a dropped event. | spec §17.3; `ambient/decide.py` |
+| **fire token** | A routine's hashed bearer token. Shown once at issue; the token **is** the authentication for `POST /routines/{id}/fire`, which is why that path is exempt from the auth middleware. | spec §17.1; `api/routines.py` |
+| **ingest_state** | Why a tool is out of service, preserved across re-ingest so an operator's decision is never silently undone: `present`, `missing`, `changed`, `agentoff`. | M53 / hardening wave; `models/tool.py` |
+| **job clock** | `last_run_at` per periodic job in `job_clock`, so an interval is a property of the cluster rather than of a process's monotonic clock — a restart re-runs nothing. | spec §18.9; `jobclock.py` |
+| **leader / lease** | The replica holding the Postgres session advisory lock that entitles it to run the ambient evaluators. The session **is** the lease; process death releases it server-side. | spec §18.9; `ambient/coordinate.py` |
+| **learner mode** | `off` / `propose` / `auto` on each of the three learners. `propose` routes every change through the review queue; `auto` applies within clamps and is reversible from the ledger. All three ship `off`. | spec §17.7 |
+| **owner replica** | The process executing a run, stamped at creation. A cancel from anywhere else is a persisted **intent** the owner acts on — no process ever writes a status it did not cause. | spec §18.9; `models/run.py` |
+| **parked task** | An A2A task that outlived `a2a_task_timeout_s`: the run completes honestly, the ambient tick polls the remote task, and the result arrives as an ordinary delivery. Never a recheck run. | spec §19.6; `a2a/poller.py` |
+| **pinning** | Recording, on the run and on each step, the exact version of every registry record it used — so a trace reads against the registry as it *was*, not as it is. | spec §3.6; `orchestrator/snapshot.py` |
+| **precision (intervention)** | Per category, the share of deliveries a human accepted. The rule-based auto-downgrade and the §17.7 learner both read it. | spec §17.6 |
+| **presence oracle** | `stream_subscriber_count()` sampled immediately before a broadcast — the literal audience of the toast being sent, not an estimate of whether someone is around. | spec §17.5; `ambient/presence.py` |
+| **project scope** | A conversation's `project_key`. Project memories inject only in conversations carrying that key, and recall is partitioned on it. | spec §18.2 |
+| **pursuit** | Whether the **external** half of a delivery is sent when the in-app half already reached someone. `off` / `away` / `always`. It escalates the channel, never the hour. | spec §18.4 |
+| **quarantine** | Two unrelated uses: an instruction-shaped memory held until a human approves it (§16.4), and a routine whose trigger keeps raising, or a tool whose schema changed under `mcp_schema_change_policy=quarantine`, taken out of service with the reason recorded. | spec §16.4, §17.2, §3.2 |
+| **queued** | A real, persisted run status (not a UI affordance): admission is full and the run holds a queue slot. Together with `running` and `paused_hitl` it is the live set. | M51; `models/run.py` |
+| **rung 0 / the switchability rule** | §3.7.1: every behaviour the system performs on its own answers to a named gate, **enforced inside the behaviour** rather than at its caller, and asserted by test so a new job cannot ship ungated. | spec §3.7.1; `tests/test_switchability.py` |
+| **salience** | The re-judgement of a delivery nobody saw, into one of three ledgered outcomes: escalate to digest-lead, retain into memory, or drop on the record. | spec §17.5; `ambient/salience.py` |
+| **schema drift** | A tool's server-owned input schema changing without a deploy. Every write is fingerprinted and versioned; a change is logged, counted and flagged until acknowledged. | spec §3.2; `toolschema.py` |
+| **skey** | A delivery's supersede key: a newer item with the same `skey` collapses the older one instead of adding to the pile. | spec §17.5 |
+| **spend ceiling** | One USD-per-day ceiling across every kind of model work, summed from the database over the UTC day so every replica sees the same number. | M53; `cost.py` |
+| **stalled** | The terminal status the heartbeat reaper writes for a run whose task went silent past `run_stall_after_s` — distinct from the **wall clock** (`run_wall_clock_s`), which ends a run `failed` while the process was alive and working. | M51; `ambient/execute.py`, `orchestrator/runner.py` |
+| **standing intent / watch** | A durable "tell me when…" row with a compiled rule and cadence state — never a remembered instruction, always a typed object a human confirmed. | spec §17.4; `ambient/watch_compile.py` |
+| **supersede-collapse** | The outbox rule that a newer delivery sharing a `skey` replaces its predecessor rather than queueing beside it. | spec §17.5 |
+| **tenancy predicate** | The auth port's contribution to every query: a work-row filter, a row check and a memory-visibility fragment. The core asks the port; the fork supplies the rule. | spec §20; `auth/port.py` |
+| **tier (delivery)** | 0–3, how insistently a delivery may reach a human: interrupt, notify, digest, silent. Pursuit, quiet hours and the notification budget all sit strictly under it. | spec §17.5 |
+| **tombstone** | The content-free trace a Forget leaves: metadata, a normalized hash, payload-token hashes and a suppression-only embedding — never the text. Destroyed with the tombstone on Unforget. | spec §16.1; `models/memory.py` |
+| **typed embedding column** | `emb_<dims>` on `memory_embeddings`, one per supported dimension, each with a real HNSW cosine index — which is what makes a zero-downtime embedding-model switch true. | spec §16.1; `memory/dims.py` |
+| **untrusted output** | Anything an external party authored: a remote agent's reply, a fetched feed item, a delivery body, a memory extracted from any of those. It is always fenced before a model sees it. | M52; `untrusted.py` |
+| **wall clock** | `run_wall_clock_s`: every run's ceiling. Past it the run ends `failed` with the clock and the setting named. | M51; `orchestrator/runner.py` |

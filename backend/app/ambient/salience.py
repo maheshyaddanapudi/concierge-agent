@@ -35,6 +35,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.cost import enforce_job_ceiling, job_spend
 from app.db import get_session_factory
 from app.llm import ModelParams, get_model
 from app.models import Delivery
@@ -126,7 +127,8 @@ async def judge(row: Delivery) -> SalienceVerdict | None:
             model_params = ModelParams.model_validate(raw) if raw else None
         model = get_model(model_ref, model_params)
         structured = model.with_structured_output(SalienceVerdict)
-        verdict = await structured.ainvoke(prompt)
+        async with job_spend("salience_judge", model_ref) as cb:
+            verdict = await structured.ainvoke(prompt, config={"callbacks": cb})
         if not isinstance(verdict, SalienceVerdict):
             raise TypeError(f"expected SalienceVerdict, got {type(verdict).__name__}")
         return verdict
@@ -350,6 +352,8 @@ async def run_salience_pass(limit: int = 20) -> dict[str, int]:
     out = {"considered": 0, "judged": 0, "escalate": 0, "retain": 0, "drop": 0, "skipped": 0}
     mode = str(await get_cache().setting("ambient_salience_mode") or "off")
     if mode == "off":
+        return out
+    if not await enforce_job_ceiling("salience_judge"):
         return out
     min_urgency = int(await get_cache().setting("ambient_salience_min_urgency") or 3)
     async with get_session_factory()() as session:

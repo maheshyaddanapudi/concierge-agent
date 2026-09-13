@@ -99,4 +99,10 @@ def scan_agent_files(directory: Path) -> tuple[list[AgentDoc], list[str]]:
             docs.append(parse_agent_document(path.read_text(encoding="utf-8"), path.name))
         except AgentDocError as exc:
             errors.append(f"{path.name}: {exc}")
+        except (OSError, UnicodeDecodeError) as exc:
+            # the contract right above says a broken file must not take down
+            # boot, but only AgentDocError was caught: a file saved in another
+            # encoding, or one the process cannot read, raised out of the seed
+            # inside the boot lock and the application never started.
+            errors.append(f"{path.name}: unreadable ({exc.__class__.__name__})")
     return docs, errors

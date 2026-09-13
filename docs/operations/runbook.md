@@ -6,7 +6,7 @@ Everything here is grounded in the repo's lifecycle scripts, `docker-compose.yml
 
 | Action | Command | Preserves | Destroys |
 |---|---|---|---|
-| First-time setup | `./quick-setup.sh` (flags: `--key sk-ant-...`, `--redis`, `--no-redis`) | Existing `.env` values it does not touch | Nothing |
+| First-time setup | `./quick-setup.sh` (flags: `--providers a,b`\|`all`\|`none`, `--anthropic-key`/`--google-key`/`--openai-key`, `--redis`/`--no-redis`) | Existing `.env` values it does not touch | Nothing |
 | Build images | `./build.sh` | Everything | Nothing (rebuilds `backend` + `frontend` images) |
 | Start / resume | `./start.sh` | All data (named volumes `pgdata`, `workspace`) | Nothing |
 | Stop | `./stop.sh` | Containers, network, volumes — `./start.sh` resumes with the same data | Nothing |
@@ -14,8 +14,8 @@ Everything here is grounded in the repo's lifecycle scripts, `docker-compose.yml
 
 Notes from the scripts themselves:
 
-- `quick-setup.sh` creates `.env` from `.env.example`, prompts for `ANTHROPIC_API_KEY` (hidden input; `--key <value>` non-interactive), optionally provisions Redis (`--redis` writes `REDIS_URL=redis://redis:6379/0` and `COMPOSE_PROFILES=redis`; `--no-redis` blanks both), then runs `uv sync` (backend) and `npm install` (frontend) if those tools exist. Safe to re-run.
-- `start.sh` is idempotent: `docker compose up -d` pulls/builds missing images, creates missing containers, restarts stopped ones, no-ops on running ones. It then polls `http://localhost:${BACKEND_PORT:-8000}/health` for up to ~120 s (60 × 2 s) and prints the frontend/API/health URLs. Migrations (`alembic upgrade head`) and idempotent seed load run inside backend startup — there is no separate migration step.
+- `quick-setup.sh` creates `.env` from `.env.example`, then asks **which providers** to configure — Anthropic, Google, OpenAI, any combination, `all`, or `none` for keyless demo mode — prompts for each selected key with hidden input, and **verifies each key with a free list-models call before saving** (with a save-anyway escape). Non-interactive: `--providers anthropic,google,openai|all|none` and `--anthropic-key` / `--google-key` / `--openai-key` (each implies its provider; `--key` is a back-compat alias for `--anthropic-key`). It optionally provisions Redis (`--redis` writes `REDIS_URL=redis://redis:6379/0` and `COMPOSE_PROFILES=redis`; `--no-redis` blanks both), then runs `uv sync` (backend) and `npm install` (frontend) if those tools exist. Safe to re-run — every prompt defaults to "keep what I have". **OpenRouter and the custom gateway are not on the menu**: set `OPENROUTER_API_KEY`, or `CUSTOM_GATEWAY_BASE_URL` / `_API_KEY` / `_MODELS`, by hand in `.env`.
+- `start.sh` is idempotent: `docker compose up -d` pulls/builds missing images, creates missing containers, restarts stopped ones, no-ops on running ones. It then asks `docker compose port backend 8000` for the **published** host port — compose publishes the backend from `BACKEND_PORT_RANGE`, so `BACKEND_PORT` is not it — polls `/health` there for up to ~120 s (60 × 2 s) and prints the frontend/API/health URLs. `deploy.sh` and `restore.sh` resolve the port the same way. Migrations (`alembic upgrade head`) and idempotent seed load run inside backend startup, under the boot advisory lock — there is no separate migration step.
 - `decom.sh` runs `docker compose down -v --remove-orphans`. The next `./start.sh` is a clean slate: fresh schema, seeds reloaded. Rebuild images with `./build.sh` only after code changes.
 - Restart = `./stop.sh && ./start.sh` (or `docker compose restart backend` for the backend alone).
 
@@ -25,14 +25,14 @@ Notes from the scripts themselves:
 |---|---|---|
 | Backend liveness | `curl -s http://localhost:8000/health` | `{"status":"ok"}` |
 | Backend readiness (M51/M53) | `curl -s -i http://localhost:8000/ready` | `200` with `{"status":"ready","db":"ok","accepting":true,"running":n,"queued":n,"max_concurrent":8,"draining_since":null}`; `503 draining` after `SIGUSR1` or during shutdown, `503 degraded` when the database does not answer in 2 s — point the load balancer's readiness probe here, liveness at `/health` |
-| Incident signals (M53) | `curl -s http://localhost:8000/metrics \| grep -E 'concierge_(db_pool|runs_in_flight|backlog|loop_errors|llm_calls|mcp_servers|listener)'` | pool saturation under 1.0, `queued` 0, backlog draining, loop errors flat, `status="ok"` dominating LLM calls, listeners at 1 — see the per-failure pages in [`runbooks/`](./runbooks/README.md) |
+| Incident signals (M53) | `curl -s http://localhost:8000/metrics \| grep -E 'concierge_(db_pool\|runs_in_flight\|backlog\|loop_errors\|llm_calls\|mcp_servers\|listener)'` | pool saturation under 1.0, `queued` 0, backlog draining, loop errors flat, `status="ok"` dominating LLM calls, listeners at 1 — see the per-failure pages in [`runbooks/`](./runbooks/README.md) |
 | Spend (M53) | `curl -s http://localhost:8000/api/v1/spend` | `{"day":…,"usd_today":…,"by_kind":{…},"ceiling":{"enabled":…,"reached":false}}` |
 | Retention (M53) | `curl -s http://localhost:8000/api/v1/retention` | per table: `enabled`, `days`, `eligible` |
 | DB container | `docker compose ps db` | `healthy` (compose healthcheck: `pg_isready -U concierge`, 3 s interval, 20 retries) |
 | All containers | `docker compose ps` | `db` healthy, `backend` and `frontend` `Up` |
 | Backend logs | `docker compose logs -f backend` | JSON structlog lines; `registry_cache_started`, `mcp_connected` per seeded server at startup |
 | Metrics | `curl -s http://localhost:8000/metrics` | Prometheus text (`concierge_runs_total`, `concierge_steps_total`, …) |
-| Cache | `curl -s http://localhost:8000/api/v1/cache/status` | `{"mode": "...", "registries": {tools|skills|sub_agents|settings: {records, generation, loaded_at, cached}}}` |
+| Cache | `curl -s http://localhost:8000/api/v1/cache/status` | `{"mode": "...", "registries": {tools\|skills\|sub_agents\|settings: {records, generation, loaded_at, cached, dirty}}}` |
 | MCP servers | `GET /api/v1/mcp-servers` | `status: "active"`, recent `last_connected_at`, `last_error: null` |
 
 Since M53 the `backend` compose service carries a container healthcheck on `/health` (liveness), `restart: unless-stopped`, resource limits and a 40 s stop grace; `frontend` (nginx serving the built SPA and proxying `/api/` and `/metrics` to `backend:8000`, see `frontend/nginx.conf`) waits for a healthy backend. Rolling a new build: `./deploy.sh` (readiness-first — `SIGUSR1`, wait for `/ready` 503, recreate, wait for `/ready` 200; `scaling.md` has the sequence). Backup and restore: `./backup.sh` / `./restore.sh` (`backup-restore.md`). Failure classes with the metric that reveals each and the action that resolves it: [`runbooks/`](./runbooks/README.md).
@@ -64,7 +64,7 @@ curl -X PATCH http://localhost:8000/api/v1/settings \
 
 Settings → Registry cache, or `PATCH /settings {"registry_cache_mode": "..."}`. Applied live — the settings write path invalidates the settings registry, and the cache re-reads its own mode (`registry_cache.py`, `_mark_dirty`).
 
-- `bypass` (default): every read is a direct Postgres query. The rollback lever — flip here first when cache behavior is suspect.
+- `bypass`: every read is a direct Postgres query. **The rollback lever** — flip here first when cache behaviour is suspect. It is a live read, not a faster cache: because every write path invalidates before returning, a `memory` read is never staler than a bypassed one, so `bypass` buys diagnosis, not freshness. (It was the shipped default through M56; the default is now `memory` — see `../adr/0004-registry-cache-bypass-default.md`.)
 - `memory`: per-process store, reload-on-dirty; flipping into it warm-loads all four registries.
 - `redis`: requires `REDIS_URL` in env (else the save is rejected with 422) **and** the save pings Redis, rejecting with `redis unreachable: ...` if the ping fails. Provision with `./quick-setup.sh --redis` + restart the stack so the `redis` compose profile service starts.
 
@@ -126,7 +126,7 @@ curl -X DELETE http://localhost:8000/api/v1/runs/<run_id>   # one run (409 if st
 curl -X DELETE http://localhost:8000/api/v1/runs            # everything: all runs + steps (Settings → Data → purge, with confirm)
 ```
 
-Purge deletes `runs`/`run_steps` rows and drops in-memory SSE event history. It does **not** touch LangGraph checkpoint tables — see `data-lifecycle.md`.
+Purge deletes `runs`/`run_steps` rows, drops the in-memory SSE event history, **and removes the matching LangGraph checkpoint rows** — all three tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`), for the single run or for everything (`_purge_checkpoints` in `backend/app/api/runs.py`). §8.7 is explicit that a purge leaves no run residue, and stage 23's transcript records the three tables at 0/0/0 afterwards. The checkpoint tables' *schema* is owned by `langgraph-checkpoint-postgres`, not by this repo's Alembic chain — their *rows* are this application's to clean up. See `data-lifecycle.md`.
 
 ### Reload seed data
 
@@ -140,7 +140,7 @@ curl -X POST http://localhost:8000/api/v1/seed/reload   # idempotent; invalidate
 
 | Symptom | First checks | Likely cause |
 |---|---|---|
-| `./start.sh` times out waiting for health | `docker compose logs backend` | Migration failure, DB not healthy yet, port conflict on `BACKEND_PORT` |
+| `./start.sh` times out waiting for health | `docker compose logs backend` | Migration failure, DB not healthy yet, a host port in `BACKEND_PORT_RANGE` already taken |
 | Runs fail instantly with provider errors | Run detail error text; `GET /api/v1/providers` for configured status | Missing/exhausted API key, provider quota (see `troubleshooting.md`) |
 | Run hangs at a tool call, then step errors | MCP Servers page: server `status=error`, `last_error` | Dead/never-connected MCP server (stdio command missing, npx cold start) |
 | Registry edit not visible to runs | `GET /api/v1/cache/status` generations; `POST /api/v1/cache/refresh/all` | Should not happen (event invalidation); flip `registry_cache_mode` to `bypass` to rule the cache out |

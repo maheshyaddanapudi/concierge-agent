@@ -23,6 +23,20 @@ async def cache_mode(request: pytest.FixtureRequest) -> str:
     return str(request.param)
 
 
+class TestShippedDefault:
+    def test_the_shipped_mode_is_memory(self) -> None:
+        """code_setting_ui_hardening: `memory` is what a fresh deployment
+        gets. Invalidation is event-driven and exhaustive and TTLs are
+        forbidden (spec §7.3), so a cached read is never staler than a
+        bypassed one — shipping `bypass` paid the full Postgres cost on
+        every model call for a guarantee the cache already gave. `bypass`
+        stays valid as the rollback lever; this test exists so the flip is
+        a decision someone has to make again, not a drift."""
+        from app.settings_store import DEFAULTS
+
+        assert DEFAULTS["registry_cache_mode"] == "memory"
+
+
 class TestCacheContract:
     async def test_tools_reads(self, cache_mode: str) -> None:
         exposed = await create_tool(direct_exposure=True)

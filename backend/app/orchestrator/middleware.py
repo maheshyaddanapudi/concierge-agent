@@ -610,7 +610,9 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
         cards, _dropped = await apply_retrieval(cards, kind="sub_agents")
         return cards
 
-    def _tool_for(self, card: dict[str, Any], name: str | None = None) -> BaseTool:
+    def _tool_for(
+        self, card: dict[str, Any], name: str | None = None, call_id: str | None = None
+    ) -> BaseTool:
         from app.factory.worker import sanitize_tool_name
 
         if name is None:
@@ -625,10 +627,23 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
 
             resolution = await resolve_capability({"type": "sub_agent", "id": card["id"]})
             ctx = get_run_context()
+            # keyed on the TOOL CALL, not the agent's name. Both the step
+            # record and the worker's checkpoint thread derive from this, so
+            # dispatching the same sub agent twice in one run used to share
+            # one thread: the second call adopted the first's step and
+            # returned the first's answer. The worker path already learned
+            # this; the dispatch path had not.
             node_id = f"agentic:{card['name']}"
+            if call_id:
+                node_id = f"{node_id}:{call_id}"
             # HITL resume replays this handler — the route was already
-            # recorded before the pause when the dispatch step is still open
-            replay = ctx is not None and await find_running_dispatch(ctx.run_id, node_id)
+            # recorded before the pause when the dispatch step is still open.
+            # `legacy_node_id` is the compatibility shim: a run paused BEFORE
+            # this change stored the un-keyed form, and must still resume.
+            legacy_node_id = f"agentic:{card['name']}" if call_id else None
+            replay = ctx is not None and await find_running_dispatch(
+                ctx.run_id, node_id, legacy_node_id
+            )
             if replay and ctx is not None:
                 # the replay runs the agent as it is NOW; the dispatch step
                 # that paused pinned what it was — a difference is on the
@@ -701,7 +716,10 @@ class SubAgentsRegistryMiddleware(AgentMiddleware[Any, Any]):
             # call runs, so a fresh instance must resolve its registry here.
             await self._refresh()
         if name in self._current:
-            return await handler(request.override(tool=self._tool_for(self._current[name], name)))
+            call_id = str(request.tool_call.get("id") or "") or None
+            return await handler(
+                request.override(tool=self._tool_for(self._current[name], name, call_id))
+            )
         return await handler(request)
 
 

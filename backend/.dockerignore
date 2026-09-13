@@ -1,0 +1,38 @@
+# Build context for `build: ./backend` (docker-compose.yml).
+#
+# Keep this list additive-safe: the image needs pyproject.toml, uv.lock,
+# alembic/, app/ (including app/native/**.skill.md and app/prompts/**, which
+# the doclint and prompt-golden build gates read) and tests/. Everything below
+# is either regenerated in the image or must never enter a layer.
+
+# version control
+.git
+.gitignore
+
+# virtualenv — 345 MB of host-built wheels that the image reinstalls itself
+.venv
+venv
+
+# python byte code and tool caches
+__pycache__/
+**/__pycache__
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# local environment files — provider keys are env-only, never in a layer
+.env
+.env.*
+
+# stray node artefacts (npx/uvx caches are created inside the image)
+node_modules
+
+# editor / OS noise
+.idea/
+.vscode/
+.DS_Store

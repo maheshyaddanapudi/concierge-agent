@@ -10,7 +10,7 @@ Context / Decision / Consequences structure.
 | [0001](./0001-no-broker-single-process.md) | Single asyncio FastAPI process, no message broker | Accepted | 2026-08-04 |
 | [0002](./0002-model-provider-port.md) | ModelProvider port and adapter registry for all model access | Accepted | 2026-08-04 |
 | [0003](./0003-middleware-precedence.md) | Middleware precedence — out-of-box first, custom last | Accepted | 2026-08-05 |
-| [0004](./0004-registry-cache-bypass-default.md) | RegistryCache facade with bypass as the shipped default | Accepted | 2026-08-06 |
+| [0004](./0004-registry-cache-bypass-default.md) | RegistryCache facade with bypass as the shipped default | **Accepted, default amended** (the shipped default is now `memory`; `bypass` stays the rollback lever — see the amendment in the record) | 2026-08-06 |
 | [0005](./0005-hybrid-retrieval-bm25-rrf.md) | Hybrid BM25 + cosine retrieval with RRF, dark by default | Accepted | 2026-08-06 |
 | [0006](./0006-jsonb-embeddings-before-pgvector.md) | JSONB embedding storage before pgvector | Accepted | 2026-08-07 |
 | [0007](./0007-openai-responses-api-routing.md) | Route OpenAI reasoning-effort runs through the Responses API | Accepted | 2026-08-07 |

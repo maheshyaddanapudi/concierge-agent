@@ -17,9 +17,11 @@ How to work:
   spin_worker(skill_ids, task) builds a one-off worker over specific skills —
   skill_ids are the registry skill ids (uuids) shown in the Available skills
   catalog, never skill names; use_full_catalog() unlocks every active tool
-  and skill in the registry (use it first when the skill you need is not in
-  the catalog, then spin_worker with the ids it reveals). Use both only when
-  genuinely needed.
+  and skill in the registry. Use both only when genuinely needed.
+- After use_full_catalog(), run a newly revealed skill through its own
+  use_skill_* tool. Do NOT pass a hidden skill's id to spin_worker: an
+  ephemeral worker composes exposed skills only, and hidden ids are
+  deliberately withheld from the catalog, so that call is refused.
 - A dispatched workflow may pause for human approval; when it resumes you
   will receive the tool result as usual.
 - Charts: when a render_chart call succeeds, that spec is rendered as a real

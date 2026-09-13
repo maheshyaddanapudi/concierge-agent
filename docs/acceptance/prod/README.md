@@ -22,7 +22,18 @@ redis (`--profile redis`), one backend replica, the live model
 | `HARDENING/` | `hardening-wave.sh`, `third-reading.sh` | the hardening wave through the API: an operator's tool description surviving `refresh-tools`, a `tool_key` rename refused on a sanitized-name collision and while a skill mentions the old key, an MCP `args` edit logged as `mcp_server_config_changed` and reconnected at once, definition versions unmoved by toggles and bumped by an edit, a run's snapshot keys (`settings`, `prompts`, `build`, `context`, `catalog_calls`, `catalog`), its `format` step, its stamped cost surviving a doubled price, and the new settings validated like their siblings; `tests.md` is the backend suite on that commit, `frontend-tests.md` the frontend run; the UI frames are stage `36-hardening-wave`; `third-reading.md` is the third reading's drill — the compiled worker following a skill edit, quarantine on a tool returning with a new schema, a disabled remote agent's tools leaving the catalog, a null description and a masked secret changing nothing, a direct run approved after its agent was deactivated, a cancelled run's pinned context, the overlap judge unmoved by a record that addresses it, and the data migration's backfills re-run |
 | `FIXES/` | `fixes-hitl-deny.sh`, `fixes-ambient-toggle.sh` | the campaign's findings 1 and 2 re-verified on the fixed image: a gated sub agent denied with a note and the answer reporting the refusal (`hitl-deny.md`); `ambient_enabled` off→on cycles — the switch's one-second flip and a flip held for a full tick — each followed by the advisory lease in `pg_locks`, the leader gauge, the `ambient_leader_acquired` count and a tier-0 probe row the tick flushes (`ambient-toggle.md`); `tests.md` is the backend suite on the fix commit |
 
-`tests.md` is the backend suite run once on the same commit with the fake
-provider (1068 passed, 1 skipped — two environment-dependent tests re-run
-with the drill shell's provider key and redis URL unset, shown in the page);
-`frontend-tests.md` is the frontend lint and test run (94 passed).
+`tests.md` at this level is the backend suite run once on the campaign tree
+with the fake provider (1068 passed, 1 skipped — two environment-dependent
+tests re-run with the drill shell's provider key and redis URL unset, shown
+in the page, on commit `17acdc1`); `frontend-tests.md` is the frontend lint
+and test run (94 passed, on commit `6f32ec6` — two documentation-only commits
+later, so the code is identical).
+
+These two are the **campaign-commit** record and are not overwritten. Each
+later pass keeps its own pair: `FIXES/tests.md` (the fix commit, 1077 passed
+/ 1 skipped), `DRIFT/tests.md` + `DRIFT/frontend-tests.md` (the schema-drift
+commit, 1092 / 99), and `HARDENING/tests.md` + `HARDENING/frontend-tests.md`
+— which are **rewritten by each reading of the hardening wave** and today
+hold the third reading (1170 passed / 1 skipped, and 109 across 13 suites).
+The round-two numbers (1152 / 107) therefore have no page of their own; they
+are recorded in `../report.md` and the CHANGELOG.

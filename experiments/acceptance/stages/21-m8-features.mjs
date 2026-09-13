@@ -3,7 +3,7 @@
 // (text + choice) filled and submitted from the chat card; a chart inside
 // the structured answer; and an agentic research run within its iteration
 // budget.
-export default async function ({ page, nav, shot, settings, get, post, del, log, newConversation, askAndSettle }) {
+export default async function ({ page, nav, shot, settings, get, post, del, log, newConversation, askAndSettle, expect, expectEq, expectHttp, expectMatch, expectStatus }) {
   await settings({ orchestrator_mode: 'graph', default_model_params: null, formatter_enabled: true, formatter_presentation: 'a2ui_first', answer_ui_charts_enabled: true })
 
   // 1. the form gate — a sub agent created through the API (the builder has
@@ -39,7 +39,7 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
     },
   })
   log(`form-demo → HTTP ${created.status} ${created.status >= 300 ? JSON.stringify(created.json).slice(0, 200) : created.json.id}`)
-  if (created.status >= 300) throw new Error('form-demo not created')
+  expectHttp(created, 201, 'the form-gate sub agent was created')
 
   await nav(page, '')
   await newConversation(page)
@@ -59,6 +59,11 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   await shot(page, '02-form-gate-run-completed')
   const hitl = (done1.steps || []).find((s) => s.step_type === 'hitl')
   log(`form gate answers recorded: ${JSON.stringify(hitl?.output || {}).slice(0, 240)}`)
+  // §3.5: the form's answers must be RECORDED on the gate, not just typed
+  expectStatus(done1, 'completed', 'the form-gated run')
+  expect(!!hitl, 'the run has a hitl step')
+  expectMatch(JSON.stringify(hitl?.output || {}), /payments service v2\.3/, 'the text answer reached the gate')
+  expectMatch(JSON.stringify(hitl?.output || {}), /high/, 'and so did the choice answer')
   await target.selectOption({ label: 'Orchestrator (auto)' })
 
   // 2. a chart inside the structured answer
@@ -82,9 +87,14 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   }
   const ui = done2.answer_ui || {}
   log(`answer_ui: ${(ui.a2ui || []).length} a2ui messages, ${(ui.blocks || []).length} blocks, ${charts.length} chart(s): ${charts.map((c) => `${c.kind} "${c.title}" ${JSON.stringify(c.labels)} → ${JSON.stringify(c.series?.[0]?.values)}`).join(' | ')}`)
+  // framing only
   await page.locator('svg').last().scrollIntoViewIfNeeded().catch(() => {})
   await shot(page, '10-chart-in-a2ui-first-answer')
-  if (!charts.length) log('no chart in this answer — the formatter chose not to chart it (recorded as-is)')
+  // §7.1: the stage exists to show a chart INSIDE the structured answer —
+  // three attempts is the allowance for a model call, not an excuse
+  expectStatus(done2, 'completed', 'the charting run')
+  expect(charts.length > 0, 'the structured answer carries a chart')
+  expectMatch(JSON.stringify(charts[0]?.labels || []), /Q1/, 'the chart is labelled with the quarters')
 
   // 3. agentic research within the iteration budget
   await settings({ orchestrator_mode: 'agentic' })
@@ -94,7 +104,13 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   // arm minutes in, after the fetch attempts, so the watch is long)
   const done3 = await askAndSettle(page, 'Research what pgvector is used for. Three bullet points, each with a source link.', { timeoutS: 420, gateWaitS: 300 })
   const toolCalls = (done3.steps || []).filter((s) => s.step_type === 'tool_call')
-  log(`research: ${toolCalls.length} tool calls (${[...new Set(toolCalls.map((s) => s.node_id))].join(', ')}); errors: ${toolCalls.filter((s) => s.status === 'failed').length}; iterations budget max_tool_iterations=${(await get('/settings')).json.max_tool_iterations}`)
+  const budget = (await get('/settings')).json.max_tool_iterations
+  log(`research: ${toolCalls.length} tool calls (${[...new Set(toolCalls.map((s) => s.node_id))].join(', ')}); errors: ${toolCalls.filter((s) => s.status === 'failed').length}; iterations budget max_tool_iterations=${budget}`)
   await shot(page, '20-research-run-agentic')
+  // "within its iteration budget" is the claim — so it settled, and it did
+  // not blow through the cap
+  expectStatus(done3, 'completed', 'the agentic research run')
+  expect(toolCalls.length > 0, `the research run actually used tools (${toolCalls.length} calls)`)
+  expect(toolCalls.length <= budget, `…and stayed within max_tool_iterations=${budget}`)
   await settings({ orchestrator_mode: 'graph' })
 }

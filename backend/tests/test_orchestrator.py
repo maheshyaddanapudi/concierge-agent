@@ -869,8 +869,13 @@ class TestAgenticMode:
         # interrupted dispatch tool call must be replayed — the paused
         # dispatch step adopted and finished, the hitl decision recorded,
         # and nothing duplicated (spec §7.0 idempotent replay)
+        # the node id is now keyed on the tool call (`agentic:<name>:<call id>`)
+        # so a second dispatch of the SAME agent gets its own step and its own
+        # checkpoint thread instead of adopting the first one's
         dispatches = [
-            s for s in steps_of_type(run, "skill") if s.get("node_id") == f"agentic:{agent.name}"
+            s
+            for s in steps_of_type(run, "skill")
+            if str(s.get("node_id") or "").startswith(f"agentic:{agent.name}")
         ]
         assert len(dispatches) == 1, f"expected one dispatch step, got {len(dispatches)}"
         assert dispatches[0]["status"] == "completed"
@@ -1018,7 +1023,11 @@ class TestAnswerUi:
         async with get_session_factory()() as session:
             await update_settings(session, {"formatter_enabled": True})
         plan_call(direct_answer="Plain answer.")
+        # the formatter asks twice — the junk answer is the point of the
+        # test, so BOTH attempts get it rather than the second one silently
+        # falling through to a canned empty document
         fake_llm.push_ai("not a structured payload at all")
+        fake_llm.push_ai("still not a structured payload")
         run_id = await send_chat(client, "plain?")
         run = await wait_run(client, run_id, {"completed", "failed"})
         assert run["status"] == "completed"
@@ -1388,7 +1397,12 @@ class TestSpinWorkerStrictIds:
             )
         )
         tool = _spin_worker_tool()
-        out = await tool.coroutine(skill_ids=["not-a-skill"], task="anything")
+        # the tool now takes the injected tool-call id: the worker's checkpoint
+        # thread is keyed on the CALL, so a resumed run cannot adopt another
+        # worker's thread the way the per-run callsign counter allowed
+        out = await tool.coroutine(
+            skill_ids=["not-a-skill"], task="anything", tool_call_id="call-1"
+        )
         assert "could not spin a worker" in out
         assert "uuid" in out
 

@@ -22,6 +22,9 @@ API = "/api/v1"
 
 
 async def _set(**kv: Any) -> None:
+    # §3.7.1: the tuner enforces the memory master in its own body now, so a
+    # test that only flips the learner gate proves nothing without this.
+    kv.setdefault("memory_enabled", True)
     async with get_session_factory()() as session:
         await update_settings(session, kv)
 
@@ -49,12 +52,26 @@ async def _ledger(
     kept: int = 0,
     forgotten: int = 0,
     rejected: int = 0,
+    churned: int = 0,
     confidence: float = 0.7,
     source: str = "extracted",
 ) -> None:
     """Fabricate the tuner's inputs directly: active rows, tombstones with
-    confidence-at-admission, and review-rejected rows."""
+    confidence-at-admission, review-rejected rows, and `churned` rows —
+    admitted machine writes the ordinary lifecycle has since moved off
+    `active` (a supersession, a decay expiry). Nobody repudiated those."""
     async with get_session_factory()() as session:
+        for i in range(churned):
+            session.add(
+                Memory(
+                    text=f"{kind} churned {confidence} {i}",
+                    kind=kind,
+                    scope="global",
+                    source=source,
+                    status="superseded" if i % 2 else "expired",
+                    confidence=confidence,
+                )
+            )
         for i in range(kept):
             session.add(
                 Memory(
@@ -219,6 +236,20 @@ class TestFloorMoves:
         out = await run_extraction_tuner()
         assert out["floor_moves"] == 1
         assert float(await _setting("memory_admission_min_confidence")) == 0.55
+
+    async def test_ordinary_churn_does_not_ratchet_the_floor(self, client: Any) -> None:
+        """The band's denominator is every machine row ADMITTED in the band,
+        whatever its status today. Counting only rows still `active` made a
+        supersession or a decay expiry look like the good half of the band
+        evaporating, so a merely-alive store ratcheted its own floor up."""
+        await _set(memory_extraction_learning="auto")
+        # 5 repudiated vs 2 still-active + 6 churned in [0.50,0.55):
+        # 5/13 = 0.38 of the band, well under BAND_JUNK_SHARE
+        await _ledger("fact", kept=2, forgotten=5, churned=6, confidence=0.52)
+        await _ledger("fact", kept=10, confidence=0.8)  # keeps the kind un-routed
+        out = await run_extraction_tuner()
+        assert out["kind_routes"] == 0 and out["floor_moves"] == 0
+        assert float(await _setting("memory_admission_min_confidence")) == 0.5
 
     async def test_confidence_independent_repudiation_never_ratchets(self, client: Any) -> None:
         """The harness-forced refinement: high forget-rate ABOVE the band

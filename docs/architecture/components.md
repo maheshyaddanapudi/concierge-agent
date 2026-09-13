@@ -48,12 +48,22 @@ classDiagram
     class OpenAIProvider {
         +embeddings: supported
     }
+    class OpenRouterProvider {
+        +OPENROUTER_API_KEY
+        +embeddings: raises (chat-only gateway)
+    }
+    class CustomGatewayProvider {
+        +CUSTOM_GATEWAY_BASE_URL/_API_KEY/_MODELS
+        +embeddings: raises
+    }
     class FakeProvider {
         +embeddings: supported
     }
     ModelProvider <|.. AnthropicProvider
     ModelProvider <|.. GoogleGenAIProvider
     ModelProvider <|.. OpenAIProvider
+    ModelProvider <|.. OpenRouterProvider
+    ModelProvider <|.. CustomGatewayProvider
     ModelProvider <|.. FakeProvider
     registry --> ModelProvider : resolves by provider_id
     ModelProvider ..> ModelParams : consumes
@@ -106,15 +116,16 @@ classDiagram
         <<behavior>>
         read-through blobs, delete on invalidate
     }
-    RegistryCache --> BypassMode : mode = bypass (default)
+    RegistryCache --> BypassMode : mode = bypass (rollback lever)
     RegistryCache --> MemoryMode : mode = memory
     RegistryCache --> RedisMode : mode = redis
 ```
 
 - **Registries**: four logical entries — `tools`, `skills`, `sub_agents`, `settings` — each loaded wholesale by `_load_registry()` (all non-deleted rows, all statuses; consumers filter, mirroring the pre-cache SQL semantics).
-- **Modes** are selected live by the `registry_cache_mode` setting. `bypass` is stateless; `memory` keeps per-registry data with reload-on-dirty; `redis` stores JSON blobs under `concierge:cache:*` (requires `REDIS_URL`, env-only). A settings PATCH flips the mode without restart because dirtying `settings` re-reads the mode.
+- **Modes** are selected live by the `registry_cache_mode` setting. `memory` — the shipped default — keeps per-registry data with reload-on-dirty; `bypass` is stateless and is the rollback lever, not a freshness upgrade (every write invalidates before returning, so a `memory` read is never staler); `redis` stores JSON blobs under `concierge:cache:*` (requires `REDIS_URL`, env-only). A settings PATCH flips the mode without restart because dirtying `settings` re-reads the mode.
 - **Generation counters and dirty marking**: `_mark_dirty()` bumps `_generation[registry]` and adds it to `_dirty`; the next `_ensure()` reloads the whole registry (registries are small, so full reload can never leave a stale embedded relationship). Dependency propagation is built in: dirtying `tools` dirties `skills` (skill records embed tool rows), and dirtying `skills` dirties `sub_agents`.
-- **`invalidate` vs `refresh`**: `invalidate(registry)` marks dirty locally and notifies peers — visibility is "next model call" (lazy reload). `refresh(registry)` is the operator-forced eager reload behind the §8.7 buttons: invalidate, then `_ensure(force=True)` (in bypass mode it just counts rows). There are deliberately no TTLs — an entry is current or invalidated; every registry write path calls `invalidate()` before returning.
+- **`invalidate` vs `refresh`**: `invalidate(registry)` marks dirty locally and notifies peers — visibility is "next model call" (lazy reload). `refresh(registry)` is the operator-forced eager reload behind the §8.7 buttons: invalidate, then `_ensure(force=True)` (in bypass mode it just counts rows). Every registry write path calls `invalidate()` before returning — that is the mechanism, and it has not changed.
+- **The TTL (M54)**: `REGISTRY_CACHE_TTL_S` (300 s) expires every `memory`-mode entry and every redis blob. Earlier revisions of this page said there were deliberately no TTLs; that is no longer true, and the reason for the change is worth keeping in mind — the TTL bounds the damage of a **lost cross-replica NOTIFY**, which event invalidation alone cannot detect. Reloads are additionally **generation-guarded** (a peer's invalidation landing mid-reload survives it: the reload only writes back if `_generation` has not moved), and `GET /cache/status` reports `dirty` per registry so a bumped generation whose data has not been reloaded is visible rather than hidden behind a healthy-looking counter.
 - **Peer sync**: `invalidate` broadcasts `pg_notify('registry_cache_inv', '{origin}:{registry}')`. `start_listener()` opens a dedicated asyncpg LISTEN connection; the callback ignores its own origin id and calls `_mark_dirty()` (local-only — which makes notification loops impossible by construction). All of it is best-effort: single-replica correctness never depends on the listener.
 - **Typed read surface**: `tools(exposed_only=...)` / `skills(exposed_only=...)` filter to active rows and optionally to `direct_exposure`; `tools_by_ids` is order-preserving and active-only (mirrors `factory.resolve_tools_by_ids`); `sub_agents()` preserves `created_at` order (rung-3 precedence relies on it); `sub_agent_snapshot(id)` assembles the same shape as `factory.snapshot_sub_agent` from cached registries; `setting(key)` serves merged settings.
 
@@ -209,7 +220,7 @@ classDiagram
 - **Skill nodes** (`_make_skill_node`): at node-execution time, resolve the model (`resolve_node_model`: skill override → sub-agent override → settings defaults, via `get_model`), assemble the prompt in the §6 order (`assemble_skill_prompt`: sub-agent persona, skill persona, skill instructions, node instructions, shared `tool_guidance` prompt file), build the scoped middleware stack, and run a LangChain `create_agent` tool loop. `max_tool_iterations` resolves per skill: the skill's own `max_tool_iterations` column if set, else the `max_tool_iterations` setting (`_max_tool_iterations`). Failures are captured as `{"status": "error"}` node outputs, not raised.
 - **Router nodes**: every DAG node is followed by a synthetic `__route__{node_id}` node that enforces error semantics — error output takes the (at most one) error edge or raises `NodeExecutionError` (run fails), a HITL denial routes to END, and multiple conditional edges are resolved by `_pick_condition` (structured output `ConditionChoice` from the sub-agent's model). Decisions are recorded in state under `route:{node_id}`.
 - **HITL nodes** (`_make_hitl_node`): call LangGraph `interrupt()` with the prompt (and optional form questions); the decision payload (`approve`/`deny`, note, answers) becomes the node output. Persistence rides the shared `AsyncPostgresSaver` checkpointer from `backend/app/db.py`.
-- **Compile cache**: `get_compiled_worker` memoizes by `(sub_agent_id, updated_at, id(checkpointer))` — an edited agent recompiles because `updated_at` changes. `compile_workflow_check` makes save-time equal compile-time: a full `build_worker` with no invocation, errors returned as validation messages. Native sub-agents bypass the factory entirely (`get_native_worker` calls the registered build callable).
+- **Compile cache**: `get_compiled_worker` memoizes by `(sub_agent_id, "{updated_at}:{skills_digest}", id(checkpointer))`, where `skills_digest` is a sha256 over each bound skill's `(id, definition_hash, status, updated_at)`. Keying on the agent's `updated_at` alone was the third reading's one high-severity finding: a **skill** edit or a skill toggled off never touches the agent's timestamp, so a sub agent invoked once kept running from the cached graph with the old skill. Both an agent edit and any bound-skill change now recompile. `compile_workflow_check` makes save-time equal compile-time: a full `build_worker` with no invocation, errors returned as validation messages. Native sub-agents bypass the factory entirely (`get_native_worker` calls the registered build callable).
 
 ## Retrieval (`backend/app/retrieval.py`)
 

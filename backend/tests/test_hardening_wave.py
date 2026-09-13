@@ -1500,6 +1500,11 @@ class TestRoundTwoIngest:
                 row = await session.get(RemoteAgent, UUID(agent_id))
                 assert row is not None
                 row.status = "error"
+                # the operator's disable is now a separate fact from the
+                # status (`disabled_at`), because a freshly registered agent
+                # is ALSO `inactive`. Clearing it here is what "the operator
+                # re-enabled it, and then a fetch failed" looks like.
+                row.disabled_at = None
                 await session.commit()
             await client.post(f"{API}/remote-agents/{agent_id}/refresh-card")
             assert (await client.get(f"{API}/remote-agents/{agent_id}")).json()["status"] == (
@@ -2225,9 +2230,7 @@ class TestRoundThreePinning:
             errors = await validate_plan(session, plan, 5)
         assert any("reserved" in e for e in errors)
 
-    async def test_router_falls_back_to_the_first_condition_when_unparseable(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_router_routes_to_end_when_it_cannot_choose(self, client: AsyncClient) -> None:
         from app.factory.worker import _pick_condition
 
         fake_llm.push_ai("thinking only, no choice")
@@ -2238,7 +2241,10 @@ class TestRoundThreePinning:
             {"sub_agent": {}},
             {},
         )
-        assert target == "A" and "no parseable choice" in reason
+        # falling through to edge 0 put the run on the SUCCESS branch of the
+        # shipped workflow — into the gate that writes — on the strength of
+        # two unparseable replies. An unknown route ends the branch instead.
+        assert target == "END" and "no parseable choice" in reason
         fake_llm.push_ai(
             "", tool_calls=[{"name": "ConditionChoice", "args": {"index": 1}, "id": "c1"}]
         )
@@ -2249,3 +2255,15 @@ class TestRoundThreePinning:
             {},
         )
         assert target == "B" and reason == "router model selected condition"
+        # -1 is the model's documented way to say nothing matched; it used to
+        # be CLAMPED to a real edge and recorded as a genuine selection
+        fake_llm.push_ai(
+            "", tool_calls=[{"name": "ConditionChoice", "args": {"index": -1}, "id": "c2"}]
+        )
+        target, _usage, reason = await _pick_condition(
+            "output",
+            [{"condition": "a summary was produced", "to": "A"}, {"condition": "else", "to": "B"}],
+            {"sub_agent": {}},
+            {},
+        )
+        assert target == "END" and "matched no condition" in reason

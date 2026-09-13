@@ -7,18 +7,27 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
+from app.llm import fake as fake_llm
+
 API = "/api/v1"
 
 
 async def make_server(client: AsyncClient, name: str = "test-server") -> dict[str, Any]:
+    # registering a server runs the §4 overlap judge before the row is
+    # written. These tests are about CRUD, not about the judge, but the call
+    # is real — so say what it answers instead of letting the provider
+    # invent it.
+    fake_llm.push_overlap(0)
     resp = await client.post(
         f"{API}/mcp-servers",
         json={
             "name": name,
             "description": "a test stdio server",
             "transport": "stdio",
-            "command": "echo",
-            "args": ["hi"],
+            # a launcher on the stdio allowlist: these cases are about CRUD,
+            # not about the guard, and nothing here actually spawns it
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-everything"],
             "env": {"FOO": "bar"},
         },
     )
@@ -97,7 +106,7 @@ class TestMcpServerCrud:
         assert created["source"] == "dynamic"
         resp = await client.get(f"{API}/mcp-servers/{created['id']}")
         assert resp.status_code == 200
-        assert resp.json()["command"] == "echo"
+        assert resp.json()["command"] == "npx"
 
     async def test_list_filters(self, seeded_client: AsyncClient) -> None:
         client = seeded_client
@@ -150,6 +159,91 @@ class TestMcpServerCrud:
         resp = await client.delete(f"{API}/mcp-servers/{server['id']}")
         assert resp.status_code == 409
         assert "test-skill" in resp.text
+
+
+class TestStdioLauncherAllowlist:
+    """Registering a stdio MCP server is registering a SUBPROCESS: the
+    endpoint used to run any command on the host, with the backend's
+    privileges, from one unauthenticated API call."""
+
+    async def test_arbitrary_launcher_is_refused(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            f"{API}/mcp-servers",
+            json={
+                "name": "nasty",
+                "transport": "stdio",
+                "command": "/bin/sh",
+                "args": ["-c", "touch /tmp/pwned"],
+            },
+        )
+        assert resp.status_code == 422
+        assert "not allowed" in resp.json()["detail"]
+        # refused at the boundary: no row, so nothing to reconcile later
+        listed = (await client.get(f"{API}/mcp-servers")).json()
+        assert all(s["name"] != "nasty" for s in listed)
+
+    async def test_allowlist_matches_basename_not_path(self, client: AsyncClient) -> None:
+        """An absolute path to an allowed launcher is admitted…"""
+        fake_llm.push_overlap(0)
+        resp = await client.post(
+            f"{API}/mcp-servers",
+            json={
+                "name": "abs-path",
+                "transport": "stdio",
+                "command": "/usr/local/bin/npx",
+                "args": ["-y", "srv"],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
+    async def test_lookalike_basename_elsewhere_is_refused(self, client: AsyncClient) -> None:
+        """…but a name that merely CONTAINS an allowed one is not."""
+        resp = await client.post(
+            f"{API}/mcp-servers",
+            json={"name": "lookalike", "transport": "stdio", "command": "npx-evil"},
+        )
+        assert resp.status_code == 422
+
+    async def test_empty_command_is_refused(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            f"{API}/mcp-servers", json={"name": "blank", "transport": "stdio", "command": "   "}
+        )
+        assert resp.status_code == 422
+
+    async def test_operator_can_widen_the_allowlist(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.mcp.manager import StdioLauncherRefused, _check_stdio_launcher, stdio_allowlist
+
+        with pytest.raises(StdioLauncherRefused):
+            _check_stdio_launcher("deno")
+        monkeypatch.setenv("MCP_STDIO_ALLOW", "deno, bun")
+        assert {"deno", "bun"} <= stdio_allowlist()
+        _check_stdio_launcher("deno")  # no raise
+        _check_stdio_launcher("/opt/bin/bun")
+
+    async def test_patch_cannot_smuggle_a_launcher_past_create(self, client: AsyncClient) -> None:
+        """The allowlist has to hold on the edit path too, or it is decorative:
+        register with an allowed launcher, then rewrite the command."""
+        server = await make_server(client, name="smuggler")
+        resp = await client.patch(f"{API}/mcp-servers/{server['id']}", json={"command": "/bin/sh"})
+        assert resp.status_code == 422
+        assert "not allowed" in resp.json()["detail"]
+        after = (await client.get(f"{API}/mcp-servers/{server['id']}")).json()
+        assert after["command"] == "npx"  # unchanged
+
+    async def test_patch_still_allows_an_allowed_launcher(self, client: AsyncClient) -> None:
+        server = await make_server(client, name="legit-edit")
+        resp = await client.patch(f"{API}/mcp-servers/{server['id']}", json={"command": "uvx"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["command"] == "uvx"
+
+    async def test_http_transport_is_unaffected(self, client: AsyncClient) -> None:
+        """The guard is about spawning processes — a URL spawns nothing."""
+        fake_llm.push_overlap(0)
+        resp = await client.post(
+            f"{API}/mcp-servers",
+            json={"name": "http-srv", "transport": "http", "url": "https://example.com/mcp"},
+        )
+        assert resp.status_code == 201, resp.text
 
 
 class TestToolsApi:

@@ -47,8 +47,16 @@ _TOKEN_EXPIRY_SKEW_S = 60.0
 _TOKEN_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 
 
-def clear_token_cache() -> None:
-    _TOKEN_CACHE.clear()
+def clear_token_cache(agent_id: str | None = None) -> None:
+    """Drop cached bearer tokens. With no argument, all of them; with an agent
+    id, just that agent's — called when its credentials are edited or the row
+    is deleted, so a rotated secret takes effect now rather than up to an hour
+    later, and a deleted agent's token stops being usable at all."""
+    if agent_id is None:
+        _TOKEN_CACHE.clear()
+        return
+    for key in [k for k in _TOKEN_CACHE if k[0] == agent_id]:
+        _TOKEN_CACHE.pop(key, None)
 
 
 def resolve_credential_value(value: Any) -> Any:
@@ -118,11 +126,22 @@ class AgentCredentialService:
             return None
         from authlib.integrations.httpx_client import AsyncOAuth2Client
 
+        from app import egress
+
+        # M52: the token endpoint is an outbound call like any other, and it
+        # carries the client secret. It used to build a raw client, so an
+        # allowlist policy did not cover the one request that leaves a
+        # credential on the wire. `check_url_static` refuses loopback,
+        # link-local (cloud metadata) and private targets before we dial.
+        await egress.check_url(str(flow.token_url))
         scopes = " ".join((flow.scopes or {}).keys()) or None
         # Any: the published authlib stubs omit the httpx.AsyncClient base
         # (no __aexit__/aclose), so attribute checks are wrong there
         oauth: Any = AsyncOAuth2Client(
-            client_id=client_id, client_secret=client_secret, scope=scopes
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=scopes,
+            event_hooks={"request": [egress.request_hook()]},
         )
         try:
             token = await oauth.fetch_token(flow.token_url, grant_type="client_credentials")

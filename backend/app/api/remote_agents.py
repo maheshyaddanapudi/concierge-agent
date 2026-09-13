@@ -141,9 +141,20 @@ async def patch_agent(
             else:
                 merged[scheme] = value
         agent.credentials = merged
+        # §19.3: a rotated or removed secret takes effect NOW. The bearer
+        # token cache had no invalidation at all, so a compromised client
+        # secret kept working for up to the token's full hour after the
+        # operator changed it.
+        from app.a2a.auth import clear_token_cache
+
+        clear_token_cache(str(agent.id))
     was_active = agent.status == "active"
     for field, value in changes.items():
         setattr(agent, field, value)
+    if "status" in changes:
+        # the operator's intent, recorded separately from `status` because an
+        # agent is ALSO `inactive` between registration and its first card
+        agent.disabled_at = datetime.now(UTC) if agent.status == "inactive" else None
     # the agent's tools follow its status (review round 3): a disabled
     # agent's tools stayed `active` in the catalog, advertised to the
     # planner and failing only at the call. Off takes every active tool
@@ -221,8 +232,10 @@ async def delete_agent(agent_id: UUID, session: SessionDep) -> None:
     ).scalars():
         tool.deleted_at = now
     await session.commit()
+    from app.a2a.auth import clear_token_cache
     from app.registry_cache import get_cache
 
+    clear_token_cache(str(agent_id))  # a deleted agent's token stops working
     await get_cache().invalidate("tools")
 
 
@@ -235,6 +248,13 @@ async def refresh_card(agent_id: UUID, session: SessionDep) -> RemoteAgentOut:
     manager = get_manager()
     if manager is None:
         raise HTTPException(status_code=503, detail="A2A manager not running")
+    if agent.disabled_at is not None:
+        # §19.2: a disabled agent is not fetched. Say so rather than returning
+        # an unchanged row that looks like a successful refresh.
+        raise HTTPException(
+            status_code=409,
+            detail="remote agent is inactive — activate it before refreshing its card",
+        )
     await manager.refresh_agent(agent.id)
     await session.refresh(agent)
     counts = await _tool_counts(session, [agent.id])

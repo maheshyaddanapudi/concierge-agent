@@ -15,7 +15,12 @@ Every registry and settings read in the run path goes through the singleton
 
 Freshness contract: **event-invalidated** — every registry write path calls
 ``invalidate(registry)`` before returning, so visibility stays "next model
-call". TTLs are deliberately absent: an entry is current or invalidated.
+call". Expiry is NOT that mechanism, but it is a backstop: ``CACHE_TTL_S``
+(``REGISTRY_CACHE_TTL_S``, default 300 s, M54) expires every memory-mode
+entry and every redis blob, so the one case invalidation cannot cover — a
+cross-replica NOTIFY that was never delivered — costs at most one TTL of
+staleness instead of unbounded staleness. Correctness rests on the
+invalidation; the TTL bounds the failure of the notify path.
 """
 
 import asyncio

@@ -71,6 +71,46 @@ _STDIO_ENV_PASSTHROUGH = (
 _STDIO_ENV_PREFIXES = ("UV_", "npm_config_")
 
 
+class StdioLauncherRefused(RuntimeError):
+    """A stdio server named a command outside the launcher allowlist."""
+
+
+def stdio_allowlist() -> set[str]:
+    """Commands a stdio MCP server may be launched with.
+
+    Registering an MCP server is registering a SUBPROCESS: `POST /mcp-servers`
+    with `transport=stdio` used to run any command on the host, with the
+    backend's privileges, from an API call. The two launchers the seed itself
+    uses are admitted by default, plus the acceptance suite's stub server and
+    whatever an operator names in `MCP_STDIO_ALLOW` (comma-separated).
+
+    The commands are matched by BASENAME, so an absolute path to the same
+    launcher is admitted and a lookalike elsewhere on the path is not."""
+    import os
+
+    base = {"uvx", "npx", "uv", "node", "python", "python3"}
+    extra = {
+        part.strip()
+        for part in (os.environ.get("MCP_STDIO_ALLOW") or "").split(",")
+        if part.strip()
+    }
+    return base | extra
+
+
+def _check_stdio_launcher(command: str) -> None:
+    import os
+
+    name = os.path.basename(command.strip())
+    if not name:
+        raise StdioLauncherRefused("stdio transport needs a command")
+    allowed = stdio_allowlist()
+    if name not in allowed:
+        raise StdioLauncherRefused(
+            f"stdio launcher {name!r} is not allowed "
+            f"(allowed: {', '.join(sorted(allowed))}; add more with MCP_STDIO_ALLOW)"
+        )
+
+
 def _stdio_env(server_env: dict[str, Any] | None) -> dict[str, str]:
     import os
 
@@ -118,11 +158,18 @@ class McpManager:
     # ── lifecycle ────────────────────────────────────────────────
 
     async def start(self, connect_timeout: float = CONNECT_TIMEOUT_S) -> None:
-        """Connect every non-deleted server (spec §5 startup) + health loop."""
+        """Connect every non-deleted, non-disabled server (spec §5 startup) +
+        health loop. §4: a server an operator switched off stays off across a
+        restart — only their Activate brings it back."""
         async with get_session_factory()() as db:
             servers = list(
                 (
-                    await db.execute(select(McpServer).where(McpServer.deleted_at.is_(None)))
+                    await db.execute(
+                        select(McpServer).where(
+                            McpServer.deleted_at.is_(None),
+                            McpServer.disabled_at.is_(None),
+                        )
+                    )
                 ).scalars()
             )
             server_ids = [s.id for s in servers]
@@ -178,6 +225,13 @@ class McpManager:
             server = await db.get(McpServer, server_id)
             if server is None or server.deleted_at is not None:
                 return True  # nothing to connect — not a failure to retry
+            if server.disabled_at is not None:
+                # §4: the operator's off switch, honoured at the one place
+                # every connect path goes through — startup, reconcile, the
+                # reconnect ladder and the button alike. Note this reads
+                # `disabled_at`, not `status`: a server registered a moment
+                # ago is ALSO `inactive`, and that one we do connect.
+                return True
         conn = _Connection()
         self._conns[server_id] = conn
         conn.task = asyncio.create_task(self._run_connection(server, conn))
@@ -203,6 +257,7 @@ class McpManager:
     async def _run_connection(self, server: McpServer, conn: _Connection) -> None:
         try:
             if server.transport == "stdio":
+                _check_stdio_launcher(server.command or "")
                 params = StdioServerParameters(
                     command=server.command or "",
                     args=[str(a) for a in (server.args or [])],
@@ -522,9 +577,17 @@ class McpManager:
         this replica already tried (in error, mid-reconnect, or with the
         circuit open) are left to the reconnect machinery."""
         async with get_session_factory()() as db:
+            # §4: "wanted" excludes a server the operator disabled — reconcile
+            # used to reconnect it every health interval, which is what made
+            # the Deactivate toggle a label rather than an off switch.
             wanted = set(
                 (
-                    await db.execute(select(McpServer.id).where(McpServer.deleted_at.is_(None)))
+                    await db.execute(
+                        select(McpServer.id).where(
+                            McpServer.deleted_at.is_(None),
+                            McpServer.disabled_at.is_(None),
+                        )
+                    )
                 ).scalars()
             )
         connected = added = removed = 0
@@ -585,6 +648,14 @@ class McpManager:
         async with get_session_factory()() as db:
             server = await db.get(McpServer, server_id)
             if server is None:
+                return
+            if server.disabled_at is not None and status != "inactive":
+                # §4: an operator's off switch is theirs to undo. A failed ping
+                # or a reconnect used to write `error` over it, and the next
+                # successful attempt wrote `active` — so the toggle came back
+                # on by itself. Record the error text, never the status.
+                server.last_error = error
+                await db.commit()
                 return
             server.status = status
             server.last_error = error

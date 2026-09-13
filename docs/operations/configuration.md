@@ -11,7 +11,7 @@ Sources: `.env.example`, `docker-compose.yml`, `backend/app/config.py`. Compose 
 
 | Variable | Default | Effect | Required? |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | *(unset)* | Enables the `anthropic` provider adapter. Gates every `anthropic:*` model. | No — any one provider key (or fake mode) suffices. If unset at first boot, the seed pass resolves `default_model` to the first configured provider's flagship (`gemini-3.6-flash` → `gpt-5.6-luna` → `fake:scripted`); an explicitly saved setting is never touched |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables the `anthropic` provider adapter. Gates every `anthropic:*` model. | No — any one provider key (or fake mode) suffices. If unset at first boot, the seed pass resolves `default_model` to the first configured provider's flagship, in this fixed order: `anthropic:claude-sonnet-4-6` → `google_genai:gemini-3.6-flash` → `openai:gpt-5.6-luna` → `fake:scripted` (`_FLAGSHIPS` in `backend/app/seed/loader.py`). An explicitly saved setting is never touched. **The list contains no OpenRouter or custom-gateway entry**, so a fresh install keyed *only* with `OPENROUTER_API_KEY` or `CUSTOM_GATEWAY_*` keeps the unconfigured `anthropic:claude-sonnet-4-6` default and the operator must pick a model in Settings → Models before the first run works |
 | `GOOGLE_API_KEY` | *(unset)* | Enables the `google_genai` adapter (chat + embeddings). Presence surfaces the provider in Settings model selects. | No |
 | `OPENAI_API_KEY` | *(unset)* | Enables the `openai` adapter (chat + embeddings). | No |
 | `FAKE_LLM_ENABLED` | `false` | Enables the scriptable `fake` provider and mounts the `/_fake/script` control router. Combined with the `fake:scripted` model in Settings this gives a fully keyless demo stack. | No — never set it in a normally configured deployment |
@@ -34,11 +34,30 @@ Sources: `.env.example`, `docker-compose.yml`, `backend/app/config.py`. Compose 
 | `LOG_LEVEL` | `INFO` | structlog level, applied at process start (`configure_logging`). | No |
 | `REDIS_URL` | *(unset)* | Enables the `redis` registry-cache mode (spec §7.3). URL-with-credentials stays env-only; without it, saving `registry_cache_mode=redis` is rejected with 422. `./quick-setup.sh --redis` writes `redis://redis:6379/0`. | Only for redis cache mode |
 | `COMPOSE_PROFILES` | *(unset)* | Written by `quick-setup.sh` (`redis` or blank). With `redis`, `docker compose up` also starts the optional `redis:7-alpine` service (bound to `127.0.0.1:6379`). | Only for redis cache mode |
-| `BACKEND_PORT` | `8000` | Host port mapped to the backend container's :8000; `start.sh` uses it for the health poll and printed URLs. | No |
-| `FRONTEND_PORT` | `5173` | Host port mapped to the frontend nginx container's :80. | No |
+| `BACKEND_PORT` | `8000` | The port the backend is reached on **outside** compose: the fast dev loop's `uvicorn --port`, and what `VITE_API_BASE_URL` points at. **It is not the published host port.** Since M54 compose publishes the backend from `BACKEND_PORT_RANGE` (one port per replica), and `start.sh` / `deploy.sh` / `restore.sh` ask `docker compose port backend 8000` rather than assume the two agree. Changing this alone will not move a conflicting host port. | No |
+| `FRONTEND_PORT` | `5173` | Host port mapped to the frontend nginx container's **:8080**. The internal port moved from 80 to 8080 in the M56 hardening wave so the container can run unprivileged; the published host port is unchanged. | Recreate |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | **Local dev only**: Vite dev-server proxy target (`frontend/vite.config.ts`). The production image proxies `/api/` and `/metrics` to `backend:8000` via nginx and ignores this variable. | No |
 
-17 variables total. Anything else in the environment is ignored (`extra="ignore"` in `AppConfig`).
+| `OPENROUTER_API_KEY` | *(unset)* | Enables the `openrouter` adapter — one key, many vendors' models through an OpenAI-compatible gateway. **This is the provider every acceptance stage and drill in `docs/acceptance/` ran on** (`openrouter:qwen/qwen3.8-max`). OpenRouter also publishes a per-model price list, refreshed hourly into the cost model. | No |
+| `CUSTOM_GATEWAY_BASE_URL` / `CUSTOM_GATEWAY_API_KEY` / `CUSTOM_GATEWAY_MODELS` | *(unset)* | M33 (§18.7): the `custom` provider — any OpenAI-compatible chat-completions endpoint, with **no code change**. `CUSTOM_GATEWAY_MODELS` is a comma-separated list and **is** the validated model list: a `custom:` ref that is not on it is refused at save. Explicit `effort` params are rejected at validation; internal role-default effort hints are dropped at call time. | No |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_TO` | *(unset)* / `25` / … | §18.4 email delivery channel. The channel stays dark unless `SMTP_HOST` **and** `SMTP_FROM`/`SMTP_TO` are set *and* `email` is in `ambient_channels`. A digest batch renders as ONE message. `SMTP_PASSWORD` is a secret: env only, redacted by the sanitizer, never persisted. | Only for the email channel |
+| `AMBIENT_WEBHOOK_URL` | *(unset)* | §18.4 webhook delivery channel: the gateway-shaped JSON envelope is POSTed here. **Treat as a secret** — a webhook URL commonly embeds its own token. Judged by `EGRESS_POLICY` like every other outbound fetch, so a loopback or private sink needs `EGRESS_ALLOW_HOSTS`. | Only for the webhook channel |
+| `AUTH_ENABLED` | `false` | §18.8: turns the builtin auth provider on. **Dark by default and byte-identical when dark** — single-user, no login, no tenancy filtering. On: `AuthMiddleware` over `/api/v1`, admin-gated registry/settings writes, per-user scoping on every work table. | Restart |
+| `AUTH_SESSION_TTL_H` | `24` | §18.8 bearer-session lifetime in hours. Documented since M40 but **not passed into the container until the M56 hardening wave** — a stack older than that silently used the 24 h code default whatever `.env` said. Read directly from the environment by `backend/app/auth/__init__.py`. | Restart |
+| `AUTH_PROVIDER` | `builtin` | M55 (§20): the active `AuthProvider` by `provider_id`. The builtin is the §18.8 behaviour; a fork's provider is selected here. An unknown id fails at boot naming the registered ones. | Restart |
+| `AUTH_PROVIDER_MODULE` | *(unset)* | A module the auth registry imports before resolving `AUTH_PROVIDER`, so a fork's `@auth_provider` class registers itself from its own file ([extending.md](../extending.md)). | Restart |
+| `FRONTEND_ORIGIN` | *(unset)* | CORS. **Unset means permissive** (`allow_origins=["*"]`) — the POC default, appropriate on localhost or a private network. Set it to your admin origin (or a comma-separated list) and CORS is pinned to exactly those. `X-Total-Count` is exposed either way. | Restart |
+| `MAX_REQUEST_BYTES` / `MAX_UPLOAD_BYTES` / `MAX_EVAL_ROWS` | `2097152` / `8388608` / `1000` | The inbound caps (`backend/app/limits.py`), applied **unconditionally** — nothing bounded a request body before: not the app, not uvicorn, not nginx. Over the cap is a 413. Not passed through compose today: set them in the container environment if you need to move them. | Restart |
+| `MCP_STDIO_ALLOW` | *(unset)* | Comma-separated extra launcher commands a stdio MCP server may spawn, beyond the built-in allowlist. A deployment posture control: an operator, not a registry row, decides what may become a subprocess. | Restart |
+| `APP_BUILD` | *(unset)* | Stamped into every run's config snapshot as `snapshot.build`, so a trace names the image it ran on. Nothing sets it in the shipped image, so `build` is `null` unless you pass it (`docker build --build-arg`/`ENV`, or the container environment). | Restart |
+| `BACKEND_PORT_RANGE` | `8000-8010` | See the row above — this, **not `BACKEND_PORT`**, is what compose publishes the backend from. | Recreate |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `concierge` ×3 | Compose-only: they initialize the `db` container (rows above). | No |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | See the row above — local dev only. | No |
+
+**44 variables are declared in `AppConfig`** (`backend/app/config.py`). Beyond them the deployment reads eight more that no `AppConfig` field owns: `AUTH_SESSION_TTL_H`, `MCP_STDIO_ALLOW` and `APP_BUILD` (read straight from `os.environ` at their point of use), `BACKEND_PORT_RANGE` and `COMPOSE_PROFILES` (compose only), `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` (the `db` container's own). Anything else in the environment is ignored (`extra="ignore"` in `AppConfig`).
+
+`docker-compose.yml` passes **40** entries into the backend service's environment. `MAX_REQUEST_BYTES`, `MAX_UPLOAD_BYTES`, `MAX_EVAL_ROWS`, `MCP_STDIO_ALLOW` and `APP_BUILD` are **not** among them, so they take their code defaults unless you add them to the compose file or the container environment. `WORKSPACE_DIR` is hardcoded to `/workspace` for the backend service, so the `.env.example` entry has no effect inside compose.
+
 
 ## Runtime settings (`app_settings`)
 
@@ -77,7 +96,7 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 
 | Key | Type / values | Default | Effect / consumer |
 |---|---|---|---|
-| `registry_cache_mode` | `"bypass"` \| `"memory"` \| `"redis"` | `"bypass"` | Storage backend of the `RegistryCache` singleton (`registry_cache.py`). `redis` requires `REDIS_URL` and a successful ping at save (else 422). Flips apply live; flipping into `memory` warm-loads |
+| `registry_cache_mode` | `"memory"` \| `"bypass"` \| `"redis"` | **`"memory"`** | Storage backend of the `RegistryCache` singleton (`registry_cache.py`). **`memory`** is in-process, event-invalidated on every write path, and expires on `REGISTRY_CACHE_TTL_S` so a lost cross-replica NOTIFY costs bounded staleness. **`bypass`** sends every read straight to Postgres — the live-flippable **rollback lever**, not a freshness upgrade: because every write invalidates before returning, a `memory` read is never staler than a bypassed one, so `bypass` buys diagnosis at the cost of a round-trip per registry and settings read, per model call. **`redis`** requires `REDIS_URL` and a successful ping at save (else 422), and fails **open** to Postgres at runtime with `concierge_cache_degraded_total{backend="redis"}` counting. Flips apply live, mid-process; flipping into `memory` warm-loads. (The default was `bypass` through M56 — see `../adr/0004-registry-cache-bypass-default.md`.) |
 
 ### Retrieval (progressive disclosure, spec §7.4)
 
@@ -109,11 +128,44 @@ Defaults from `DEFAULTS` in `backend/app/settings_store.py`. Read: `GET /api/v1/
 | `langsmith_project` | string | `"concierge-agent"` | LangSmith project name |
 | `otlp_endpoint` | string | `""` | Applies live: a PATCH repoints the span exporter (`obs.apply_otlp_endpoint`); empty disables export. Overrides the `OTEL_EXPORTER_OTLP_ENDPOINT` env bootstrap; a stored value is re-applied at startup |
 
+### Admission, limits and guardrails (M40/M51)
+
+| Key | Type | Default | Effect / consumer |
+|---|---|---|---|
+| `run_max_concurrent` | int ≥ 1 | `8` | the admission semaphore: runs executing at once on this replica (`orchestrator/admission.py`) |
+| `run_queue_max` | int ≥ 0 | `32` | queue depth past the semaphore. A run that gets a queue slot is a first-class `queued` row; past the queue, `POST /chat` sheds with 503 + `Retry-After` |
+| `run_wall_clock_s` | int ≥ 1 | `900` | every run's ceiling — past it the run ends `failed` with the clock and the setting named |
+| `run_stall_after_s` | int ≥ 60 | `300` | the heartbeat window the reaper uses; a silent run ends `stalled` through the normal terminal path |
+| `agentic_recursion_limit` | int ≥ 1 | `100` | LangGraph recursion limit for the agentic loop |
+| `rate_limit_burst` / `rate_limit_per_s` | int ≥ 1 | `120` / `10` | the §18.8 token bucket, shared across replicas via `rate_buckets`; fails open on a database failure |
+| `overlap_threshold_percent` | int 1–100 | `70` | the §4 overlap-guard threshold at which the UI asks to confirm |
+| `registry_overlap_audit_enabled` | bool | `false` | the §3.7.1 gate of the periodic registry overlap re-audit (own 6 h clock) |
+| `mcp_schema_change_policy` | `warn` \| `quarantine` | `"warn"` | whether a §3.2 schema change also takes the tool out of service until acknowledged |
+
 ### HITL
 
 There are no `app_settings` keys for HITL. The HITL queue in Settings is a live view (`GET /api/v1/hitl/pending` — all `paused_hitl` runs), resolved per run via `POST /api/v1/runs/{id}/hitl`.
 
-28 settings keys total.
+### Memory (§16) — 22 keys
+
+`memory_enabled` (default **false**) is the master; with it off the run path is byte-identical. Under it: the layer switches `memory_extraction_enabled`, `memory_reflection_enabled`, `procedural_learning_enabled`, and the four consolidation gates `memory_decay_enabled`, `memory_contradiction_enabled`, `memory_communities_enabled`, `memory_compaction_enabled` (**compaction is the one with an irreversible effect** — it hard-deletes folded run digests); the recall dials `memory_recall_top_k` (6), `memory_score_floor` (0.35, absolute similarity), `memory_injection_budget_tokens` (1200), `memory_pinned_budget_tokens` (400), `memory_community_budget_tokens` (150 — **0 skips the rebuild, it does not merely silence the injection**); the write dials `memory_admission_min_confidence` (0.5, walked by the M47 tuner), `memory_quarantine_kinds` (`[]`), `memory_half_life_days` (30), `memory_digest_compact_days` (14), `memory_idle_minutes` (10); forgetting `memory_forget_enabled` (**false**) and `memory_forget_similarity` (0.85); the learner `memory_extraction_learning` (`off` \| `propose` \| `auto`, default **off**); and the role model `memory_extraction_model` (+ `_params`).
+
+### Ambient (§17/§18) — 24 keys
+
+`ambient_enabled` (default **false**) is the master. Under it: `ambient_tick_interval_s` (60); the budgets `ambient_max_routines` (10), `ambient_runs_per_day` (50), `ambient_routine_events_per_hour` (20), `ambient_wakeups_per_routine_per_day` (100), `ambient_escalation_budget_per_day` (10), `ambient_notification_budget_per_day` (3), `ambient_hitl_timeout_h` (24), `ambient_idle_minutes` (10); the delivery policy `ambient_quiet_hours` (`["22:00","07:00"]`), `ambient_digest_times` (`["09:00","17:00"]`), `ambient_timezone` (`UTC` — quiet hours and digest times are wall-clock in this zone), `ambient_interrupt_threshold` (4), `ambient_channels` (`{}` per-tier routing), `ambient_pursuit` (`off` \| `away` \| `always`, default `always` = pre-M41 behaviour); salience `ambient_salience_mode` (default **off**), `ambient_salience_min_urgency` (3), `ambient_salience_model` (+ `_params`); **`ambient_anticipation_enabled`** (default `true`, under the dark master — *the only feature that initiates contact unprompted*, so it is the one to decide about deliberately); and the two learners `ambient_learning_mode` and `ambient_salience_learning` (both `off` \| `propose` \| `auto`, both default **off**), with `ambient_precision_rule_enabled` (true) for the rule-based precision downgrade.
+
+### A2A (§19) — 7 keys
+
+`a2a_enabled` (default **false**) is the master: dark means 409 on registry writes, inert tools and byte-identical runs. Under it: `a2a_card_refresh_interval_s` (300), `a2a_task_timeout_s` (120), `a2a_http_timeout_s` (15), `a2a_poll_interval_s` (60 — the parked-task poller's effective cadence is `max(tick, interval)`), `a2a_max_parked` (20 — **0 disables parking**, and a timeout becomes a plain tool error), `a2a_fence_max_chars` (8000).
+
+### Evals (§15)
+
+| Key | Type | Default | Effect / consumer |
+|---|---|---|---|
+| `evals_enabled` | bool | `true` | the §3.7.1 gate of the whole eval surface; off means `POST /evals/datasets/{id}/run` 409s |
+| `eval_judge_model` (+ `_params`) | `provider:model` \| null | `null` | the `llm_judge` grader's model; null falls back to `default_model`. The UI hints when the judge is the model being evaluated |
+
+**122 settings keys total** — `DEFAULTS` in `backend/app/settings_store.py` is the source of truth, and a test asserts that every live key has a Settings control, so a key added without one fails the suite rather than a review. The sections above are grouped by family rather than listing every key individually; `GET /api/v1/settings` returns the merged object.
 
 ### Retention, cost and MCP reconnection (M53)
 
@@ -131,7 +183,6 @@ There are no `app_settings` keys for HITL. The HITL queue in Settings is a live 
 
 Verified against the code, not assumed:
 
-- **Live (all 24 keys)**: every key is read from the DB (through the cache, which the settings write path invalidates) at the point of use — run creation, planner call, dispatch, tool-loop construction, MCP health cycle, cache access, retrieval, answer-UI generation, LangSmith callback construction. A PATCH takes effect on the next run (or next health-loop cycle for `mcp_health_interval_s`, next model call for cache/retrieval keys) with no restart. `registry_cache_mode` re-applies itself mid-process via the cache's own settings invalidation hook.
+- **Live (every one of the 122 keys)**: each is read from the DB (through the cache, which the settings write path invalidates) at its point of use — run creation, planner call, dispatch, tool-loop construction, admission, MCP health cycle, cache access, retrieval, answer-UI generation, the ambient tick, the memory jobs, LangSmith callback construction. A PATCH takes effect on the next run (or the next loop cycle for the tick/health/job keys, the next model call for cache/retrieval keys) with no restart. `registry_cache_mode` re-applies itself mid-process via the cache's own settings invalidation hook.
+- **What a PATCH does *not* do** is change an in-flight run: a run's `snapshot` freezes the settings it was dispatched under, so its trace reads against what it actually ran with. Two keys are bounded by their loop rather than the run: `ambient_tick_interval_s` takes effect on the next tick, `mcp_health_interval_s` on the next ping cycle.
 - **`log_level` and `otlp_endpoint`** apply even faster than "next run": the settings write path calls their consumers directly (`configure_logging` / `apply_otlp_endpoint` in `settings_store.update_settings`), so they take effect the moment the PATCH returns. The env vars (`LOG_LEVEL`, `OTEL_EXPORTER_OTLP_ENDPOINT`) are bootstrap defaults only; an explicitly stored setting is re-applied over them at startup, and a never-touched setting leaves the env value in charge.
-| `AUTH_PROVIDER` | `builtin` | M55 (spec §20): the active `AuthProvider` by `provider_id`. The builtin is the §18.8 behaviour (dark unless `AUTH_ENABLED`); a fork's provider is selected here. Unknown ids fail at boot naming the registered ones. | No |
-| `AUTH_PROVIDER_MODULE` | *(unset)* | A module the auth registry imports before resolving `AUTH_PROVIDER`, so a fork's `@auth_provider` class registers itself from its own file (`docs/extending.md`). | No |

@@ -16,6 +16,7 @@ import {
   StaticNotice,
   StatusPill,
   TextInput,
+  Toggle,
   timeAgo,
 } from '../components/ui'
 
@@ -41,9 +42,7 @@ export const EMPTY_CRED: CredentialRow = {
 }
 
 /** Form rows → the API credentials payload ({} pruned to null). */
-export function credentialsOut(
-  rows: CredentialRow[],
-): Record<string, unknown> | null {
+export function credentialsOut(rows: CredentialRow[]): Record<string, unknown> | null {
   const out: Record<string, unknown> = {}
   for (const row of rows) {
     if (!row.scheme.trim()) continue
@@ -320,6 +319,9 @@ function AgentDetail({ agent, onClose }: { agent: RemoteAgent; onClose: () => vo
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [creds, setCreds] = useState<CredentialRow[]>([])
+  // spec §8: status stays togglable on every record, static included — the
+  // drawer only ever reported it (a pill), never let an operator set it
+  const [status, setStatus] = useState<string>(agent.status)
   const isStatic = agent.source === 'static'
   const skills = ((agent.card?.skills as CardSkill[] | undefined) ?? []).filter(Boolean)
 
@@ -353,6 +355,29 @@ function AgentDetail({ agent, onClose }: { agent: RemoteAgent; onClose: () => vo
         </div>
       )}
 
+      <Field
+        label="Status"
+        hint="inactive agents stop projecting tools into the registry; their bound tools go out of service — live on static records"
+      >
+        <Toggle
+          checked={status === 'active'}
+          label={status}
+          onChange={async (v) => {
+            const next = v ? 'active' : 'inactive'
+            const previous = status
+            setStatus(next)
+            setError(null)
+            try {
+              await api.patch(`/remote-agents/${agent.id}`, { status: next })
+              invalidate('remote-agents', 'tools')
+            } catch (e) {
+              setStatus(previous)
+              setError(e)
+            }
+          }}
+        />
+      </Field>
+
       <Field label="Auth (per card scheme)">
         <AuthSchemeChips agent={agent} />
       </Field>
@@ -370,7 +395,9 @@ function AgentDetail({ agent, onClose }: { agent: RemoteAgent; onClose: () => vo
               )}
             </div>
           ))}
-          {!skills.length && <span className="text-xs text-slate-500">card declares no skills</span>}
+          {!skills.length && (
+            <span className="text-xs text-slate-500">card declares no skills</span>
+          )}
         </div>
       </Field>
 
@@ -499,7 +526,11 @@ export function RemoteAgentsPage() {
         ]}
       />
 
-      <Drawer open={registering} onClose={() => setRegistering(false)} title="Register remote agent">
+      <Drawer
+        open={registering}
+        onClose={() => setRegistering(false)}
+        title="Register remote agent"
+      >
         <RegisterForm onDone={() => setRegistering(false)} />
       </Drawer>
       <Drawer open={current !== null} onClose={() => setSelected(null)} title={current?.name ?? ''}>

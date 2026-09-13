@@ -219,6 +219,13 @@ async def test_eval_run_api_surfaces_results(seeded_client: Any) -> None:
     assert detail["status"] == "completed"
     assert detail["passed_cases"] == 1 and detail["total_cases"] == 1
     assert detail["results"][0]["passed"] is True
-    assert detail["results"][0]["answer"].strip() == "10"
+    # the answer is omitted by default — it is up to 20k chars per case and the
+    # page polls this endpoint every few seconds while a batch runs
+    assert detail["results"][0]["answer"] is None
+    assert detail["result_total"] == 1
+    with_answers = (
+        await seeded_client.get(f"/api/v1/evals/runs/{eval_run_id}?with_answers=true")
+    ).json()
+    assert with_answers["results"][0]["answer"].strip() == "10"
     listing = (await seeded_client.get("/api/v1/evals/datasets")).json()
     assert any(d["id"] == dataset_id for d in listing["items"])

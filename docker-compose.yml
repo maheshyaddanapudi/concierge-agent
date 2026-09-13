@@ -84,6 +84,11 @@ services:
       CUSTOM_GATEWAY_API_KEY: ${CUSTOM_GATEWAY_API_KEY:-}
       CUSTOM_GATEWAY_MODELS: ${CUSTOM_GATEWAY_MODELS:-}
       AUTH_ENABLED: ${AUTH_ENABLED:-}
+      # M40 (spec §18.8): bearer-session lifetime in hours when auth is on.
+      # Documented in .env.example since M40 but never passed through, so the
+      # container silently used the 24 h code default whatever .env said
+      # (backend/app/auth/__init__.py reads AUTH_SESSION_TTL_H from os.environ).
+      AUTH_SESSION_TTL_H: ${AUTH_SESSION_TTL_H:-}
       # M55: the active AuthProvider and the fork module that registers it (spec §20)
       AUTH_PROVIDER: ${AUTH_PROVIDER:-}
       AUTH_PROVIDER_MODULE: ${AUTH_PROVIDER_MODULE:-}
@@ -101,6 +106,13 @@ services:
       EGRESS_POLICY: ${EGRESS_POLICY:-}
       EGRESS_ALLOW_HOSTS: ${EGRESS_ALLOW_HOSTS:-}
       EGRESS_MAX_BYTES: ${EGRESS_MAX_BYTES:-}
+      # A §19 remote agent may store its credential as `env:NAME` rather than
+      # a literal, so the NAME has to exist in the backend's environment.
+      # This is the one the repo's own A2A counterparty uses, and the
+      # acceptance README has always said the backend needs it — it was never
+      # passed through, so the keyed-agent stage could not authenticate.
+      # Empty by default; set it only when running that drill.
+      A2A_STUB_API_KEY: ${A2A_STUB_API_KEY:-}
       # M54: the declared fleet (spec §18.9) — the connection budget is
       # checked against it at boot and published on GET /replicas; the
       # replica id defaults to the container hostname
@@ -110,6 +122,11 @@ services:
       DB_STATEMENT_CACHE_SIZE: ${DB_STATEMENT_CACHE_SIZE:-}
       REGISTRY_CACHE_TTL_S: ${REGISTRY_CACHE_TTL_S:-}
     volumes:
+      # The filesystem MCP sandbox. The backend image runs as uid/gid 1000 and
+      # owns the /workspace mount point, so a FRESH volume is created writable.
+      # A volume that predates the non-root image is still root-owned — chown
+      # it once, then start normally:
+      #   docker compose run --rm --user 0 --entrypoint chown backend -R 1000:1000 /workspace
       - workspace:/workspace
     # M54: a host-port RANGE, so `docker compose up --scale backend=N` binds
     # each replica to its own port (8000, 8001, …) — pin a replica with it,
@@ -137,8 +154,11 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    # container port 8080, not 80: nginx runs as the unprivileged `nginx`
+    # account (frontend/Dockerfile) and cannot bind below 1024. The published
+    # host port is unchanged.
     ports:
-      - '${FRONTEND_PORT:-5173}:80'
+      - '${FRONTEND_PORT:-5173}:8080'
     deploy:
       resources:
         limits:

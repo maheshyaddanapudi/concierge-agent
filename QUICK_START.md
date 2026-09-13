@@ -1,11 +1,11 @@
 # Quick Start
 
-Everything below is driven by five idempotent scripts at the repo root — you should rarely need raw `docker compose` commands. Full operational detail lives in [docs/operations/runbook.md](./docs/operations/runbook.md).
+Everything below is driven by **eight** idempotent scripts at the repo root — `quick-setup.sh`, `build.sh`, `start.sh`, `stop.sh`, `decom.sh`, and the M53 operations trio `deploy.sh`, `backup.sh` and `restore.sh` — so you should rarely need raw `docker compose` commands. Full operational detail lives in [docs/operations/runbook.md](./docs/operations/runbook.md).
 
 ## Prerequisites
 
 - **Docker + Docker Compose** (the whole stack runs in containers)
-- An API key for **at least one** provider — Anthropic, Google, or OpenAI, any combination works (or none: see keyless mode below)
+- An API key for **at least one** provider — Anthropic, Google, OpenAI, **OpenRouter**, or any OpenAI-compatible gateway via `CUSTOM_GATEWAY_*`; any combination works (or none: see keyless mode below). `quick-setup.sh` prompts for the first three; OpenRouter and the custom gateway are set by hand in `.env` (`OPENROUTER_API_KEY`, or `CUSTOM_GATEWAY_BASE_URL` / `_API_KEY` / `_MODELS`) — every acceptance frame under `docs/acceptance/` was captured on `openrouter:qwen/qwen3.8-max`.
 - For local development only (not needed to just run the app): Python 3.12 + [uv](https://docs.astral.sh/uv/), Node 20+
 
 ## 1. Set up
@@ -18,7 +18,7 @@ git clone <repo-url> && cd concierge-agent
 What it does (safe to re-run any time — **re-running is how you update**: every prompt defaults to "keep what I have", so you can Enter through everything and change only what you answer differently, e.g. rotate one API key a month later by answering `y` at that key's "Replace it?" prompt and Enter everywhere else):
 
 - creates `.env` from `.env.example` if missing
-- asks **which model provider(s) you want**: Anthropic, Google, or OpenAI alone; any pair; all three; or none (keyless demo mode)
+- asks **which model provider(s) you want**: Anthropic, Google, or OpenAI alone; any pair; all three; or none (keyless demo mode). OpenRouter and the custom gateway are not on this menu — add them to `.env` afterwards and they appear in the Settings model selects like any other configured provider.
 - prompts for each selected provider's API key (hidden input; offers to overwrite an existing value), then **verifies the key with a free list-models API call** before saving — a rejected or unreachable key gets a clear warning and a "save it anyway?" choice
 - asks whether to provision the **optional Redis cache backend** upfront (whether the app *uses* it stays a runtime Settings decision — the default cache mode never touches Redis)
 - installs local dev dependencies (backend `uv sync`, frontend `npm install`)
@@ -73,7 +73,7 @@ Builds the backend and frontend Docker images. Re-run after pulling code changes
 
 - errors out early if Docker isn't running
 - creates or resumes the stack (`db`, `backend`, `frontend`); missing images are pulled/built
-- **first run**: creates the database schema and loads seed data automatically (two MCP servers, native skills and tools, the `research-concierge` sub agent)
+- **first run**: creates the database schema and loads seed data automatically — the two stdio MCP servers (`fetch`, `filesystem`, registered inactive and connected in the background), five native skills, ten native tools, and three sub agents (`research-concierge`, `workspace-reporter`, `workspace-warden`)
 - **later runs**: resumes with all your data intact (named volumes)
 - waits for backend health, then prints the URLs
 
@@ -84,10 +84,10 @@ Then open:
 | What | Where |
 |---|---|
 | Admin UI | `http://localhost:${FRONTEND_PORT}` (default **5173**) |
-| API | `http://localhost:${BACKEND_PORT}` (default **8000**) |
-| Interactive API docs | `http://localhost:8000/docs` |
+| API | the port compose published from `BACKEND_PORT_RANGE` (default range **8000-8010**, so **8000** for a single replica) — `./start.sh` prints it, or ask `docker compose port backend 8000` |
+| Interactive API docs | `/docs` on that same API port — and `/openapi.json` is the authoritative list of every endpoint |
 
-First things to try: send a prompt in **Chat**, watch the live run trace, then walk the ten-step acceptance script in [spec.md §14](./spec.md). A task-oriented tour of every page is in [docs/user-guide.md](./docs/user-guide.md).
+First things to try: send a prompt in **Chat**, watch the live run trace, then walk the eleven-step acceptance script in [spec.md §14](./spec.md). A task-oriented tour of every page is in [docs/user-guide.md](./docs/user-guide.md).
 
 ## 4. Stop
 
@@ -97,7 +97,19 @@ First things to try: send a prompt in **Chat**, watch the live run trace, then w
 
 Stops the containers. **All data is preserved** — registries, runs, settings, checkpoints. `./start.sh` picks up exactly where you left off.
 
-## 5. Decommission (destructive)
+## 5. Deploy, back up, restore (M53)
+
+Three more idempotent scripts, for a stack that is already running:
+
+```bash
+./deploy.sh                 # readiness-first roll: rebuild, drain the old backend, roll, then the frontend
+./backup.sh                 # pg_dump + a workspace tarball into ./backups
+./restore.sh <dump>         # timed restore drill — prints the measured RTO
+```
+
+`deploy.sh` sends `SIGUSR1` first, so `/ready` reports 503 while the port is still open: new runs are refused, streams the process cannot serve are closed with a reconnect hint, and open chat streams reconnect on their own with `Last-Event-ID` without duplicating a word. Procedure and numbers: [docs/operations/backup-restore.md](./docs/operations/backup-restore.md) and [scaling.md](./docs/operations/scaling.md).
+
+## 6. Decommission (destructive)
 
 ```bash
 ./decom.sh        # asks for confirmation
@@ -119,7 +131,7 @@ The registry cache defaults to `bypass` (direct DB reads) and can be flipped liv
 | Symptom | Fix |
 |---|---|
 | `./start.sh` says Docker isn't running | Start Docker Desktop / the docker daemon, re-run |
-| Port already in use | Change `BACKEND_PORT` / `FRONTEND_PORT` in `.env`, re-run `./start.sh` |
+| Port already in use | Change **`BACKEND_PORT_RANGE`** (not `BACKEND_PORT` — compose publishes the backend from the range) and/or `FRONTEND_PORT` in `.env`, then `./stop.sh && ./start.sh` so the containers are recreated with the new mapping. `BACKEND_PORT` is only the port used *outside* compose (the `uvicorn --port` of the fast dev loop, and `VITE_API_BASE_URL`). |
 | Runs fail with provider/credit errors | Check the key in `.env`; error text is shown verbatim on the run in the Runs page |
 | Selecting redis cache mode is rejected | `REDIS_URL` unset or Redis not running — see the Redis section above |
 | Something else | [docs/operations/troubleshooting.md](./docs/operations/troubleshooting.md) |

@@ -109,6 +109,11 @@ async def evaluate_schedules(now: datetime | None = None) -> int:
     status='error' after QUARANTINE_AFTER) and never stops the routines
     after it. Before M50 one bad `once.at` raised out of this function
     and the rest of the list was never looked at."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     now = now or datetime.now(UTC)
     fired = 0
     async with get_session_factory()() as session:
@@ -192,6 +197,11 @@ async def poll_due_intents(now: datetime | None = None) -> int:
     """Poll standing intents whose adaptive interval has elapsed. New items
     become events; quiet checks back the interval off (×multiplier up to
     max); any hit resets it to base."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     now = now or datetime.now(UTC)
     emitted = 0
     async with get_session_factory()() as session:
@@ -267,6 +277,11 @@ async def poll_due_intents(now: datetime | None = None) -> int:
 async def evaluate_state_conditions(now: datetime | None = None) -> int:
     """State intents fire on the FALSE→TRUE edge of `probe op value`, never
     while the condition merely holds (the TAP event/state lesson)."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     now = now or datetime.now(UTC)
     _ = now
     emitted = 0

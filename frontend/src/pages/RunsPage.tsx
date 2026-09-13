@@ -532,7 +532,10 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
       )}
       <ErrorNote error={error} />
       <div className="flex gap-2 border-t border-slate-800 pt-3">
-        {run.status === 'running' && (
+        {/* a queued run has not started but is very much cancellable — the
+            backend accepts cancel for it, and it is the only way to take a
+            run out of the admission queue */}
+        {(run.status === 'running' || run.status === 'queued') && (
           <Button variant="danger" onClick={() => act(() => api.post(`/runs/${run.id}/cancel`))}>
             Cancel run
           </Button>
@@ -542,7 +545,7 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
             Retry (re-plan)
           </Button>
         )}
-        {run.status !== 'running' && (
+        {run.status !== 'running' && run.status !== 'queued' && (
           <Button
             variant="danger"
             onClick={() =>

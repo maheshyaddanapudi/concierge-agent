@@ -19,6 +19,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy import select
 
+from app.cost import enforce_job_ceiling, job_spend
 from app.db import get_session_factory
 from app.models import Memory, MemoryCommunity, MemoryEntity, MemoryEntityLink
 
@@ -94,8 +95,9 @@ async def _summarize(member_ids: list[str]) -> str | None:
             entities=", ".join(sorted(e.name for e in entities)[:_SUMMARY_MEMBER_CAP]),
             memories="\n".join(f"- {m.text}" for m in memory_rows) or "(none)",
         )
-        _, model = await _extraction_model()
-        out = await model.ainvoke(prompt)  # type: ignore[attr-defined]
+        model_ref, model = await _extraction_model()
+        async with job_spend("community_summary", model_ref) as cb:
+            out = await model.ainvoke(prompt, config={"callbacks": cb})  # type: ignore[attr-defined]
         text = out.content if isinstance(out.content, str) else str(out.content)
         return str(text).strip() or None
     except Exception as exc:  # noqa: BLE001 — memory never breaks anything
@@ -134,6 +136,12 @@ async def rebuild_communities() -> int:
     if not await gate_open(JOB_GATES[JOB_COMMUNITIES]):
         return 0
     if int(await get_cache().setting("memory_community_budget_tokens") or 0) <= 0:
+        return 0
+    from app.memory.lifecycle import _consolidation_window_open
+
+    if not await _consolidation_window_open():
+        return 0
+    if not await enforce_job_ceiling("community_summary"):
         return 0
 
     async with get_session_factory()() as session:

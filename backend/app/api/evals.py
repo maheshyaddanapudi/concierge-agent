@@ -2,13 +2,15 @@
 and graded results."""
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 
 from app.api.deps import SessionDep
+from app.config import get_config
 from app.evals.parse import EvalParseError, parse_eval_file
 from app.models import EvalCase, EvalDataset, EvalResult, EvalRun, Skill, SubAgent
 
@@ -36,6 +38,7 @@ def _dataset_out(d: EvalDataset, case_count: int, target_name: str | None) -> di
         "target_id": str(d.target_id),
         "target_name": target_name,
         "case_count": case_count,
+        "allow_hitl_autoapprove": bool(d.allow_hitl_autoapprove),
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
@@ -51,12 +54,39 @@ async def upload_dataset(
     session: SessionDep,
     file: Annotated[UploadFile, File()],
     name: Annotated[str | None, Form()] = None,
+    allow_hitl_autoapprove: Annotated[bool, Form()] = False,
 ) -> dict[str, Any]:
-    data = await file.read()
+    # the upload is read whole into memory and EVERY row becomes a model call,
+    # so it is bounded twice: in bytes before the read, and in rows after the
+    # parse. The middleware already refuses an oversized declared length; this
+    # is the second gate, for a body that arrived without one.
+    cap = int(get_config().max_upload_bytes)
+    data = await file.read(cap + 1)
+    if len(data) > cap:
+        raise HTTPException(413, f"dataset too large (limit {cap} bytes)")
     try:
         parsed = parse_eval_file(file.filename or "upload.csv", data)
     except EvalParseError as exc:
         raise HTTPException(422, str(exc)) from exc
+    max_rows = int(get_config().max_eval_rows)
+    if len(parsed["cases"]) > max_rows:
+        raise HTTPException(422, f"dataset has {len(parsed['cases'])} rows (limit {max_rows})")
+    # a case whose `expected` is blank cannot be graded: `contains` and
+    # `exact` both match the empty string, so a blank row scored as a PASS
+    # however the model answered — a malformed dataset reported 100%.
+    blank = [
+        i
+        for i, case in enumerate(parsed["cases"])
+        if not str(case.get("expected") or "").strip()
+        and str(case.get("grader") or "contains") in ("contains", "exact")
+    ]
+    if blank:
+        raise HTTPException(
+            422,
+            "rows "
+            + ", ".join(str(i + 1) for i in blank[:10])
+            + " have a blank `expected` with a literal grader — they would pass unconditionally",
+        )
     target_id = UUID(parsed["target_id"])
     target = await _target_name(session, parsed["level"], target_id)
     if target is None:
@@ -65,6 +95,8 @@ async def upload_dataset(
         name=name or (file.filename or "dataset").rsplit(".", 1)[0],
         level=parsed["level"],
         target_id=target_id,
+        # §15: opt in, per dataset, to letting the harness clear a human gate
+        allow_hitl_autoapprove=allow_hitl_autoapprove,
     )
     session.add(dataset)
     await session.flush()
@@ -180,14 +212,44 @@ async def list_eval_runs(session: SessionDep, dataset_id: UUID | None = None) ->
 
 
 @router.get("/runs/{eval_run_id}")
-async def get_eval_run(eval_run_id: UUID, session: SessionDep) -> dict[str, Any]:
+async def get_eval_run(
+    eval_run_id: UUID,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    with_answers: bool = False,
+) -> dict[str, Any]:
     r = await session.get(EvalRun, eval_run_id)
     if r is None:
         raise HTTPException(404, "no such eval run")
     out = _eval_run_out(r)
+    # the page used to ship EVERY result including every full answer, on a
+    # three-second poll while the batch ran: a few hundred cases is megabytes
+    # per poll. Paged, and the answers come only when asked for.
+    total = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(EvalResult)
+                .where(EvalResult.eval_run_id == eval_run_id)
+            )
+        ).scalar_one()
+    )
+    out["result_total"] = total
+    out["result_offset"] = offset
+    out["result_limit"] = limit
     results = list(
         (
-            await session.execute(select(EvalResult).where(EvalResult.eval_run_id == eval_run_id))
+            await session.execute(
+                # ordered by the case's own position, so the table does not
+                # reshuffle between two polls of the same running batch
+                select(EvalResult)
+                .join(EvalCase, EvalCase.id == EvalResult.case_id)
+                .where(EvalResult.eval_run_id == eval_run_id)
+                .order_by(EvalCase.position, EvalResult.id)
+                .limit(limit)
+                .offset(offset)
+            )
         ).scalars()
     )
     cases = {
@@ -208,8 +270,28 @@ async def get_eval_run(eval_run_id: UUID, session: SessionDep) -> dict[str, Any]
             "passed": res.passed,
             "score": res.score,
             "reason": res.grader_reason,
-            "answer": res.answer,
+            "answer": res.answer if with_answers else None,
         }
         for res in results
     ]
     return out
+
+
+@router.post("/runs/{eval_run_id}/cancel")
+async def cancel_eval_run(eval_run_id: UUID, session: SessionDep) -> dict[str, Any]:
+    """Stop a batch. There was no way to do this at all: a long batch against
+    an expensive model ran to the last case, and a run left `running` when the
+    process restarted stayed that way forever with nothing to clear it."""
+    r = await session.get(EvalRun, eval_run_id)
+    if r is None:
+        raise HTTPException(404, "no such eval run")
+    if r.status != "running":
+        raise HTTPException(409, f"eval run is {r.status}; only a running batch can be cancelled")
+    task = _RUN_TASKS.get(eval_run_id)
+    if task is not None:
+        task.cancel()
+    r.status = "cancelled"
+    r.finished_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(r)
+    return _eval_run_out(r)

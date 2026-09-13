@@ -34,6 +34,9 @@ pytestmark = pytest.mark.anyio
 
 
 async def _set(**kv: Any) -> None:
+    # §3.7.1: the memory backfill enforces the memory master in its own body
+    # now, so a test that sets only `embedding_model` would prove nothing.
+    kv.setdefault("memory_enabled", True)
     async with get_session_factory()() as session:
         await update_settings(session, kv)
 

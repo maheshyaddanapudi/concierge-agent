@@ -5,7 +5,9 @@ input_tokens, output_tokens, duration_ms, status}.
 """
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Coroutine, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import structlog
@@ -218,8 +220,99 @@ REPLICA_INFO = Gauge(
     "concierge_replica_info", "1 for this process, labelled with its replica id (M54)", ["replica"]
 )
 SPEND_REFUSED = Counter(
-    "concierge_spend_ceiling_refusals_total", "Runs refused at the spend ceiling", ["kind"]
+    "concierge_spend_ceiling_refusals_total",
+    "Runs and jobs refused at the spend ceiling",
+    ["kind"],
 )
+# tokens spent by work that is NOT a run (judges, digests, reflection,
+# community summaries, extraction, embeddings) — the spend the dashboard
+# used to report as zero because only runs were counted
+JOB_USAGE_TOKENS = Counter(
+    "concierge_job_usage_tokens_total",
+    "Model tokens spent outside a run, by job class",
+    ["kind", "direction"],
+)
+
+
+# ── the run as a log/metric scope (spec §10) ─────────────────────
+#
+# `merge_contextvars` is wired into the structlog pipeline, but the only
+# thing ever bound inside a run was `eval=True`: the ~200 log events a run
+# emits outside the recorder carried no run id at all, so an incident could
+# not be read back per run. `run_context` binds the run's identity for the
+# whole task, and `unbind`s on the way out so nothing leaks to the next
+# thing the loop runs.
+#
+# The same boundary is where a run's wall time becomes knowable: the timer
+# registered here is what `observe_run_duration` (called from the recorder
+# when a run reaches a terminal status) turns into a RUN_DURATION sample.
+
+_RUN_CONTEXT_KEYS = ("run_id", "mode")
+# run_id -> (monotonic start, orchestrator mode or None if not yet known)
+_RUN_TIMERS: dict[str, tuple[float, str | None]] = {}
+# a run that never reaches a terminal status (reaped by a restart, owner
+# replica gone) leaves its timer behind; the map is bounded so that never
+# becomes a leak
+_RUN_TIMER_LIMIT = 10_000
+# terminal statuses the RECORDER times. `completed` is observed inline on
+# the runner's completed path, so timing it here too would double-count;
+# every other terminal status had no timing series at all before this.
+RECORDER_TIMED_STATUSES = frozenset({"failed", "cancelled", "stalled"})
+TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "stalled"})
+
+
+def mark_run_started(run_id: Any, mode: str | None = None) -> None:
+    """Start (or complete) the timing record for a run. The FIRST call wins
+    the clock — a second recorder built on the failure path must not reset a
+    run's start — while a later call may fill in a mode the first did not
+    know yet."""
+    key = str(run_id)
+    existing = _RUN_TIMERS.get(key)
+    if existing is None:
+        if len(_RUN_TIMERS) >= _RUN_TIMER_LIMIT:
+            oldest = min(_RUN_TIMERS, key=lambda k: _RUN_TIMERS[k][0])
+            _RUN_TIMERS.pop(oldest, None)
+        _RUN_TIMERS[key] = (time.monotonic(), mode)
+    elif mode is not None and existing[1] != mode:
+        _RUN_TIMERS[key] = (existing[0], mode)
+
+
+def observe_run_duration(run_id: Any, status: str, mode: str | None = None) -> None:
+    """Record the run's wall time against its terminal status, once. A run
+    with no timing record (one this process never started) is skipped rather
+    than timed from nothing."""
+    entry = _RUN_TIMERS.pop(str(run_id), None)
+    if entry is None:
+        return
+    started, run_mode = entry
+    RUN_DURATION.labels(mode=mode or run_mode or "unknown", status=status).observe(
+        max(time.monotonic() - started, 0.0)
+    )
+
+
+def forget_run_timer(run_id: Any) -> None:
+    """Drop a run's timing record without observing it (test/teardown hook)."""
+    _RUN_TIMERS.pop(str(run_id), None)
+
+
+@contextmanager
+def run_context(run_id: Any, mode: str) -> Iterator[None]:
+    """Bind the run's identity onto every log event emitted inside it, and
+    register the run's clock. Unbinds on the way out — a run's labels never
+    survive into whatever the event loop runs next."""
+    structlog.contextvars.bind_contextvars(run_id=str(run_id), mode=str(mode))
+    mark_run_started(run_id, str(mode))
+    try:
+        yield
+    finally:
+        structlog.contextvars.unbind_contextvars(*_RUN_CONTEXT_KEYS)
+
+
+async def run_scope[T](run_id: Any, mode: str, coro: Coroutine[Any, Any, T]) -> T:
+    """`run_context` around an awaitable — the one-line form for the task
+    boundary, where wrapping the body in a `with` would mean reindenting it."""
+    with run_context(run_id, mode):
+        return await coro
 
 
 def bind_pool_gauges(engine: Any) -> None:

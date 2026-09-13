@@ -5,13 +5,13 @@
 // page reloaded.
 const THEMES = ['default', 'anthropic', 'openai', 'google']
 
-export default async function ({ page, nav, shot, get, log, setTheme, openConversation }) {
+export default async function ({ page, nav, shot, get, log, setTheme, openConversation, expect, expectEq }) {
   const runs = (await get('/runs?limit=50')).json
   const withArtifact = runs.find((r) => r.status === 'completed' && r.answer_ui)
   const target = withArtifact || runs.find((r) => r.status === 'completed')
   log(`answer used for the gallery: run ${target?.id} (${withArtifact ? 'structured artifact present' : 'no structured artifact on any completed run — plain answer shown'})`)
   const title = (target?.chat_message || '').slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  if (!title) throw new Error('no completed run to render — the gallery needs a settled answer')
+  expect(!!title, 'there is a settled answer for the gallery to render')
 
   for (const t of THEMES) {
     await setTheme(page, t)
@@ -23,7 +23,12 @@ export default async function ({ page, nav, shot, get, log, setTheme, openConver
     await openConversation(page, title)
     await page.waitForTimeout(800)
     await shot(page, `answer-theme-${t}`)
-    log(`theme ${t}: html[data-theme]=${await page.evaluate(() => document.documentElement.getAttribute('data-theme'))} localStorage=${await page.evaluate(() => localStorage.getItem('concierge-theme'))}`)
+    const applied = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
+    const stored = await page.evaluate(() => localStorage.getItem('concierge-theme'))
+    log(`theme ${t}: html[data-theme]=${applied} localStorage=${stored}`)
+    // the gallery is only a gallery if each frame is a DIFFERENT palette
+    expectEq(stored, t, `the ${t} palette is the stored preference`)
+    expectEq(applied, t, `…and the document is actually painted with it`)
   }
 
   await setTheme(page, 'default')
@@ -31,4 +36,9 @@ export default async function ({ page, nav, shot, get, log, setTheme, openConver
   await page.getByText('Appearance', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(500)
   await shot(page, 'picker-restored-default')
+  expectEq(
+    await page.evaluate(() => document.documentElement.getAttribute('data-theme')),
+    'default',
+    'the picker is back on the default palette for the stages that follow',
+  )
 }

@@ -93,7 +93,7 @@ async def list_conversations(
             scope_to_user(
                 select(Conversation, func.coalesce(counts.c.n, 0))
                 .outerjoin(counts, counts.c.conversation_id == Conversation.id)
-                .order_by(Conversation.updated_at.desc())
+                .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
                 .limit(limit)
                 .offset(offset),
                 Conversation,

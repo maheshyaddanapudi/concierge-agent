@@ -171,6 +171,11 @@ async def expire_pattern_deadlines(now: datetime | None = None) -> int:
     """The tick's timer wheel: armed instances past deadline. For absence
     rules the expiry IS the match (A happened, B never came); for
     sequence/conjunction it is just cleanup."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     now = now or datetime.now(UTC)
     fired = 0
     async with get_session_factory()() as session:

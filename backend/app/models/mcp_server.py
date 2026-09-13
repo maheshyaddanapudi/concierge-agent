@@ -26,3 +26,11 @@ class McpServer(RegistryRecord):
     # and header KEYS): a change is a different binary behind the same tool
     # rows, logged and reconnected at once rather than at the next ping
     config_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # §4: when the OPERATOR switched this server off. `status='inactive'` is
+    # overloaded — a freshly registered server is born inactive and the
+    # manager flips it to active on its first connect — so the status alone
+    # cannot tell "not connected yet" from "a human said stop", which is why
+    # the toggle used to be a label: start() and reconcile connected it again
+    # every interval. This column is the operator's intent, and it survives a
+    # restart. Set on the status→inactive PATCH, cleared on the way back.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

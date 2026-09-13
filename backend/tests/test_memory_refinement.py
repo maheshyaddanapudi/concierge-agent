@@ -246,6 +246,53 @@ async def test_remember_with_entities_creates_and_dedupes_links() -> None:
     assert len(links) == 3
 
 
+async def test_entity_linking_survives_a_case_duplicate_in_the_same_write() -> None:
+    """The lookup folds case, the extractor's list does not. Two spellings
+    of one name resolved to two links on the same composite PK: the flush
+    raised, the best-effort `except` swallowed it, and the caller's commit
+    then died of PendingRollbackError — losing the memory write itself."""
+    await _enable()
+    row = await remember(
+        text="the primary store is Postgres",
+        kind="fact",
+        source="user_stated",
+        entities=["Postgres", "postgres"],
+    )
+    async with get_session_factory()() as session:
+        stored = await session.get(Memory, row.id)
+        entities = list((await session.execute(select(MemoryEntity))).scalars())
+        links = list((await session.execute(select(MemoryEntityLink))).scalars())
+    assert stored is not None and stored.text == "the primary store is Postgres"
+    assert len(entities) == 1 and len(links) == 1
+
+
+async def test_entity_hop_obeys_the_project_predicate() -> None:
+    """The hop is a third read path, so §18.2 binds it too: it used to
+    hand-roll a conversation clause and hop straight across projects."""
+    await _enable()
+    direct = await remember(
+        text="Biscuit is the user's dog",
+        kind="entity",
+        source="user_stated",
+        entities=["Biscuit"],
+    )
+    project_row = await remember(
+        text="Biscuit is the apollo team mascot",
+        kind="fact",
+        scope="project",
+        source="user_stated",
+        project_key="apollo",
+        entities=["Biscuit"],
+    )
+    unscoped = await recall("the user's dog")
+    assert direct.id in [h.memory.id for h in unscoped]
+    assert project_row.id not in [h.memory.id for h in unscoped]
+    # under its own key the hop still reaches it — by structure, not score
+    scoped = await recall("the user's dog", project_key="apollo")
+    hop = next(h for h in scoped if h.memory.id == project_row.id)
+    assert hop.linked is True
+
+
 async def test_recall_appends_entity_hop_below_direct_hits() -> None:
     await _enable()
     direct = await remember(

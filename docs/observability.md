@@ -6,9 +6,9 @@ Four layers, one shared label set (spec §10). The always-on layer is the Postgr
 
 Every chat message becomes a `runs` row; every unit of work inside it becomes a `run_steps` row (spec §3.6, models in `backend/app/models/`). No toggle — this is the source of truth.
 
-**Per run**: `conversation_id`, `chat_message`, `plan` (the planner's validated JSON, or the agentic todo list), `snapshot` (the resolved persona/workflow/model/tool definitions frozen at dispatch, so later registry edits never rewrite history), `answer_ui` (the persisted structured-summary payload), `status` (`running | paused_hitl | completed | failed | cancelled`), timestamps, and rolled-up `total_input_tokens` / `total_output_tokens`.
+**Per run**: `conversation_id`, `chat_message`, `plan` (the planner's validated JSON, or the agentic todo list), `snapshot` (the resolved persona/workflow/model/tool definitions frozen at dispatch, so later registry edits never rewrite history), `answer_ui` (the persisted structured-summary payload), `status` (`queued | running | paused_hitl | completed | failed | cancelled | stalled` — **`queued`** is a real persisted state since M51, **`stalled`** is what the heartbeat reaper writes; a dashboard query that filters on the old five-value list silently drops both), timestamps, and rolled-up `total_input_tokens` / `total_output_tokens`.
 
-**Per step** (`RunRecorder.start_step` / `finish_step`): `step_type` (`plan | route | skill | hitl | tool_call | aggregate`), `parent_step_id` (nesting — e.g. tool calls under their skill node, native-subgraph children under their `tool_call`), `sub_agent_id`, `node_id`, `input`/`output` jsonb, `model` (the `provider:model` reference actually used), `input_tokens`/`output_tokens`, `started_at`/`finished_at`, `error`, `status`. Ephemeral dynamic workers appear with their per-run callsign plus composition as `entity_name` — e.g. `worker-alpha (web-research+file-ops)` (`backend/app/orchestrator/ladder.py`, callsign sequence in `backend/app/orchestrator/context.py`).
+**Per step** (`RunRecorder.start_step` / `finish_step`): `step_type` (`plan | route | skill | hitl | tool_call | aggregate | format | summary` — **`format`** is the formatter's own call, counted once, and **`summary`** the §7.5 history-summary call; both were added after the original six), `parent_step_id` (nesting — e.g. tool calls under their skill node, native-subgraph children under their `tool_call`), `sub_agent_id`, `node_id`, `input`/`output` jsonb, `model` (the `provider:model` reference actually used), `input_tokens`/`output_tokens`, `started_at`/`finished_at`, `error`, `status`. Ephemeral dynamic workers appear with their per-run callsign plus composition as `entity_name` — e.g. `worker-alpha (web-research+file-ops)` (`backend/app/orchestrator/ladder.py`, callsign sequence in `backend/app/orchestrator/context.py`).
 
 `route` steps record the resolution-ladder decision: `output.rung` is one of `direct_tool | direct_skill | native_sub_agent | custom_sub_agent | dynamic_worker`, or `fallback` when the full-catalog fallback engaged (`RunRecorder.record_route`).
 
@@ -52,7 +52,7 @@ Framework-level traces (prompts, completions, tool calls) for every LLM touchpoi
 
 ## Metrics: `/metrics` (Prometheus)
 
-Served by the backend at `GET /metrics` (`main.py`) and also proxied by the frontend nginx (`frontend/nginx.conf` has an explicit `/metrics` location). **Scrape replicas individually** (M54): the registry is per process, so under `--scale backend=N` a scrape through the frontend VIP alternates replicas and every counter shows resets. `docs/observability/prometheus.yml` discovers each replica as its own target through Docker DNS (`dns_sd_configs` on `backend`), so `instance` is the replica; `concierge_replica_info{replica}` names it. Series defined in `obs.py`:
+Served by the backend at `GET /metrics` (`main.py`) and also proxied by the frontend nginx (`frontend/nginx.conf` has an explicit `/metrics` location). **Scrape replicas individually** (M54): the registry is per process, so under `--scale backend=N` a scrape through the frontend VIP alternates replicas and every counter shows resets. `docs/observability/prometheus.yml` discovers each replica as its own target through Docker DNS (`dns_sd_configs` on `backend`), so `instance` is the replica; `concierge_replica_info{replica}` names it. **45 series are defined in `obs.py`**; every one of them is in the tables below. Series defined in `obs.py`:
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -83,16 +83,35 @@ Every finding the production reviews rated high used to be invisible on a dashbo
 | `concierge_runs_in_flight` | gauge | `state` = `running`, `queued` | admission's view of this replica — **the autoscaling signal** (queued > 0 for long means add a replica or raise `run_max_concurrent`) |
 | `concierge_run_slots` | gauge | — | `run_max_concurrent` as applied |
 | `concierge_backlog_depth` | gauge | `queue` = `ambient_events`, `deliveries` | pending events (no verdict) and undelivered deliveries, sampled by the leader each tick |
-| `concierge_loop_errors_total` | counter | `loop` = `ambient`, `memory`, `retention`, `spend`, `mcp_health`, `replica`, `cluster` | a background loop whose tick raised — before M53 these were log-only; `replica` is the M54 heartbeat, `cluster` the dead-owner reaper and limiter eviction |
+| `concierge_loop_errors_total` | counter | `loop` = `ambient`, `memory`, `retention`, `spend`, `mcp_health`, `replica`, `cluster`, `overlap_audit` | a background loop whose tick raised — before M53 these were log-only; `replica` is the M54 heartbeat, `cluster` the dead-owner reaper and limiter eviction |
 | `concierge_mcp_servers` | gauge | `state` = `connected`, `reconnecting`, `circuit_open` | the MCP fleet from this replica's point of view |
 | `concierge_mcp_reconnects_total` | counter | `outcome` = `ok`, `failed`, `circuit_open` | automatic reconnect attempts |
-| `concierge_listener_connected` | gauge | `channel` | 1 while a LISTEN connection is up (`registry_cache_inv`, `ambient_events`); the sessions carry `application_name = concierge-listen:<channel>` in `pg_stat_activity` |
+| `concierge_listener_connected` | gauge | `channel` | 1 while a LISTEN connection is up — **three** channels: `registry_cache_inv`, `ambient_events` (only while the ambient loop runs) and `concierge_control` (M54). The sessions carry `application_name = concierge-listen:<channel>` in `pg_stat_activity` |
 | `concierge_listener_reconnects_total` | counter | `channel` | re-established LISTEN connections (each one reloads what it may have missed) |
 | `concierge_sse_subscribers` | gauge | `stream` = `chat`, `ambient` | open streams |
 | `concierge_retention_deleted_total` | counter | `table` | rows the retention job removed |
 | `concierge_spend_usd_today` | gauge | — | priced spend across every run kind, UTC day — refreshed whenever spend is computed and once per periodic tick, so a fresh process reports the day's spend within a minute whether or not the ceiling gate is on |
 | `concierge_replica_info` | gauge | `replica` | 1 for this process, labelled with its replica id (M54) — join it to any other series to name the replica behind an `instance` |
-| `concierge_spend_ceiling_refusals_total` | counter | `kind` | runs refused at the ceiling, by trigger kind |
+| `concierge_spend_ceiling_refusals_total` | counter | `kind` | runs refused at the ceiling, by trigger kind — and by **job class** for the out-of-run work that declined |
+
+### The remaining series
+
+Defined in `obs.py` and emitted, but not in the tables above — all counters unless noted:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `concierge_job_usage_tokens_total` | counter | `kind`, `direction` | model tokens spent by work that is **not** a run (judges, digests, reflection, community summaries, extraction, embeddings) — the spend a run-only dashboard reports as zero |
+| `concierge_ambient_judge_tokens_total` | counter | `direction` | the §17.3 significance judge's own token usage |
+| `concierge_memory_injected_tokens` | histogram | `surface` | tokens injected from memory per surface, against the §16.3 budgets |
+| `concierge_overlap_overrides_total` | counter | `draft_type` | a human saved past a flagged §4 overlap — content-free, the capture a threshold tuner would need |
+| `concierge_tool_schema_changes_total` | counter | `kind`, `policy` | §3.2 drift: a tool's input schema changed on re-ingest, under `warn` or `quarantine` |
+| `concierge_tool_description_changes_total` | counter | `kind`, `source` | a tool's description changed, and whether the operator's wording or the server's won |
+| `concierge_tool_name_collisions_total` | counter | `kind` | an ingested `tool_key` collided and was suffixed |
+| `concierge_skill_tool_unavailable_total` | counter | `reason` | a skill was built with a bound tool it could not have — `deleted`, `quarantined`, `missing`, `inactive`, `agentoff` |
+| `concierge_a2a_card_changes_total` | counter | `kind` | a refreshed Agent Card differed from the stored one |
+| `concierge_retrieval_stale_vectors_total` | counter | — | a §7.4 ranking ran against an embedding whose text had changed since |
+
+**`concierge_memory_recall_seconds`** (histogram) is **defined and never observed** — no call site records into it, so it will always be absent from a scrape. Do not build a recall-latency panel on it; it is a known gap, either to wire up or to delete.
 
 ## Token usage tracking
 

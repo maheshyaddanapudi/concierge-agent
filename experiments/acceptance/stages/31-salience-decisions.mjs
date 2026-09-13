@@ -13,7 +13,7 @@ const psql = (q) => execSync(`docker exec ${DB} psql -U ${process.env.ACC_DB_USE
 const seed = (title, body, urgency) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, ${urgency}, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', now()) returning id) select id from ins`)
 const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered', delivered_at is not null, 'verdict', salience->>'verdict', 'decision', salience->>'decision', 'applied', salience->>'applied', 'judge_reward', salience->>'judge_reward') from deliveries where id='${id}'`))
 
-export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
+export default async function ({ page, nav, shot, settings, get, log, MODEL, expect, expectEq, expectMatch }) {
   const initial = (await get('/settings')).json
   const out = [`# §14h-52..54 — salience decisions (propose) — ${new Date().toISOString()}`, '']
   const say = (l) => {
@@ -34,6 +34,9 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
   await shot(page, '01-extraction-model-picker')
   const s = (await get('/settings')).json
   say(`# salience judge=${s.ambient_salience_model} extraction=${s.memory_extraction_model} mode=${s.ambient_salience_mode}`)
+  expectEq(s.ambient_salience_model, MODEL, 'the salience judge picker wrote its role model')
+  expectEq(s.memory_extraction_model, MODEL, 'the extraction picker wrote its role model')
+  expectEq(s.ambient_salience_mode, 'propose', 'the stage is running in propose mode')
 
   // two unseen deliveries judged live: one worth attention, one noise
   await page.goto('about:blank')
@@ -49,6 +52,9 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
   }
   say(`escalate row judged: ${JSON.stringify(h)}`)
   say(`decline row judged: ${JSON.stringify(c)}`)
+  // propose mode PROPOSES: a verdict on each row, and nothing applied yet
+  expect(!!h?.verdict && !!c?.verdict, 'both rows carry a live judge verdict')
+  expect(h.applied !== 'true', 'and nothing was applied without a human — that is what propose means')
 
   await nav(page, 'ambient')
   await page.waitForTimeout(1200)
@@ -58,16 +64,24 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
   await shot(page, '02-escalate-proposal')
   await hotCard.getByRole('button', { name: 'why this?' }).click()
   await page.waitForTimeout(500)
-  say(`why this: ${(await page.getByTestId('salience-why').first().textContent()).trim().slice(0, 240)}`)
+  const why = (await page.getByTestId('salience-why').first().textContent()).trim()
+  say(`why this: ${why.slice(0, 240)}`)
+  expectMatch(why, /.{20,}/, 'the layered "why this?" disclosure gives a reason, not a label')
   await shot(page, '03-why-this')
   await hotCard.getByRole('button', { name: 'Do it' }).click()
   await page.waitForTimeout(1500)
-  say(`after Do it: ${JSON.stringify(row(hot))}`)
+  const applied = row(hot)
+  say(`after Do it: ${JSON.stringify(applied)}`)
+  expectEq(applied.decision, 'applied', '"Do it" applied the proposal')
   await page.getByText(/digest preview/).first().scrollIntoViewIfNeeded()
   await shot(page, '04-escalate-applied')
   await cardFor('checkout-service error budget').getByRole('button', { name: 'Undo' }).click()
   await page.waitForTimeout(1500)
-  say(`after Undo: ${JSON.stringify(row(hot))}`)
+  const undone = row(hot)
+  say(`after Undo: ${JSON.stringify(undone)}`)
+  // Undo restores the row EXACTLY — the tier it had before the apply
+  expectEq(undone.tier, h.tier, 'Undo restored the row to the tier it had before the apply')
+  expect(undone.decision !== 'applied', '…and the decision is no longer "applied"')
   await cardFor('checkout-service error budget').scrollIntoViewIfNeeded()
   await shot(page, '05-escalate-undone')
 
@@ -76,7 +90,9 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
   await shot(page, '06-low-value-proposal')
   await coldCard.getByRole('button', { name: 'Leave it' }).click()
   await page.waitForTimeout(1500)
-  say(`after Leave it (cold): ${JSON.stringify(row(cold))}`)
+  const declined = row(cold)
+  say(`after Leave it (cold): ${JSON.stringify(declined)}`)
+  expectEq(declined.decision, 'declined', '"Leave it" recorded the decline on the low-value proposal')
   await shot(page, '07-declined')
 
   // a second round on the escalate row: applied → undone → declined
@@ -103,7 +119,9 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL }) {
   await rule.scrollIntoViewIfNeeded()
   await rule.click()
   await page.waitForTimeout(800)
-  say(`precision rule toggled → ${(await get('/settings')).json.ambient_precision_rule_enabled}`)
+  const ruleNow = (await get('/settings')).json.ambient_precision_rule_enabled
+  say(`precision rule toggled → ${ruleNow}`)
+  expectEq(ruleNow, !initial.ambient_precision_rule_enabled, 'the precision auto-downgrade rule toggled')
   await shot(page, '11-precision-rule-toggle')
   await rule.click()
   await page.waitForTimeout(500)

@@ -11,10 +11,10 @@ Failure-safe by contract: anything invalid is dropped silently — the
 streamed text answer is always the source of truth.
 """
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from app.llm import ModelParams, get_model
 from app.prompts import load_prompt
@@ -30,6 +30,23 @@ ComponentType = Literal[
 ]
 
 
+def _as_text(value: Any) -> Any:
+    """A number where text belongs is the model being literal, not a broken
+    document: `{"rows": [["Line 3", 120]]}` used to fail validation and take
+    the ENTIRE artifact — prose included — down with it over one cell. Coerce
+    scalars to their string form; anything else falls through to the normal
+    error."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return value
+
+
+# text content that a model may plausibly type as a number
+Cell = Annotated[str, BeforeValidator(_as_text)]
+
+
 class UiSeries(BaseModel):
     name: str | None = None
     values: list[float] = Field(default_factory=list)
@@ -39,14 +56,14 @@ class UiComponent(BaseModel):
     """One whitelisted component of the model-facing schema."""
 
     type: ComponentType
-    title: str | None = None
-    markdown: str | None = None
-    label: str | None = None
-    value: str | None = None
-    hint: str | None = None
-    columns: list[str] | None = None
-    rows: list[list[str]] | None = None
-    items: list[str] | None = None
+    title: Cell | None = None
+    markdown: Cell | None = None
+    label: Cell | None = None
+    value: Cell | None = None
+    hint: Cell | None = None
+    columns: list[Cell] | None = None
+    rows: list[list[Cell]] | None = None
+    items: list[Cell] | None = None
     ordered: bool | None = None
     tone: Literal["neutral", "success", "warning", "danger"] | None = None
     url: str | None = None
@@ -75,7 +92,7 @@ class UiComponent(BaseModel):
         ]
         | None
     ) = None
-    labels: list[str] | None = None
+    labels: list[Cell] | None = None
     series: list[UiSeries] | None = None
     # chart placement by reference: index into the run's tool-produced
     # charts — places an existing chart at this position instead of
@@ -153,14 +170,47 @@ class _A2uiBuilder:
         return None  # unknown types are ignored, never errored
 
 
+def hoist_nested_charts(components: list[UiComponent]) -> list[UiComponent]:
+    """Charts leave the A2UI stream for the native SVG renderer, so a chart
+    nested inside a container (`card`) can never draw — the builder ignores
+    unknown children and the chart vanished with no signal at all. Lift each
+    nested chart to top level, immediately after its container, so it renders
+    where the document put it. Idempotent; containers left empty by the lift
+    (and carrying no text of their own) are dropped with it."""
+    out: list[UiComponent] = []
+    for c in components:
+        if not c.children:
+            out.append(c)
+            continue
+        kept: list[UiComponent] = []
+        lifted: list[UiComponent] = []
+        for child in hoist_nested_charts(c.children):
+            (lifted if child.type == "chart" else kept).append(child)
+        if not lifted:
+            out.append(c)
+            continue
+        logger.info("formatter_chart_hoisted", container=c.type, count=len(lifted))
+        if kept or c.title or c.markdown:
+            out.append(c.model_copy(update={"children": kept}))
+        out.extend(lifted)
+    return out
+
+
 def extract_charts(ui: AnswerUi) -> list[dict[str, Any]]:
     """Chart components render via the app's own themed SVG component
-    (spec §7.1) — normalized specs, split out of the A2UI stream."""
+    (spec §7.1) — normalized specs, split out of the A2UI stream.
+
+    Every spec goes through the SAME `_ChartSpec` contract the render_chart
+    tool applies (`validate_chart_spec`): one renderer, one validation
+    boundary. A spec the renderer could not draw — misaligned labels and
+    values, a gauge without its [value, max] pair, a non-finite number — is
+    dropped here with a log line naming it, never handed on."""
+    from app.native.tools import validate_chart_spec
+
     charts: list[dict[str, Any]] = []
-    for c in ui.components:
+    for c in hoist_nested_charts(ui.components):
         if c.type != "chart" or not c.chart_kind or not c.series:
             continue
-        labels = [str(x) for x in (c.labels or [])]
         series = [
             {"name": s.name or "", "values": [float(v) for v in s.values]}
             for s in c.series
@@ -168,9 +218,18 @@ def extract_charts(ui: AnswerUi) -> list[dict[str, Any]]:
         ]
         if not series:
             continue
-        charts.append(
-            {"kind": c.chart_kind, "title": c.title or "", "labels": labels, "series": series}
-        )
+        candidate: dict[str, Any] = {
+            "kind": c.chart_kind,
+            "title": c.title or "",
+            # label-free kinds (sparkline here, scatter/bubble on the tool
+            # path) legitimately carry no labels — [] is a valid value, not
+            # a missing one
+            "labels": [str(x) for x in (c.labels or [])],
+            "series": series,
+        }
+        valid = validate_chart_spec(candidate, source="formatter")
+        if valid is not None:
+            charts.append(valid)
     return charts
 
 
@@ -193,7 +252,7 @@ def build_blocks(ui: AnswerUi, tool_chart_count: int) -> list[dict[str, Any]]:
             blocks.append({"a2ui": to_a2ui_messages(AnswerUi(components=group))})
             group = []
 
-    for c in ui.components:
+    for c in hoist_nested_charts(ui.components):
         if c.type == "table" and c.rows:
             flush()
             table: dict[str, Any] = {
@@ -449,6 +508,10 @@ async def generate_answer_ui(
                 )
                 continue
             parsed = candidate
+            # nested charts become top-level ones before anything reads the
+            # document: the deficiency check, ref placement, coverage and the
+            # block walk all then see the same components
+            parsed.components = hoist_nested_charts(parsed.components)
             deficiency = _chart_deficiency(parsed, task, tool_charts, charts_enabled)
             if deficiency is None or attempt == 1:
                 break

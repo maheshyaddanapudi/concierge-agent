@@ -4,7 +4,7 @@
 // chat card shows as resolved in the queue tab.
 import { TRIAL_MESSAGE } from './_trial.mjs'
 
-export default async function ({ page, context, nav, shot, settings, get, log, sendChat, waitRun, steps, newConversation }) {
+export default async function ({ page, context, nav, shot, settings, get, log, sendChat, waitRun, steps, newConversation, expect, expectEq, expectStatus }) {
   await settings({ orchestrator_mode: 'graph', default_model_params: null })
   const queueShot = async (tab, name) => {
     await tab.reload()
@@ -16,6 +16,8 @@ export default async function ({ page, context, nav, shot, settings, get, log, s
   }
   const tab = await context.newPage()
   await tab.setViewportSize({ width: 1440, height: 900 })
+  // the first navigation of a brand-new tab can race the app's boot; the
+  // real navigation that matters is the one inside leg A below
   await tab.goto(`${page.url().split('#')[0] || 'http://localhost/'}#/settings`).catch(() => {})
 
   // leg A — resolved from the queue; the chat card collapses
@@ -34,11 +36,15 @@ export default async function ({ page, context, nav, shot, settings, get, log, s
   await page.waitForTimeout(2500)
   const cardStillArmed = await page.getByRole('button', { name: /✓ Approve/ }).count()
   log(`chat card after the cross-surface approval: ${cardStillArmed ? 'STILL ARMED' : 'collapsed'}`)
+  // THE regression this stage exists for: a gate resolved elsewhere must not
+  // leave an armed-but-dead card in the chat
+  expectEq(cardStillArmed, 0, 'the chat card collapsed after the cross-surface approval')
   await shot(page, '01-card-collapsed-cross-surface')
   const done1 = await waitRun(r1.id, ['completed', 'failed', 'cancelled'], 300)
   await page.waitForTimeout(1500)
   await shot(page, '02-run-completed')
   log(`leg A run → ${done1.status}; steps: ${steps(done1)}`)
+  expectStatus(done1, 'completed', 'leg A run, approved from the queue tab')
 
   // leg B — approved from the chat card; the queue shows it resolved
   await newConversation(page)
@@ -54,8 +60,12 @@ export default async function ({ page, context, nav, shot, settings, get, log, s
   await shot(page, '04-direct-approve-collapsed')
   const pendingAfter = (await get('/hitl/pending')).json.length
   log(`hitl pending: ${pendingBefore} → ${pendingAfter} after the direct approve`)
+  // the other direction: approving in the chat clears the queue
+  expect(pendingBefore > 0, `the queue held the armed gate (${pendingBefore} pending)`)
+  expect(pendingAfter < pendingBefore, `the chat-card approval cleared it (${pendingAfter} pending)`)
   await queueShot(tab, '05-queue-resolved-second-tab')
   const done2 = await waitRun(r2.id, ['completed', 'failed', 'cancelled'], 300)
   log(`leg B run → ${done2.status}`)
+  expectStatus(done2, 'completed', 'leg B run, approved from the chat card')
   await tab.close()
 }

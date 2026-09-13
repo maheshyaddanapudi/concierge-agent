@@ -327,6 +327,11 @@ async def _queue_hitl_delivery(
 async def sweep_hitl_aging(now: datetime | None = None) -> int:
     """Internal-event emitter (spec §17.2): HITL items pending past the
     ambient timeout produce an internal event the platform can react to."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     from app.ambient.store import emit_event
     from app.registry_cache import get_cache
 

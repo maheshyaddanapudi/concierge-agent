@@ -13,6 +13,7 @@ from app.api.deps import (
     apply_filters,
     enforce_static_rules,
     fetch_or_404,
+    reject_duplicate_name,
     reject_static_delete,
 )
 from app.llm import ModelParams, validate_model_selection
@@ -72,6 +73,7 @@ async def list_skills(session: SessionDep, filters: FiltersDep) -> list[Skill]:
 
 @router.post("", response_model=SkillOut, status_code=201)
 async def create_skill(body: SkillCreate, session: SessionDep) -> Skill:
+    await reject_duplicate_name(session, Skill, body.name)
     tools = await _resolve_tools(session, body.tool_ids)
     _validate_model_fields(body.model, body.model_params)
     _validate_instruction_mentions(body.instructions, tools)
@@ -172,6 +174,8 @@ async def patch_skill(
 ) -> Skill:
     skill = await fetch_or_404(session, Skill, skill_id)
     changes = body.model_dump(exclude_unset=True)
+    if changes.get("name"):
+        await reject_duplicate_name(session, Skill, changes["name"], exclude_id=skill.id)
     enforce_static_rules(skill, set(changes))
 
     new_tools = skill.tools

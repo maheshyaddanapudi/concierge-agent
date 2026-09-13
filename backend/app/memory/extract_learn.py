@@ -62,6 +62,9 @@ async def run_extraction_tuner(force: bool = False) -> dict[str, int]:
     from app.settings_store import update_settings
 
     out = {"considered": 0, "kind_routes": 0, "floor_moves": 0}
+    # §3.7.1: the master belongs in the behavior, not only at the dispatcher.
+    if not bool(await get_cache().setting("memory_enabled")):
+        return out
     mode = str(await get_cache().setting("memory_extraction_learning") or "off")
     if mode == "off":
         return out
@@ -85,15 +88,22 @@ async def run_extraction_tuner(force: bool = False) -> dict[str, int]:
     # human forgot it) + rejected reviews (the human refused it)
     kept: dict[str, list[float]] = {}
     repudiated: dict[str, list[float]] = {}
+    # every machine row ever admitted, at the confidence it was admitted at —
+    # the band rule's denominator. Counting only rows still `active` made
+    # ordinary churn (a supersession, a decay expiry) look like the band
+    # shrinking, so the floor ratcheted up on a store that was merely alive.
+    admitted_confs: dict[str, list[float]] = {}
     admitted: dict[str, int] = {}
     for row in rows:
         admitted[row.kind] = admitted.get(row.kind, 0) + 1
+        admitted_confs.setdefault(row.kind, []).append(float(row.confidence))
         if row.status == "active":
             kept.setdefault(row.kind, []).append(float(row.confidence))
         elif row.status == "rejected":
             repudiated.setdefault(row.kind, []).append(float(row.confidence))
     for stone in stones:
         admitted[stone.kind] = admitted.get(stone.kind, 0) + 1
+        admitted_confs.setdefault(stone.kind, []).append(float(stone.confidence or 0.0))
         repudiated.setdefault(stone.kind, []).append(float(stone.confidence or 0.0))
     out["considered"] = sum(admitted.values())
 
@@ -128,7 +138,7 @@ async def run_extraction_tuner(force: bool = False) -> dict[str, int]:
     # 2) one floor move per invocation, judged over the un-routed kinds
     floor = float(await get_cache().setting("memory_admission_min_confidence") or FLOOR_MIN)
     band_hi = round(floor + FLOOR_STEP, 2)
-    band_bad = band_good = all_bad = all_total = 0
+    band_bad = band_total = all_bad = all_total = 0
     for kind in admitted:
         if kind in routed:
             continue
@@ -137,18 +147,18 @@ async def run_extraction_tuner(force: bool = False) -> dict[str, int]:
         all_bad += len(bad_confs)
         all_total += len(bad_confs) + len(good_confs)
         band_bad += sum(1 for c in bad_confs if floor <= c < band_hi)
-        band_good += sum(1 for c in good_confs if floor <= c < band_hi)
+        band_total += sum(1 for c in admitted_confs.get(kind, []) if floor <= c < band_hi)
     target = None
     reason = ""
     if (
         band_bad >= MIN_REPUDIATED
-        and band_bad / max(band_bad + band_good, 1) >= BAND_JUNK_SHARE
+        and band_bad / max(band_total, 1) >= BAND_JUNK_SHARE
         and floor < FLOOR_MAX
     ):
         target = round(min(floor + FLOOR_STEP, FLOOR_MAX), 2)
         reason = (
             f"extraction learner: band [{floor:.2f},{band_hi:.2f}) is "
-            f"{band_bad}/{band_bad + band_good} repudiated || proposed={target:.2f}"
+            f"{band_bad}/{band_total} repudiated || proposed={target:.2f}"
         )
     elif all_total >= CLEAN_MIN_SAMPLE and all_bad / all_total <= CLEAN_RATE and floor > FLOOR_MIN:
         target = round(max(floor - FLOOR_STEP, FLOOR_MIN), 2)

@@ -75,9 +75,40 @@ class AppConfig(BaseSettings):
     egress_policy: str = "public"
     egress_allow_hosts: str = ""
     egress_max_bytes: int = 5 * 1024 * 1024
+    # inbound caps, the mirror of the egress ones. Nothing bounded a request
+    # body anywhere — not the app, not uvicorn, not nginx — so a single large
+    # POST to /chat, PATCH /settings or a credential field was an out-of-memory
+    # kill. Env rather than a §3.7 setting, like every other resource cap:
+    # a limit you can raise from inside the API is not a limit.
+    max_request_bytes: int = 2 * 1024 * 1024
+    # the eval dataset upload is read whole into memory and every row becomes
+    # a model call, so it carries its own (larger) byte cap and a row cap
+    max_upload_bytes: int = 8 * 1024 * 1024
+    max_eval_rows: int = 1000
     backend_port: int = 8000
     frontend_port: int = 5173
     log_level: str = "INFO"
+
+    @field_validator("workspace_dir")
+    @classmethod
+    def _workspace_must_be_a_sandbox(cls, v: str) -> str:
+        """The value is handed to the filesystem server as its ONE allowed
+        directory, and nothing else bounds it. `WORKSPACE_DIR=/` re-roots the
+        sandbox onto the whole filesystem — the app's own code and any `.env`
+        beside it — with no error and no log line. Every other risk-bearing
+        field in this class is bounded; this one was not."""
+        import posixpath
+
+        path = posixpath.normpath(v.strip() or "/workspace")
+        if not path.startswith("/"):
+            raise ValueError("WORKSPACE_DIR must be an absolute path")
+        if path in ("/", "/app", "/usr", "/etc", "/root", "/home", "/var", "/proc", "/sys"):
+            raise ValueError(
+                f"WORKSPACE_DIR may not be {path!r} — it must be a dedicated directory"
+            )
+        if path == "/app" or path.startswith("/app/"):
+            raise ValueError("WORKSPACE_DIR may not sit inside the application root")
+        return path
 
     @field_validator("*", mode="before")
     @classmethod

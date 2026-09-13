@@ -27,19 +27,27 @@ export function sseUrl(path: string): string {
 export class ApiError extends Error {
   status: number
   detail: string
-  constructor(status: number, detail: string) {
+  /** seconds the server asked us to wait, from its `Retry-After` header —
+   * a 429 over the spend ceiling and a 503 from a full run queue both send
+   * one, and a surface that swallows it leaves the user guessing */
+  retryAfter: string | null
+  constructor(status: number, detail: string, retryAfter: string | null = null) {
     super(detail)
     this.status = status
     this.detail = detail
+    this.retryAfter = retryAfter
   }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken()
+  // a multipart body carries its own content-type (with the boundary the
+  // browser generates) — setting ours would make the upload unparseable
+  const isForm = typeof FormData !== 'undefined' && init?.body instanceof FormData
   const resp = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
-      'content-type': 'application/json',
+      ...(isForm ? {} : { 'content-type': 'application/json' }),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
@@ -56,7 +64,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-json error body */
     }
-    throw new ApiError(resp.status, detail)
+    let retryAfter: string | null = null
+    try {
+      retryAfter = resp.headers?.get('retry-after') ?? null
+    } catch {
+      /* a stubbed response without headers */
+    }
+    throw new ApiError(resp.status, detail, retryAfter)
   }
   if (resp.status === 204) return undefined as T
   return (await resp.json()) as T
@@ -72,6 +86,10 @@ export const api = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  /** A multipart POST (dataset upload, §15) through the same client as every
+   * other call: same auth header, same 401 gate, same ApiError on failure —
+   * a raw `fetch` carried none of them. */
+  upload: <T>(path: string, form: FormData) => request<T>(path, { method: 'POST', body: form }),
 }
 
 export const RUN_EVENT_TYPES = [
@@ -113,7 +131,14 @@ export const STREAM_REOPEN_MS = 5000
  * stuck "running" for exactly this reason. So on a CLOSED source the client
  * opens a new one itself, resuming from the last folded sequence with
  * `?after=` (a fresh EventSource carries no Last-Event-ID), until a
- * terminal event arrives or STREAM_REOPEN_LIMIT attempts are spent. */
+ * terminal event arrives or STREAM_REOPEN_LIMIT attempts are spent.
+ *
+ * Resume precedence: the reopen position is the LARGER of the last folded
+ * `seq` and the largest `Last-Event-ID` the browser has seen. They can
+ * diverge — an event with an SSE id but no `seq` in its payload advances
+ * only the latter — and resuming from the smaller of the two asks the
+ * server to replay history the client already has, which on a stream that
+ * keeps erroring is an endless reconnect loop rather than progress. */
 export function streamRun(
   runId: string,
   onEvent: (event: { type: string; payload: Record<string, unknown> }) => void,
@@ -121,7 +146,10 @@ export function streamRun(
 ): () => void {
   let source: EventSource | null = null
   let lastSeq = 0
+  let lastEventId = 0
   let ended = false
+  /** where a reopen resumes from: never behind either position we hold */
+  const resumeFrom = () => Math.max(lastSeq, lastEventId)
   let retryMs = STREAM_REOPEN_MS
   let reopens = 0
   let reopenTimer: ReturnType<typeof setTimeout> | null = null
@@ -133,6 +161,10 @@ export function streamRun(
     onEnd()
   }
   const forward = (e: MessageEvent) => {
+    // the SSE id the browser will resume from, tracked even for events whose
+    // payload carries no `seq` — a reopen must never go backwards from it
+    const eventId = Number(e.lastEventId)
+    if (Number.isFinite(eventId) && eventId > lastEventId) lastEventId = eventId
     try {
       const data = JSON.parse(e.data as string) as {
         type: string
@@ -148,7 +180,8 @@ export function streamRun(
       if (data.type === 'done') end()
       if (data.type === 'run_status') {
         const status = data.payload.status as string
-        if (status === 'failed' || status === 'cancelled') end()
+        // terminal statuses: nothing more will be streamed for this run
+        if (status === 'failed' || status === 'cancelled' || status === 'stalled') end()
       }
     } catch {
       /* ignore malformed events */
@@ -157,7 +190,8 @@ export function streamRun(
   const open = () => {
     if (ended) return
     reopenTimer = null
-    const path = `/chat/stream/${runId}${lastSeq > 0 ? `?after=${lastSeq}` : ''}`
+    const after = resumeFrom()
+    const path = `/chat/stream/${runId}${after > 0 ? `?after=${after}` : ''}`
     const es = new EventSource(sseUrl(path))
     source = es
     for (const type of RUN_EVENT_TYPES) {

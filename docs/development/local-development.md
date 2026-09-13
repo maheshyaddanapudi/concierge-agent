@@ -7,7 +7,11 @@ Two dev loops exist. Use the containerized stack when you want the real thing (a
 The lifecycle scripts at the repo root are the supported path (all idempotent):
 
 ```bash
-./quick-setup.sh   # .env from .env.example + ANTHROPIC_API_KEY prompt (--key <value> non-interactive)
+./quick-setup.sh   # .env from .env.example + a provider menu (Anthropic / Google / OpenAI, any
+                   #   combination or none), each key entered hidden and verified with a free
+                   #   list-models call before saving
+                   #   non-interactive: --providers a,b|all|none, --anthropic-key/--google-key/--openai-key
+                   #   (OpenRouter and CUSTOM_GATEWAY_* are set by hand in .env — not on the menu)
                    # + optional Redis cache-profile provisioning (--redis / --no-redis)
                    # + backend `uv sync` and frontend `npm install` for local tooling
 ./build.sh         # build both docker images
@@ -20,14 +24,14 @@ Equivalent manual path: `cp .env.example .env && docker compose up`.
 
 - Compose runs exactly three services — `db` (Postgres 16), `backend`, `frontend` (`docker-compose.yml`). A fourth, `redis`, exists behind the `redis` profile only (`docker compose --profile redis up` + `REDIS_URL=redis://redis:6379/0`) and is never required.
 - First start runs Alembic migrations and loads seed data automatically (the FastAPI lifespan in `backend/app/main.py` does both); later starts resume with the same data.
-- Frontend at `http://localhost:${FRONTEND_PORT}` (default **5173**, nginx-served build), API at `http://localhost:${BACKEND_PORT}` (default **8000**).
+- Frontend at `http://localhost:${FRONTEND_PORT}` (default **5173**, nginx-served build on the container's port 8080), API at the port compose published from `BACKEND_PORT_RANGE` (default range **8000-8010**, so **8000** for a single replica — `./start.sh` prints it).
 - Containers do **not** hot-reload: after code changes, `./build.sh && ./start.sh` (images are rebuilt; data volumes survive).
 
 ## Loop B — fast loop (uvicorn + vite)
 
 ### Environment
 
-Copy `.env.example` to `.env` once. Everything is documented inline there; the keys that matter for local work: `ANTHROPIC_API_KEY` (or none — see keyless mode below), `DATABASE_URL` (use host `localhost` instead of `db` when running outside compose), `BACKEND_PORT` / `FRONTEND_PORT`, `WORKSPACE_DIR`, optional `GOOGLE_API_KEY` / `OPENAI_API_KEY` / `REDIS_URL` / `LANGSMITH_API_KEY` / `OTEL_EXPORTER_OTLP_ENDPOINT`. Blank values mean "unset" — `backend/app/config.py` treats empty strings as defaults, so a sparse `.env` is fine.
+Copy `.env.example` to `.env` once. Everything is documented inline there; the keys that matter for local work: a provider key — `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, **`OPENROUTER_API_KEY`** (the provider every acceptance stage ran on) or the `CUSTOM_GATEWAY_BASE_URL` / `_API_KEY` / `_MODELS` trio — or none at all plus **`FAKE_LLM_ENABLED=1`** (see keyless mode below); `DATABASE_URL` (use host `localhost` instead of `db` when running outside compose); `BACKEND_PORT` (the **outside-compose** port — the fast loop's `uvicorn --port` and `VITE_API_BASE_URL`), `BACKEND_PORT_RANGE` (what compose actually publishes) and `FRONTEND_PORT`; `WORKSPACE_DIR`; optional `REDIS_URL` / `LANGSMITH_API_KEY` / `OTEL_EXPORTER_OTLP_ENDPOINT`. Blank values mean "unset" — `backend/app/config.py` treats empty strings as defaults, so a sparse `.env` is fine.
 
 ### Backend
 
@@ -36,10 +40,10 @@ cd backend
 uv sync                          # Python 3.12, installs runtime + dev groups (pyproject.toml)
 ```
 
-The test suite needs a Postgres it can own. The convention (see `backend/tests/conftest.py`) is a throwaway instance on **port 5433**:
+The test suite needs a Postgres it can own, and it must be the **pgvector** image — `backend/tests/conftest.py` runs `CREATE EXTENSION IF NOT EXISTS vector` before the first test, which a stock `postgres:16` cannot satisfy (spec §16.1). Use the same image the compose stack uses. The convention (see `backend/tests/conftest.py`) is a throwaway instance on **port 5433**:
 
 ```bash
-docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:0.8.6-pg16
 docker exec <container> createdb -U postgres concierge_test
 ```
 
@@ -102,7 +106,7 @@ Each queued call is consumed FIFO by the next fake-model invocation anywhere in 
 
 | Thing | Location / port |
 |---|---|
-| Backend API | `localhost:8000` (`BACKEND_PORT`), routes under `/api/v1`, plus `/health` and `/metrics` |
+| Backend API | `localhost:8000` (`BACKEND_PORT` for the outside-compose loop; in compose, the port compose published from `BACKEND_PORT_RANGE`), routes under `/api/v1`, plus `/health`, `/ready` and `/metrics` |
 | Frontend | `localhost:5173` (`FRONTEND_PORT`) — vite dev server or nginx container |
 | Compose Postgres | service `db`, internal `5432`, volume `pgdata` |
 | Test Postgres | `localhost:5433` by convention, or `TEST_DATABASE_URL` |

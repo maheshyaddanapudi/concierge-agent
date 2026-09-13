@@ -1,9 +1,9 @@
 /** Chat (spec §8.5): SSE streaming with event-driven instrument cards —
  * graph-mode plan cards with parallel groups, agentic live todo checklist,
  * dispatch rails, HITL approve/deny cards, fallback banner, A2UI answers. */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, streamRun } from '../api/client'
+import { ApiError, api, streamRun } from '../api/client'
 import {
   useConversation,
   useConversations,
@@ -11,9 +11,9 @@ import {
   useSettings,
   useSubAgents,
 } from '../api/hooks'
-import type { SseEvent } from '../api/types'
+import { isLiveRunStatus, type SseEvent } from '../api/types'
 import { AnswerBlock, type AnswerUiPayload } from '../components/AnswerPanel'
-import { Button, Select, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
+import { Button, ErrorNote, Select, StatusPill, TextArea, cx, timeAgo } from '../components/ui'
 
 type LiveEvent = Pick<SseEvent, 'type' | 'payload'>
 
@@ -136,8 +136,8 @@ function RouteCard({ payload }: { payload: Record<string, unknown> }) {
           ⚠ full-catalog fallback engaged
         </div>
         <p className="mt-0.5 text-[11px] text-amber-200/70">
-          Descriptions didn't route this — the orchestrator is handling it itself with every
-          active tool and skill.{' '}
+          Descriptions didn't route this — the orchestrator is handling it itself with every active
+          tool and skill.{' '}
           <Link to="/runs" className="underline">
             see route step
           </Link>
@@ -272,8 +272,7 @@ function HitlCard({
       setBusy(false)
     }
   }
-  const setAnswer = (id: string, value: string) =>
-    setAnswers((a) => ({ ...a, [id]: value }))
+  const setAnswer = (id: string, value: string) => setAnswers((a) => ({ ...a, [id]: value }))
   return (
     <div className="animate-rise rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 shadow-[0_0_24px_-8px_var(--gate-glow)]">
       <div className="font-display flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-300">
@@ -359,7 +358,9 @@ function EventShell({
     <div
       className={cx(
         'animate-rise rounded-lg border p-3',
-        tone === 'accent' ? 'border-accent-500/20 bg-void-900/70' : 'border-slate-800 bg-void-900/50',
+        tone === 'accent'
+          ? 'border-accent-500/20 bg-void-900/70'
+          : 'border-slate-800 bg-void-900/50',
       )}
     >
       <div className="mb-2 font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">
@@ -372,6 +373,72 @@ function EventShell({
 
 // ── live run rendering ───────────────────────────────────────────
 
+/** Everything the live view needs to know about the events so far, folded
+ * once per event as it arrives instead of re-derived by scanning the whole
+ * array on every render (a long run used to pay O(n) per card per token). */
+interface EventIndex {
+  /** dispatch step_id → its terminal status, from `dispatch_end` */
+  ended: Map<string, string>
+  /** step_ids that opened a dispatch rail */
+  railIds: Set<string>
+  /** newest of each card kind; -1 until one arrives */
+  lastPlanIdx: number
+  lastHitlIdx: number
+  lastAnswerUiIdx: number
+  lastChartsIdx: number
+  /** a run_status AFTER the newest gate means the backend already closed it */
+  gateConsumed: boolean
+  finished: boolean
+}
+
+function emptyIndex(): EventIndex {
+  return {
+    ended: new Map(),
+    railIds: new Set(),
+    lastPlanIdx: -1,
+    lastHitlIdx: -1,
+    lastAnswerUiIdx: -1,
+    lastChartsIdx: -1,
+    gateConsumed: false,
+    finished: false,
+  }
+}
+
+/** Fold one event into the index in place — O(1) per event. */
+function foldEvent(index: EventIndex, event: LiveEvent, idx: number): void {
+  switch (event.type) {
+    case 'plan':
+      index.lastPlanIdx = idx
+      break
+    case 'hitl_request':
+      // a fresh gate is unconsumed until a later run_status says otherwise
+      index.lastHitlIdx = idx
+      index.gateConsumed = false
+      break
+    case 'dispatch_start':
+      index.railIds.add(String(event.payload.step_id))
+      break
+    case 'dispatch_end':
+      index.ended.set(String(event.payload.step_id), String(event.payload.status ?? 'completed'))
+      break
+    case 'answer_ui':
+      index.lastAnswerUiIdx = idx
+      break
+    case 'charts':
+      index.lastChartsIdx = idx
+      break
+    case 'run_status':
+      if (index.lastHitlIdx >= 0 && String(event.payload.status) !== 'paused_hitl')
+        index.gateConsumed = true
+      break
+    case 'done':
+      index.finished = true
+      break
+  }
+}
+
+const NO_KIDS: ChildStep[] = []
+
 function LiveRun({
   runId,
   onDone,
@@ -381,7 +448,12 @@ function LiveRun({
   onDone: () => void
   onStatus?: (status: string) => void
 }) {
-  const [events, setEvents] = useState<LiveEvent[]>([])
+  // events accumulate APPEND-IN-PLACE behind a ref: a stream of hundreds of
+  // events used to copy the whole array per event (and re-scan it per card).
+  // A counter bump is what schedules the render.
+  const eventsRef = useRef<LiveEvent[]>([])
+  const indexRef = useRef<EventIndex>(emptyIndex())
+  const [, bumpEvents] = useReducer((n: number) => n + 1, 0)
   const [tokens, setTokens] = useState('')
   const [thinking, setThinking] = useState('')
   const [active, setActive] = useState<Record<string, string>>({})
@@ -389,7 +461,9 @@ function LiveRun({
   const [hitlResolved, setHitlResolved] = useState(false)
 
   useEffect(() => {
-    setEvents([])
+    eventsRef.current = []
+    indexRef.current = emptyIndex()
+    bumpEvents()
     setTokens('')
     setThinking('')
     setActive({})
@@ -437,9 +511,12 @@ function LiveRun({
             return { ...s, [id]: { ...prev, status: String(p.status ?? 'completed') } }
           })
         } else {
-          setEvents((es) => [...es, event])
+          const list = eventsRef.current
+          foldEvent(indexRef.current, event, list.length)
+          list.push(event)
           if (event.type === 'hitl_request') setHitlResolved(false)
           if (event.type === 'run_status') onStatus?.(String(event.payload.status))
+          bumpEvents()
         }
       },
       onDone,
@@ -450,48 +527,31 @@ function LiveRun({
 
   const ticker = Object.values(active).slice(-3)
 
-  const dispatchState = useMemo(() => {
-    const ended = new Map<string, string>()
-    for (const e of events)
-      if (e.type === 'dispatch_end')
-        ended.set(String(e.payload.step_id), String(e.payload.status ?? 'completed'))
-    return ended
-  }, [events])
-
-  // keep only the latest plan card (todo list updates supersede)
-  const lastPlanIdx = events.map((e) => e.type).lastIndexOf('plan')
-  const lastHitlIdx = events.map((e) => e.type).lastIndexOf('hitl_request')
-  // a run_status event AFTER the newest gate means that gate was consumed —
-  // whether via this card, the Settings HITL queue, a cancel, or a resume
-  // replay. Never leave armed buttons on a gate the backend already closed.
-  const gateConsumed =
-    lastHitlIdx >= 0 &&
-    events.some(
-      (e, idx) =>
-        idx > lastHitlIdx &&
-        e.type === 'run_status' &&
-        String(e.payload.status) !== 'paused_hitl',
-    )
+  const events = eventsRef.current
+  // every card's derived state, folded as the events arrived — the plan card
+  // to keep (todo updates supersede), the gate the backend may already have
+  // closed (via this card, the Settings HITL queue, a cancel, or a resume
+  // replay: never leave armed buttons on a dead gate), and the rails
+  const { ended: dispatchState, railIds, lastPlanIdx, lastHitlIdx, gateConsumed } = indexRef.current
   const gateResolved = hitlResolved || gateConsumed
   // the active gate's owning dispatch step — nests the card under its rail
   const hitlTarget =
     lastHitlIdx >= 0 && events[lastHitlIdx].payload.step_id != null
       ? String(events[lastHitlIdx].payload.step_id)
       : null
-  const railIds = useMemo(
-    () =>
-      new Set(
-        events.filter((e) => e.type === 'dispatch_start').map((e) => String(e.payload.step_id)),
-      ),
-    [events],
-  )
-  const childrenOf = (railId: string): ChildStep[] =>
-    Object.values(steps).filter(
-      (s) =>
-        s.parent === railId &&
-        s.id !== railId &&
-        ['skill', 'tool_call', 'hitl'].includes(s.stepType),
-    )
+  // parent → children, built ONCE per batch of activity events rather than
+  // re-filtering every step for every dispatch card on every render
+  const childrenIndex = useMemo(() => {
+    const byParent = new Map<string, ChildStep[]>()
+    for (const s of Object.values(steps)) {
+      if (s.parent == null || s.id === s.parent) continue
+      if (!['skill', 'tool_call', 'hitl'].includes(s.stepType)) continue
+      const kids = byParent.get(s.parent)
+      if (kids) kids.push(s)
+      else byParent.set(s.parent, [s])
+    }
+    return byParent
+  }, [steps])
 
   return (
     <div className="space-y-2">
@@ -504,7 +564,7 @@ function LiveRun({
           case 'dispatch_start': {
             const stepId = String(event.payload.step_id)
             const status = dispatchState.get(stepId)
-            const kids = childrenOf(stepId)
+            const kids = childrenIndex.get(stepId) ?? NO_KIDS
             const ownGate = hitlTarget === stepId
             return (
               <DispatchCard
@@ -594,10 +654,11 @@ function LiveRun({
         (() => {
           // swap-at-completion (spec §8.5): raw tokens are the live progress
           // view; when the formatter artifact lands the run settles into its
-          // arrangement in place
-          const artifact = [...events].reverse().find((e) => e.type === 'answer_ui')
-          const chartsEvt = [...events].reverse().find((e) => e.type === 'charts')
-          const finished = events.some((e) => e.type === 'done')
+          // arrangement in place. The indices were folded as events arrived —
+          // no copy-and-reverse of the whole stream per render.
+          const { lastAnswerUiIdx, lastChartsIdx, finished } = indexRef.current
+          const artifact = lastAnswerUiIdx >= 0 ? events[lastAnswerUiIdx] : undefined
+          const chartsEvt = lastChartsIdx >= 0 ? events[lastChartsIdx] : undefined
           return (
             <div className="animate-rise">
               <AnswerBlock
@@ -630,8 +691,7 @@ export type ConvPin = { targetId: string | null; includeSummary: boolean }
 export const NO_PIN: ConvPin = { targetId: null, includeSummary: false }
 type PinMap = Record<string, ConvPin>
 
-export const pinFor = (pins: PinMap, convId: string | null): ConvPin =>
-  pins[convId ?? ''] ?? NO_PIN
+export const pinFor = (pins: PinMap, convId: string | null): ConvPin => pins[convId ?? ''] ?? NO_PIN
 
 export const withPin = (pins: PinMap, convId: string | null, patch: Partial<ConvPin>): PinMap => {
   const key = convId ?? ''
@@ -680,6 +740,9 @@ export function ChatPage() {
   // chats must never fire it somewhere else
   const [queuedDraft, setQueuedDraft] = useState<{ convId: string; text: string } | null>(null)
   const [message, setMessage] = useState('')
+  // a send that the server refused (429 over the spend ceiling, 503 with a
+  // full run queue, 403/409/422) — shown beside the composer, draft kept
+  const [sendError, setSendError] = useState<string | null>(null)
   const queuedHere = queuedDraft !== null && queuedDraft.convId === conversationId
   const [searchParams] = useSearchParams()
   const invalidate = useInvalidate()
@@ -690,8 +753,7 @@ export function ChatPage() {
   // already has a completed run (the orchestrator always gets history)
   const [pins, setPins] = useState<Record<string, ConvPin>>({})
   const { targetId, includeSummary } = pinFor(pins, conversationId)
-  const setPin = (patch: Partial<ConvPin>) =>
-    setPins((p) => withPin(p, conversationId, patch))
+  const setPin = (patch: Partial<ConvPin>) => setPins((p) => withPin(p, conversationId, patch))
   const { data: subAgents = [] } = useSubAgents()
   const exposedAgents = subAgents.filter(
     (a) => a.status === 'active' && a.direct_exposure && !a.deleted_at,
@@ -706,18 +768,23 @@ export function ChatPage() {
     if (target) setPins((p) => withPin(p, null, { targetId: target }))
   }, [searchParams])
 
-  // re-attach to an in-flight or HITL-paused run when reopening its
-  // conversation — the SSE event replay restores the live cards
+  // re-attach to a queued, in-flight or HITL-paused run when reopening its
+  // conversation — the SSE event replay restores the live cards. A queued
+  // run counts: it has been admitted and will start, so the chat must show
+  // it rather than look idle until a slot frees up.
+  const pendingRun = useMemo(
+    () =>
+      detail && detail.id === conversationId
+        ? ([...detail.runs].reverse().find((r) => isLiveRunStatus(r.status)) ?? null)
+        : null,
+    [detail, conversationId],
+  )
+
   useEffect(() => {
-    if (liveRunId !== null || !detail) return
-    const active = [...detail.runs]
-      .reverse()
-      .find((r) => r.status === 'running' || r.status === 'paused_hitl')
-    if (active) {
-      setLiveRunId(active.id)
-      setLiveStatus(active.status === 'paused_hitl' ? 'paused_hitl' : 'running')
-    }
-  }, [detail, liveRunId])
+    if (liveRunId !== null || !pendingRun) return
+    setLiveRunId(pendingRun.id)
+    setLiveStatus(pendingRun.status)
+  }, [pendingRun, liveRunId])
 
   // entering the queue's conversation restores its draft to the composer;
   // leaving it clears the composer copy (the draft itself is kept)
@@ -728,27 +795,45 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId])
 
+  // follow the transcript when it actually changes — an effect with no
+  // dependency array re-ran (and forced a layout) on every streamed token.
+  // Smooth scrolling is the expensive half, so while a run is live the jump
+  // is instant.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  })
+    bottomRef.current?.scrollIntoView({ behavior: liveRunId ? 'auto' : 'smooth' })
+  }, [detail?.messages?.length, conversationId, liveRunId, liveStatus])
 
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? message).trim()
     if (!text) return
-    if (liveRunId) {
+    if (liveRunId || pendingRun) {
       // one message can wait its turn, bound to THIS conversation; it stays
-      // editable in the composer while the run works
+      // editable in the composer while the run works. A queued run counts as
+      // in flight — firing a second one past it is exactly what the
+      // admission queue exists to prevent.
       if (conversationId) setQueuedDraft({ convId: conversationId, text })
       return
     }
-    const body = chatBody(text, conversationId, { targetId, includeSummary }, hasHistory)
-    const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
-    if (!conversationId) setPins((p) => adoptDraftPin(p, result.conversation_id))
-    setConversationId(result.conversation_id)
-    setLiveRunId(result.run_id)
-    setLiveStatus('running')
-    setMessage('')
-    invalidate('conversations')
+    setSendError(null)
+    try {
+      const body = chatBody(text, conversationId, { targetId, includeSummary }, hasHistory)
+      const result = await api.post<{ run_id: string; conversation_id: string }>('/chat', body)
+      if (!conversationId) setPins((p) => adoptDraftPin(p, result.conversation_id))
+      setConversationId(result.conversation_id)
+      setLiveRunId(result.run_id)
+      setLiveStatus('running')
+      setMessage('')
+      invalidate('conversations')
+    } catch (e) {
+      // the draft is the user's work — a refusal must never eat it
+      if (e instanceof ApiError) {
+        setSendError(
+          `${e.detail}${e.retryAfter ? ` — retry in ${e.retryAfter}s` : ''} (HTTP ${e.status})`,
+        )
+      } else {
+        setSendError(e instanceof Error ? e.message : String(e))
+      }
+    }
   }
 
   const stopRun = async () => {
@@ -762,15 +847,12 @@ export function ChatPage() {
   useEffect(() => {
     if (!queuedDraft || conversationId !== queuedDraft.convId || liveRunId !== null) return
     if (!detail || detail.id !== conversationId) return
-    const stillActive = detail.runs.some(
-      (r) => r.status === 'running' || r.status === 'paused_hitl',
-    )
-    if (stillActive) return // the re-attach effect takes over instead
+    if (pendingRun) return // still queued, running or paused — re-attach takes over
     const text = queuedDraft.text
     setQueuedDraft(null)
     if (text.trim()) void send(text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveRunId, queuedDraft, conversationId, detail])
+  }, [liveRunId, queuedDraft, conversationId, detail, pendingRun])
 
   const liveDone = () => {
     invalidate('conversations', 'runs')
@@ -839,9 +921,9 @@ export function ChatPage() {
                 Concierge<span className="text-accent-400">_</span>
               </div>
               <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                One chat over the whole capability registry. The orchestrator plans, routes down
-                the ladder — direct → native → custom → ephemeral — and every decision lands in
-                the run trace.
+                One chat over the whole capability registry. The orchestrator plans, routes down the
+                ladder — direct → native → custom → ephemeral — and every decision lands in the run
+                trace.
               </p>
             </div>
           )}
@@ -893,6 +975,11 @@ export function ChatPage() {
         </div>
 
         <div className="border-t border-slate-800/70 bg-void-950/60 p-4 backdrop-blur">
+          {sendError && (
+            <div className="mb-1.5" data-testid="send-error">
+              <ErrorNote error={`Message not sent — ${sendError}. Your draft is still below.`} />
+            </div>
+          )}
           {queuedHere && liveRunId && (
             <div className="mb-1.5 flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-widest text-amber-400">
               <span className="animate-blink">⏳</span> 1 message queued in this chat — sends when
@@ -953,6 +1040,7 @@ export function ChatPage() {
               }
               onChange={(e) => {
                 setMessage(e.target.value)
+                if (sendError) setSendError(null)
                 // queued drafts stay editable — keep the bound copy in sync
                 if (queuedHere) setQueuedDraft({ convId: conversationId!, text: e.target.value })
               }}

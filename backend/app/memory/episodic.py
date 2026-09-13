@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy import bindparam, delete, select
 from sqlalchemy import text as sql_text
 
+from app.cost import job_spend
 from app.db import get_session_factory
 from app.models import ConversationRollup, MemoryEmbedding, Run, RunDigest, RunStep
 
@@ -98,7 +99,8 @@ async def _llm_digest(run: Run) -> str | None:
             answer=(run.final_answer or "")[:1500],
             status=run.status,
         )
-        ai = await model.ainvoke(prompt)
+        async with job_spend("run_digest", str(ref)) as cb:
+            ai = await model.ainvoke(prompt, config={"callbacks": cb})
         text = " ".join(text_from_content(ai.content).split())
         return text[:600] or None
     except Exception as exc:  # noqa: BLE001 — digests never fail the pipeline
@@ -117,7 +119,13 @@ async def digest_run(run_id: UUID) -> RunDigest | None:
     M51 (arch-H15): read → close → model call + embedding → write; no
     session is held across either provider round trip."""
     from app.memory.store import _embed_text, _store_embedding
+    from app.registry_cache import get_cache
 
+    # §3.7.1: this spends a summarization call and an embedding, and the
+    # scheduler's docstring invites calling it directly for backfills. The
+    # master lived one frame up, in the wrapper the runner happens to use.
+    if not bool(await get_cache().setting("memory_enabled")):
+        return None
     async with get_session_factory()() as session:
         existing = await _existing_digest(session, run_id)
         if existing is not None:
@@ -157,9 +165,14 @@ async def digest_run(run_id: UUID) -> RunDigest | None:
     return digest
 
 
-async def update_rollup(conversation_id: UUID) -> ConversationRollup:
+async def update_rollup(conversation_id: UUID) -> ConversationRollup | None:
     """Refresh the conversation rollup from its digests (mechanical summary of
     summaries — rollups are a browsing/sense-making surface, spec §16.2)."""
+    from app.registry_cache import get_cache
+
+    # §3.7.1: a row write, gated in the behavior rather than at the caller.
+    if not bool(await get_cache().setting("memory_enabled")):
+        return None
     async with get_session_factory()() as session:
         digests = list(
             (

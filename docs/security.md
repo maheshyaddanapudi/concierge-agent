@@ -1,6 +1,8 @@
 # Security Posture (POC)
 
-This document describes the security posture of the Concierge Agent proof of concept honestly: what is protected, what is deliberately not, and what that means for how you may run it. The spec is explicit ([spec.md §1](../spec.md)): authentication/authorization, multi-tenancy, production hardening, rate limiting, and secrets management beyond environment variables are **non-goals**.
+This document describes the security posture of the Concierge Agent proof of concept honestly: what is protected, what is deliberately not, and what that means for how you may run it.
+
+**A note on §1.** The spec's original non-goals paragraph listed authentication/authorization, multi-tenancy, production hardening, rate limiting, and secrets-management-beyond-env as out of scope. Three of those were later **promoted in scope**: §18.8 shipped auth and tenancy (dark by default) and an unconditional rate limiter, §20 turned auth into a documented fork seam, and PLAN M49–M56 is production hardening by name. What still stands from that paragraph is the **secrets** non-goal: there is no secrets manager, no vault integration, no encryption at rest — env vars and, for MCP/A2A credentials, a write-only column with `env:VAR` indirection. Read the sections below, not the original paragraph.
 
 ## Explicit non-goals
 
@@ -8,13 +10,25 @@ This document describes the security posture of the Concierge Agent proof of con
 - **No multi-tenancy.** One database, one registry set, one shared conversation history. Every operator sees and controls everything.
 - **Trusted-operator assumption.** The admin UI is a command center for a trusted operator on a trusted network. Anyone with UI access can register MCP servers — including **stdio servers that spawn an arbitrary `command args` subprocess inside the backend container** (`backend/app/mcp/manager.py`, spec §5). UI access is therefore equivalent to code execution in the backend container. This is by design for a POC and is the single most important fact on this page.
 
-**Deployment implication: never expose this stack to the public internet as-is.** Run it on localhost or a private, access-controlled network segment. The backend also ships with permissive CORS (`allow_origins=["*"]` in `backend/app/main.py`), and `/metrics` is unauthenticated — both fine for a lab, unacceptable for anything public.
+**Deployment implication: never expose this stack to the public internet as-is.** Run it on localhost or a private, access-controlled network segment.
+
+**CORS, precisely** (`backend/app/main.py`): the origin list is
+`[FRONTEND_ORIGIN] if auth is enabled and FRONTEND_ORIGIN is set, else ["*"]`.
+So the default really is permissive — and, importantly, **setting `FRONTEND_ORIGIN` alone does nothing**: it is only honoured when the active auth provider reports itself enabled. A stack running dark (`AUTH_ENABLED` unset, the shipped default) serves `allow_origins=["*"]` whatever `FRONTEND_ORIGIN` says. Pin both together, or terminate CORS at a proxy you control. `X-Total-Count` is the one exposed response header either way.
+
+`/metrics`, `/health` and `/ready` are exempt from `AuthMiddleware` and therefore unauthenticated even with auth on — deliberate (a probe cannot hold a session), and fine for a lab, unacceptable on a public address.
 
 ## Secrets
 
 **Provider API keys are env-only — never in the database, never in the UI, never logged.** Enforcement points:
 
-- `backend/app/config.py` — the only place keys are read (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `LANGSMITH_API_KEY`, `REDIS_URL`), via pydantic-settings from the environment. Its module docstring states the rule.
+- `backend/app/config.py` — the only place secrets are read, via pydantic-settings from the environment. Its module docstring states the rule. The full inventory, not a sample:
+  - **provider keys** — `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, **`OPENROUTER_API_KEY`**, and the custom gateway's **`CUSTOM_GATEWAY_API_KEY`** (with `CUSTOM_GATEWAY_BASE_URL` / `_MODELS`);
+  - **`LANGSMITH_API_KEY`** — key only; enable/endpoint/project are runtime settings;
+  - **`SMTP_PASSWORD`** (with `SMTP_USER` / `_HOST` / `_FROM` / `_TO`) for the §18.4 email channel;
+  - **`AMBIENT_WEBHOOK_URL`** — not named like a secret, but a webhook URL routinely embeds its own token; treat it as one;
+  - **`REDIS_URL`** and **`DATABASE_URL`**, both of which may carry credentials.
+  Every one of these is redacted by `backend/app/sanitize.py` before any error text is persisted, returned or logged (M52).
 - `backend/app/settings_store.py` — the `app_settings` key-value store has no key-shaped setting; the `DEFAULTS` dict deliberately omits anything secret. The LangSmith *enable/endpoint/project* live here; the *key* does not.
 - `frontend/src/pages/SettingsPage.tsx` — the page subtitle says it outright: "API keys stay env-only, never here." The Providers panel shows only `configured` / `no api key` status, never a value.
 - `backend/app/obs.py` — the per-run LangSmith tracer reads `LANGSMITH_API_KEY` from config, never from settings.
@@ -53,15 +67,15 @@ Model output is treated as data, never as markup:
 
 ## Network and dependency notes
 
-- Three compose services (`docker-compose.yml`): `db`, `backend`, `frontend`. Published ports: frontend `${FRONTEND_PORT:-5173}→80`, backend `${BACKEND_PORT:-8000}→8000`, and — only under the optional `redis` profile — Redis bound to `127.0.0.1:6379`. Postgres publishes no host port.
+- Three compose services (`docker-compose.yml`): `db`, `backend`, `frontend`. Published ports: frontend `${FRONTEND_PORT:-5173}→8080` (the container's nginx listens on 8080, not 80, because it runs unprivileged), backend `${BACKEND_PORT_RANGE:-8000-8010}→8000` — a **range**, one host port per replica under `--scale backend=N`, *not* `BACKEND_PORT` — and, only under the optional `redis` profile, Redis bound to `127.0.0.1:6379`. Postgres publishes no host port. Ask `docker compose port backend 8000` for the port a given replica actually got.
 - The frontend nginx (`frontend/nginx.conf`) proxies `/api/` and `/metrics` to the backend; everything else serves the SPA. The backend port is also published directly, so the API is reachable on two ports.
 - No message broker, no task queue, no Celery — smaller attack/ops surface, one process to reason about.
 
 ## Hardening checklist before any real deployment
 
 1. Put an authenticating reverse proxy (or real authn/authz) in front of both the UI and the API; remove the direct backend port publish.
-2. Lock down CORS (`allow_origins`) to the actual frontend origin.
-3. Disable or strictly allowlist stdio MCP registration — UI-supplied `command`/`args` is remote code execution. At minimum run the backend container non-root, read-only FS, with seccomp/AppArmor.
+2. Set **`FRONTEND_ORIGIN`** to the real admin origin **and** `AUTH_ENABLED=true` — the pin is conditional on auth being on, so `FRONTEND_ORIGIN` by itself leaves CORS at `*`. Better still, terminate CORS at the proxy in step 1.
+3. Constrain stdio MCP registration — UI-supplied `command`/`args` is remote code execution. Since the M56 hardening wave the launcher is **allowlisted by basename**: `uvx`, `npx`, `uv`, `node`, `python`, `python3` and the acceptance stub, plus whatever you name in **`MCP_STDIO_ALLOW`** (comma-separated); anything else is refused at registration naming the allowlist. That bounds *which binary* starts, not what it then runs — `npx -y <anything>` is still arbitrary code — so keep the rest: the backend container already runs **non-root** (`concierge`, uid/gid 1000) since the hardening wave; add a read-only FS and seccomp/AppArmor, and shrink the allowlist to only the launchers you actually seed.
 4. Use the `env:VAR_NAME` indirection for MCP server `env`/`headers` values (or a secrets manager), and encrypt the database at rest; run traces contain tool inputs/outputs.
 5. Keep `EGRESS_POLICY=public` (or an explicit allowlist) — and remember the stdio `fetch` server is a subprocess outside it: sandbox or remove it if the backend can reach anything sensitive.
 6. Protect `/metrics` and `/health`, and rate-limit `/chat` (each message spends provider tokens).

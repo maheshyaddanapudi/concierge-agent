@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -206,6 +208,37 @@ async def spend_today(
             by_kind[run_kind(run)] += priced["cost_usd"]
             total += priced["cost_usd"]
         unpriced += int(priced["unpriced_tokens"])
+    # work that is NOT a run — the judges, digests, reflection, community
+    # summaries, extraction and embeddings that used to spend invisibly
+    async with get_session_factory()() as session:
+        from app.models import JobUsage
+
+        rows = (
+            await session.execute(
+                select(
+                    JobUsage.kind,
+                    func.sum(JobUsage.cost_usd),
+                    func.sum(JobUsage.input_tokens + JobUsage.output_tokens),
+                    func.sum(JobUsage.cost_usd).filter(JobUsage.cost_priced.is_(True)),
+                )
+                .where(JobUsage.at >= start, JobUsage.at < end)
+                .group_by(JobUsage.kind)
+            )
+        ).all()
+        unpriced_rows = (
+            await session.execute(
+                select(func.sum(JobUsage.input_tokens + JobUsage.output_tokens)).where(
+                    JobUsage.at >= start,
+                    JobUsage.at < end,
+                    JobUsage.cost_priced.is_(False),
+                )
+            )
+        ).scalar()
+    for job_kind, job_usd, _tokens, _priced_usd in rows:
+        if job_usd:
+            by_kind[f"job:{job_kind}"] += float(job_usd)
+            total += float(job_usd)
+    unpriced += int(unpriced_rows or 0)
     ceiling_on = bool(settings.get("spend_ceiling_enabled"))
     ceiling = float(settings.get("spend_ceiling_usd_per_day") or 0.0)
     result = {
@@ -258,3 +291,98 @@ async def enforce_spend_ceiling(settings: dict[str, Any], kind: str) -> None:
         f"(spend_ceiling_usd_per_day) — runs of every kind are refused until the UTC day "
         f"rolls over or the ceiling is raised in Settings → Cost"
     )
+
+
+# ── out-of-run model spend (spec §3.7 cost model) ────────────────
+
+
+async def record_job_usage(
+    kind: str,
+    model: str | None,
+    usage: dict[str, Any] | None,
+    settings: dict[str, Any] | None = None,
+) -> None:
+    """Ledger one model call made OUTSIDE a run.
+
+    The ceiling counted runs only, so the overlap judge, the significance and
+    salience judges, anticipation, run digests, reflection, community
+    summaries, extraction and every embedding spent money that appeared
+    nowhere: the dashboard said $0 for all of it while the operator watched
+    chat refused at a ceiling the background jobs had already passed.
+
+    Best-effort by design — a ledger write never fails the job it is
+    measuring, and a model with no price anywhere is recorded UNPRICED
+    rather than guessed."""
+    tin = int((usage or {}).get("input_tokens") or 0)
+    tout = int((usage or {}).get("output_tokens") or 0)
+    if not (tin or tout):
+        return
+    try:
+        from app.models import JobUsage
+
+        if settings is None:
+            from app.orchestrator.graph_mode import load_settings_snapshot
+
+            settings = await load_settings_snapshot()
+        overrides = (
+            settings.get("model_prices") if isinstance(settings.get("model_prices"), dict) else None
+        )
+        usd = pricing.cost_usd(model, tin, tout, overrides) if model else None
+        async with get_session_factory()() as session:
+            session.add(
+                JobUsage(
+                    kind=kind[:32],
+                    model=(model or None),
+                    input_tokens=tin,
+                    output_tokens=tout,
+                    cost_usd=usd,
+                    cost_priced=usd is not None,
+                )
+            )
+            await session.commit()
+        obs.JOB_USAGE_TOKENS.labels(kind=kind, direction="input").inc(tin)
+        obs.JOB_USAGE_TOKENS.labels(kind=kind, direction="output").inc(tout)
+    except Exception as exc:  # noqa: BLE001 — the ledger never breaks the job
+        logger.warning("job_usage_record_failed", kind=kind, error=str(exc)[:200])
+
+
+async def enforce_job_ceiling(kind: str) -> bool:
+    """True when this job class may spend. Reads the same one ceiling every
+    run answers to, so "one number for the whole deployment" is true rather
+    than a hint. A job refused here declines quietly and tries again next
+    tick — it is not an error, and nobody is waiting on it."""
+    from app.orchestrator.graph_mode import load_settings_snapshot
+
+    settings = await load_settings_snapshot()
+    if not settings.get("spend_ceiling_enabled"):
+        return True
+    spend = await spend_today(settings)
+    if not spend["ceiling"]["reached"]:
+        return True
+    obs.SPEND_REFUSED.labels(kind=kind).inc()
+    logger.info(
+        "job_held_on_spend_ceiling",
+        kind=kind,
+        usd_today=spend["usd_today"],
+        ceiling=spend["ceiling"]["usd_per_day"],
+    )
+    return False
+
+
+@asynccontextmanager
+async def job_spend(kind: str, model: str | None = None) -> AsyncIterator[list[Any]]:
+    """Wrap an out-of-run model call so its tokens land in the ledger.
+
+    Yields the callbacks list to pass as `config={"callbacks": cb}`; on exit
+    every usage the handler saw is recorded under `kind`. Use it around the
+    judges, the summarizers and the extractors — the calls the spend ceiling
+    could not see.
+    """
+    from langchain_core.callbacks import UsageMetadataCallbackHandler
+
+    handler = UsageMetadataCallbackHandler()
+    try:
+        yield [handler]
+    finally:
+        for model_name, usage in (handler.usage_metadata or {}).items():
+            await record_job_usage(kind, model or model_name, dict(usage))

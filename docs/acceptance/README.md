@@ -61,6 +61,12 @@ auth seam (M55), and the §14 ceremony with the performance record (M56).
 image (the HITL deny reported as a refusal; the ambient tick leading again
 after `ambient_enabled` off→on) with the test suite on the fix commit;
 stage 11 was re-run on that image and its directory replaced.
+`prod/DRIFT/` holds the schema-drift pass (the drift drill and both suites)
+and `prod/HARDENING/` the hardening wave, its second reading and the third
+reading (`hardening-wave.md`, `third-reading.md`, `tests.md`,
+`frontend-tests.md`) — the two suite pages there are the newest published
+runs and are overwritten by each reading, so the round-two numbers live in
+`report.md` and the CHANGELOG rather than on a page.
 
 ## How to re-run
 
@@ -68,10 +74,19 @@ stage 11 was re-run on that image and its directory replaced.
 cd experiments/acceptance && npm install
 export ACC_BASE=http://localhost:5173 ACC_SHOTS=./shots ACC_MODEL=openrouter:qwen/qwen3.8-max
 docker compose down -v && docker compose up -d           # a fresh slate for stage 00
-node run.mjs stages/00-fresh-slate.mjs … stages/33-evals.mjs
+node run.mjs stages/00-fresh-slate.mjs … stages/36-hardening-wave.mjs
 node publish.mjs                                          # replaces docs/acceptance/<stage>/ wholesale
 ```
 
 Stages 27–29 need the host-side counterparties and sinks described in
-`experiments/acceptance/README.md`; the drills need `docker compose` and the
-db container reachable through `docker exec`.
+`experiments/acceptance/README.md`; stages 35 and 36 need the stub MCP
+server's `mutate_schema` tool; the drills need `docker compose` and the db
+container reachable through `docker exec`.
+
+`publish.mjs` clears the destination directory but the capture directory
+(`ACC_SHOTS/<stage>/`) is only created, never cleared. A stage whose frame
+names carry run-dependent values — `35-schema-drift` puts the live schema
+version in each filename — therefore accumulates frames across re-runs and
+publishes all of them; clear `ACC_SHOTS/<stage>/` before re-running one of
+those, or the published directory carries the previous reading's frames too
+(see the note at the end of `INVENTORY.md`).

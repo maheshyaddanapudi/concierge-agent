@@ -1,10 +1,11 @@
 // Stage 17 — data purge (spec §14 step 10): the Runs table before, the
 // purge from Settings › Data (browser confirm accepted), the empty Runs
 // table after, and a clean run completing on the purged store.
-export default async function ({ page, nav, shot, get, log, sendChat, waitRun, steps }) {
+export default async function ({ page, nav, shot, get, log, sendChat, waitRun, steps, newConversation, expect, expectEq, expectMatch, expectStatus }) {
   await nav(page, 'runs')
   const before = (await get('/runs?limit=200')).json
   log(`runs before purge: ${before.length}`)
+  expect(before.length > 0, `there is run history to purge (${before.length} runs)`)
   await shot(page, '02-runs-before-purge')
 
   await nav(page, 'settings')
@@ -22,16 +23,17 @@ export default async function ({ page, nav, shot, get, log, sendChat, waitRun, s
   await shot(page, '00-purged-settings')
   await nav(page, 'runs')
   await shot(page, '01-runs-empty-after-purge')
-  if (after.length !== 0) throw new Error('purge left runs behind')
+  expectEq(after.length, 0, 'the purge removed every run')
+  expectEq(Array.isArray(convs) ? convs.length : -1, 0, '…and every conversation with them')
 
   // a clean run on the purged store
   await nav(page, '')
-  await page.getByRole('button', { name: '+ New conversation' }).click().catch(() => {})
-  await page.waitForTimeout(400)
+  await newConversation(page)
   await sendChat(page, 'Add 40 and 2 with the sitefiles add tool and answer with the number only.')
   await page.waitForTimeout(2000)
   const r = (await get('/runs?limit=1')).json[0]
   const gate = page.getByText('HUMAN APPROVAL REQUIRED').first()
+  // a probe: this short ask may or may not route through a gate
   if (await gate.waitFor({ timeout: 45000 }).then(() => true).catch(() => false)) {
     await page.getByRole('button', { name: /✓ Approve/ }).first().click()
     log('gate armed on the post-purge ask — approved')
@@ -40,4 +42,7 @@ export default async function ({ page, nav, shot, get, log, sendChat, waitRun, s
   await page.waitForTimeout(1500)
   await shot(page, '04-post-purge-clean-run')
   log(`post-purge run → ${done.status}; answer: ${(done.final_answer || '').slice(0, 120)}; steps: ${steps(done)}`)
+  // the half of the stage that matters most: the store still WORKS afterwards
+  expectStatus(done, 'completed', 'a clean run on the purged store')
+  expectMatch(done.final_answer, /42/, 'and it answered correctly')
 }

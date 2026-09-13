@@ -6,31 +6,38 @@ Lifecycle diagrams for the three stateful objects that drive the runtime: runs, 
 
 ## 1. Run status lifecycle
 
-Statuses are stored on `Run.status` (`backend/app/models/run.py`) and written exclusively by the runner (`backend/app/orchestrator/runner.py`) and its control operations. The literal values in code: **`running`**, **`paused_hitl`**, **`completed`**, **`failed`**, **`cancelled`**.
+Statuses are stored on `Run.status` (`backend/app/models/run.py`) and written exclusively by the runner (`backend/app/orchestrator/runner.py`), the reapers and the control operations. The literal values in code: **`queued`**, **`running`**, **`paused_hitl`**, **`completed`**, **`failed`**, **`cancelled`**, **`stalled`**.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> running : "POST /chat — create_run inserts status running, start_run_task spawns _execute"
+    [*] --> queued : "M51 — create_run inserts queued; the task waits for an admission slot"
+    queued --> running : "admission.slot acquired — _set_status(running), heartbeat starts"
+    queued --> cancelled : "cancelled while queued, or shutdown before a slot"
     running --> paused_hitl : "worker interrupt() propagates — _execute sees __interrupt__"
     paused_hitl --> running : "POST /runs/{id}/hitl — resume_run + start_run_task(resume)"
     running --> completed : "answer produced — final_answer, answer_ui persisted"
-    running --> failed : "RunFailed or unhandled exception — _finalize_failure"
+    running --> failed : "RunFailed, unhandled exception, or the wall clock — _finalize_failure"
     running --> cancelled : "POST /runs/{id}/cancel — task.cancel(), CancelledError path"
+    running --> stalled : "heartbeat silent past run_stall_after_s — reap_stalled_runs"
     paused_hitl --> cancelled : "cancel while paused — _finalize_failure('cancelled while paused')"
     failed --> [*] : "POST /runs/{id}/retry creates a NEW run (409 for any other status)"
     completed --> [*]
     cancelled --> [*]
+    stalled --> [*]
 ```
 
 **Notes grounded in code:**
 
-- There is no `queued` or `pending` state: `create_run` inserts the row already at `running`, and the asyncio task starts immediately. The "queued message" affordance in the chat composer is **frontend-only state** (`queuedDraft` in `frontend/src/pages/ChatPage.tsx`): the draft is held in React state, bound to its conversation, and only POSTed to `/chat` after the conversation's active run leaves `running`/`paused_hitl`. It never touches backend run state.
+- **`queued` is a real, persisted state (M51).** `create_run` inserts the row at `queued`; the task then asks `orchestrator/admission.slot` for one of `run_max_concurrent` places, and only on acquiring it does the row flip to `running` and the heartbeat start. Past `run_queue_max` there is no slot to wait for and `POST /chat` sheds with **503 + `Retry-After`** rather than accepting work it cannot do. A run cancelled while still queued ends `cancelled` without ever having run.
+  Do not confuse it with the **queued message** affordance in the chat composer, which is frontend-only state (`queuedDraft` in `frontend/src/pages/ChatPage.tsx`): the draft is held in React state, bound to its conversation, and only POSTed to `/chat` after the conversation's active run leaves the live set. It never touches backend run state.
+- **`stalled` means the task is gone, not slow.** The runner refreshes `last_heartbeat_at` every 30 s from inside the run's own task; `reap_stalled_runs` (`app/ambient/execute.py`, M51: **every** run kind, not only ambient) ends a run whose heartbeat is older than `run_stall_after_s` as `stalled` — through the same `_finalize_failure` path as every other terminal status, so open steps close, the run is priced, and a stream held on it gets its terminal event. An ambient run's routine is auto-paused with the reason. A run that outlives `run_wall_clock_s` is different: it ends **`failed`** with the clock named, because the process was alive and working. See [operations/runbooks/stalled-run.md](../operations/runbooks/stalled-run.md).
+- **Two reapers write terminal statuses nobody asked for**, both truthfully: boot reaping fails anything left `running`/`queued` by this replica as `orphaned by a restart`, and `reap_dead_owner_runs` fails a dead replica's runs naming the owner (§18.9). Neither ever writes a status for a run another live replica is still executing.
 - Every status transition is mirrored to SSE as a `run_status` event; `failed` and `cancelled` are terminal for the stream (`_is_terminal` in `backend/app/api/chat.py`), while `completed` is followed by the terminal `done` event.
 - **Failure path** (`_finalize_failure`): sets `status` + `error` + `finished_at`, flips any still-`running` `RunStep` rows to `cancelled`, emits an `error` SSE event (for `failed` only) then `run_status`.
 - **Retry is not a transition**: `retry_run` refuses anything but `status == "failed"` (409 at the API) and creates a brand-new run re-planned from the original `chat_message` — the failed run keeps its status forever.
 - **Cancellation** is cooperative: `cancel_run` cancels the live asyncio task from `RUNNING_TASKS` (→ `CancelledError` → `_finalize_failure(..., "cancelled", ...)`). If no task is live (a paused run after e.g. a restart), it finalizes directly; only `running`/`paused_hitl` runs can be cancelled (409 otherwise).
 - **Resume that pauses again**: a resumed run goes `paused_hitl → running → paused_hitl` when parallel gates remain; `_emit_pending_hitl` re-announces the surviving gates so the UI shows the next card.
-- `RunStep.status` uses the same vocabulary minus `paused_hitl`: `running`, `completed`, `failed`, `cancelled` (`RunRecorder.finish_step`, `backend/app/orchestrator/recorder.py`).
+- `RunStep.status` uses a narrower vocabulary: `running`, `completed`, `failed`, `cancelled` (`RunRecorder.finish_step`, `backend/app/orchestrator/recorder.py`). `RunStep.step_type` is one of `plan` · `route` · `skill` · `hitl` · `tool_call` · `aggregate` · `format` · `summary`.
 
 ---
 

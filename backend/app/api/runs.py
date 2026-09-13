@@ -88,7 +88,6 @@ def _run_out(
             run.cancel_requested_at.isoformat() if run.cancel_requested_at else None
         ),
         "plan": run.plan,
-        "snapshot": run.snapshot,
         "final_answer": run.final_answer,
         "answer_ui": run.answer_ui,
         "charts": run.charts,
@@ -110,10 +109,16 @@ def _run_out(
             if run.cost_priced is not None
             else (bool(cost["cost_priced"]) if cost else False)
         ),
-        "price_snapshot": run.price_snapshot,
     }
     if with_steps:
         data["steps"] = [_step_out(s) for s in run.steps]
+        # DETAIL ONLY. Both are large — the frozen registry catalog, up to 200
+        # injected-context entries, every resolution payload, the price table
+        # — and the Runs page polls the LIST every few seconds while only the
+        # detail drawer reads them (RunsPage.tsx: both live in RunDetail,
+        # which fetches GET /runs/{id}).
+        data["snapshot"] = run.snapshot
+        data["price_snapshot"] = run.price_snapshot
     return data
 
 
@@ -140,7 +145,11 @@ async def list_runs(
         # §18.5: the routine drawer's run history — trigger provenance match
         query = query.where(Run.trigger["routine_id"].astext == str(routine_id))
     total = (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    page = query.order_by(Run.started_at.desc()).limit(limit).offset(offset)
+    # the id is the tiebreaker, not decoration: runs created in the same
+    # transaction share `started_at` to the microsecond, and an ORDER BY with
+    # ties is free to order them differently per query — so a row could
+    # appear on two pages, or on none.
+    page = query.order_by(Run.started_at.desc(), Run.id.desc()).limit(limit).offset(offset)
     runs = list((await session.execute(page)).scalars())
     response.headers["X-Total-Count"] = str(total)
     costs = await _costs(session, runs)

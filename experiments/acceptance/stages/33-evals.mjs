@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export default async function ({ page, nav, shot, settings, get, post, del, log, closeDrawer }) {
+export default async function ({ page, nav, shot, settings, get, post, del, log, closeDrawer, expect, expectEq }) {
   await settings({ orchestrator_mode: 'graph', default_model_params: null, evals_enabled: true, formatter_enabled: true })
   for (const s of (await get('/skills')).json) if (s.name === 'quiz-answerer') await del(`/skills/${s.id}`)
   const skill = (await post('/skills', {
@@ -47,6 +47,11 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   const datasets = Array.isArray(listed) ? listed : listed.items || []
   const ds = datasets.find((d) => d.name === 'quiz-3') || datasets[0]
   log(`dataset: ${ds?.name} level=${ds?.level} cases=${ds?.case_count ?? ds?.cases?.length ?? '?'}`)
+  // the upload is the first claim: three cases, against this skill
+  expect(!!ds, 'the CSV uploaded through the page became a dataset')
+  expectEq(ds.level, 'skill', 'at skill level')
+  expectEq(ds.case_count ?? ds.cases?.length, 3, 'with all three cases')
+  // framing only
   await page.getByText('cases', { exact: true }).first().scrollIntoViewIfNeeded().catch(() => {})
   await shot(page, '02-dataset-uploaded')
 
@@ -63,7 +68,17 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   const detail = run ? (await get(`/evals/runs/${run.id}`)).json : null
   log(`eval run → ${run?.status}: ${detail?.passed_cases}/${detail?.total_cases} passed, ${detail?.failed_cases} failed, ${detail?.error_cases} errors`)
   for (const r of detail?.results || []) log(`  ${r.grader}: ${r.passed ? 'pass' : r.status} score=${r.score} — ${String(r.reason || '').slice(0, 120)}`)
-  await page.getByTestId('eval-results').waitFor({ timeout: 15000 }).catch(() => {})
+  // the run graded all three cases with all three graders, and none errored
+  expectEq(run?.status, 'completed', 'the eval run completed')
+  expectEq(detail?.total_cases, 3, 'it graded all three cases')
+  expectEq(detail?.error_cases, 0, 'with no case erroring out')
+  expectEq(
+    new Set((detail?.results || []).map((r) => r.grader)).size,
+    3,
+    'all three graders (exact / contains / llm_judge) ran',
+  )
+  await page.getByTestId('eval-results').waitFor({ timeout: 15000 })
+  // framing only
   await page.getByTestId('eval-results').scrollIntoViewIfNeeded().catch(() => {})
   await page.waitForTimeout(800)
   await shot(page, '03-graded-results')
@@ -72,5 +87,8 @@ export default async function ({ page, nav, shot, settings, get, post, del, log,
   const statuses = []
   for (const id of caseRuns) statuses.push((await get(`/runs/${id}`)).json?.status)
   log(`case runs on the Runs surface: ${caseRuns.length} (${statuses.join(', ')})`)
+  // §15: every case is an ORDINARY run, reachable on the Runs surface
+  expectEq(caseRuns.length, 3, 'each case left an ordinary run behind')
+  expect(statuses.every((x) => x === 'completed'), `and each of them completed (${statuses.join(', ')})`)
   await closeDrawer(page)
 }

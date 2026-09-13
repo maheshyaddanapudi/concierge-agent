@@ -403,6 +403,23 @@ async def retry_external_sends(now: datetime | None = None, batch: int = _RETRY_
     elapsed, at most `batch` sends per tick; an entry that has exhausted
     MAX_SEND_ATTEMPTS is dead-lettered and never retried. Returns sends
     attempted."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
+    # §3.7.1 corollary: off must BE off. The retry ladder used to re-send from
+    # the ledger stamped on the row, consulting neither `ambient_pursuit` nor
+    # the channel routing — so an operator who set Pursuit to "off" (the
+    # control's own hint reads "off = in-app only") watched SMTP connections
+    # keep opening every tick for a week.
+    from app.registry_cache import get_cache
+
+    pursuit = str(await get_cache().setting("ambient_pursuit") or "always")
+    if not _pursue(pursuit, await audience()):
+        return 0
+    routing = await get_cache().setting("ambient_channels")
+    routing = routing if isinstance(routing, dict) else {}
     now = now or datetime.now(UTC)
     from sqlalchemy import select
 
@@ -432,10 +449,14 @@ async def retry_external_sends(now: datetime | None = None, batch: int = _RETRY_
                 continue
             if prior.get("ok") or prior.get("dead"):
                 continue
+            channel = str(row.channel or "notify")
+            listed = routing.get(channel)
+            if isinstance(listed, list) and name not in listed:
+                continue  # the operator removed this channel from the route
             due = prior.get("next_attempt_at")
             if not due or datetime.fromisoformat(str(due)) > now:
                 continue
-            ok, error = await _send_one(name, str(row.channel or "notify"), [row])
+            ok, error = await _send_one(name, channel, [row])
             entry = _send_entry(prior, ok, error, now)
             await _record_send([row], name, entry)
             attempted += 1

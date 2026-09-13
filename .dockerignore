@@ -1,0 +1,50 @@
+# Repository-root build context exclusions.
+#
+# The compose file builds from ./backend and ./frontend, so each of those
+# directories carries its own .dockerignore — that is what those builds read.
+# This file covers a `docker build .` run from the repo root (an ad-hoc image,
+# a CI context tarball) and keeps the heavy, never-needed trees out of it:
+# without it the daemon receives ~1.1 GB of history, virtualenvs, node modules
+# and acceptance evidence before the first instruction runs.
+
+# version control
+.git
+.gitignore
+.github
+
+# python virtualenvs / tool caches
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+
+# node
+**/node_modules
+**/*.tsbuildinfo
+frontend/dist
+
+# local environment files — provider keys live here and must never reach an
+# image layer or a build-context tarball (spec §13: keys are env-only)
+.env
+.env.*
+!.env.example
+
+# operator state
+backups/
+
+# documentation + acceptance evidence (60 MB of transcripts and screenshots)
+# Deliberately NOT a blanket `*.md`: app/native/**.skill.md, app/**.agent.md
+# and app/prompts/** are markdown the image must contain — the doclint and
+# prompt-golden build gates read them.
+docs/
+experiments/
+
+# editor / OS noise
+.idea/
+.vscode/
+.DS_Store

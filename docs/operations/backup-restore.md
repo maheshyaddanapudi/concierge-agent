@@ -38,14 +38,17 @@ the restore.
 Recorded in `docs/acceptance/prod/M53/ops.md` with the full
 transcript. Summary:
 
+The numbers below are the **currently published** run — the §14p-90 drill as re-driven on the dev images, transcript in [`../acceptance/prod/M53/ops.md`](../acceptance/prod/M53/ops.md). An earlier M53-era measurement over a different data set (248 runs / 259 steps / 412 embeddings, a 2.1 MB dump, `backup.sh` 4 s, a 20 s fresh-stack boot on the destroyed volume, **RTO 10 s**) is superseded by it; both are recorded rather than averaged, because an RTO is only meaningful next to the data set it was measured on.
+
 | Step | Measured |
 |---|---|
-| Data set | 248 runs, 259 run steps, 412 memory embeddings (pgvector), 151 ambient events, 185 deliveries, 29 tools — a 2.1 MB custom-format dump plus a 12 KB workspace tarball |
-| `backup.sh` | 4 s |
-| Fresh stack on the destroyed volume (migrations + seeds, `/ready` 200) | 20 s — with 0 runs and a 404 for the reference conversation |
-| `restore.sh` — `pg_restore` (schema, data, indexes incl. pgvector) | 1 s |
-| `restore.sh` — total RTO (stop → restore → `/ready` 200) | **10 s** |
-| Same answers after restore | row counts identical on every table, both pgvector indexes present, `GET /conversations/{id}` byte-identical before and after (2 messages), both seeded MCP servers active |
+| Data set | 120 runs, 664 run steps, 24 memories, 0 memory embeddings, 13 ambient events, 55 deliveries, 60 tools — a 2.2 MB custom-format dump plus a 12 KB workspace tarball |
+| `backup.sh` | 1 s |
+| `restore.sh` — `pg_restore` (schema, data, and every index, pgvector included) | 1 s |
+| `restore.sh` — total RTO (stop → restore → `/ready` 200) | **9 s** |
+| Same answers after restore | row counts identical on every table, all nine pgvector/HNSW indexes present, `GET /conversations/{id}` byte-identical before and after, all three MCP servers back `active`, `/ready` 200 within 1 s of start |
+
+Note the caveat this particular data set carries: `memory_embeddings` was **0**, so the pgvector index rebuild — the part of a restore that grows fastest — was not exercised by this run. The earlier measurement (412 embeddings) is the one that did, and it is why the paragraph below stands.
 
 Expect the RTO to scale with `run_steps` and `memory_embeddings` (the two
 tables that dominate a dump); the index rebuild for pgvector is linear in

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
+import { LIVE_RUN_STATUSES } from './types'
 import type {
   CacheStatus,
   Conversation,
@@ -55,7 +56,9 @@ export function useSubAgents(params = '') {
   })
 }
 
-const LIVE_STATUSES = new Set(['running', 'paused_hitl'])
+/** queued included: a run waiting for an admission slot has not finished,
+ * and a list that stopped polling there would never show it start. */
+const LIVE_STATUSES = new Set<string>(LIVE_RUN_STATUSES)
 
 /** M50: polling backs off — 3 s while something is live, 15 s when the
  * page is quiet. Background tabs never poll (TanStack default). */

@@ -44,8 +44,24 @@ async def list_providers_endpoint() -> list[dict[str, Any]]:
 
 @router.get("/hitl/pending")
 async def hitl_pending(session: SessionDep) -> list[dict[str, Any]]:
-    """All currently paused runs across chats (spec §8.7)."""
-    runs = (await session.execute(select(Run).where(Run.status == "paused_hitl"))).scalars().all()
+    """All currently paused runs across chats (spec §8.7).
+
+    §15: eval runs are excluded — they resolve their own gates under the
+    dataset's policy and have no human waiting, so a batch used to fill this
+    queue with approvals nobody could meaningfully act on. Ordered, because
+    the queue is polled every few seconds and rendered with buttons: an
+    unordered result reshuffled them under the operator's cursor."""
+    runs = (
+        (
+            await session.execute(
+                select(Run)
+                .where(Run.status == "paused_hitl", Run.is_eval.is_(False))
+                .order_by(Run.started_at, Run.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         {
             "run_id": str(r.id),

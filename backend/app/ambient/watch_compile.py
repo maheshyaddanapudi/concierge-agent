@@ -60,8 +60,13 @@ class WatchCompile(BaseModel):
     poll_config: dict[str, Any] = Field(default_factory=dict)
     probe: str | None = None
     probe_config: dict[str, Any] = Field(default_factory=dict)
-    op: Literal[">=", "<=", "=="] = ">="
-    value: float = 0.0
+    # NO defaults on the comparison: they used to be `>=` and `0.0`, so a
+    # compiled watch that simply omitted the threshold became `probe >= 0.0`
+    # — a predicate that is true on every evaluation, confirmed by a user
+    # against a plausible-looking echo. An omitted comparison is now a
+    # compile failure the caller refuses, not a watch that always fires.
+    op: Literal[">=", "<=", "=="] | None = None
+    value: float | None = None
     semantic_predicate: str | None = None
     cadence_s: int = 300
     echo: str
@@ -112,6 +117,14 @@ async def compile_and_propose(text: str) -> dict[str, Any]:
     if out.mode == "state":
         if not out.probe or out.probe not in registered_state_probes():
             return {"status": "rejected", "error": f"unknown state probe: {out.probe!r}"}
+        if out.op is None or out.value is None:
+            return {
+                "status": "rejected",
+                "error": (
+                    "a state watch needs a comparison and a threshold "
+                    f"(got op={out.op!r}, value={out.value!r}) — say what to compare against"
+                ),
+            }
         condition_type = "state"
         compiled = {
             "probe": out.probe,

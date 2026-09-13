@@ -82,8 +82,13 @@ async def grade_case(
         prompt = render_judge_prompt(
             expected=expected, judge_notes=judge_notes, answer=answer, input_hint=""
         )
-        _, model = await _judge_model()
-        out = await model.with_structured_output(EvalVerdict).ainvoke(prompt)
+        from app.cost import job_spend
+
+        model_ref, model = await _judge_model()
+        async with job_spend("eval_judge", model_ref) as cb:
+            out = await model.with_structured_output(EvalVerdict).ainvoke(
+                prompt, config={"callbacks": cb}
+            )
         if not isinstance(out, EvalVerdict):
             raise TypeError(f"expected EvalVerdict, got {type(out).__name__}")
         return {

@@ -136,6 +136,42 @@ class TestSuppression:
         assert await check_suppressed("deploy fridays are frozen", "global", None) is True
         assert await check_suppressed("deploy fridays are frozen", "project", None) is False
 
+    async def test_suppression_is_scoped_to_the_scope_instance(self, client: Any) -> None:
+        """§16.2 promises matching is "tenant- and scope-aware like recall",
+        and the tombstone faithfully records conversation_id/project_key —
+        but matching read neither, so one thread's forget silenced the same
+        sentence in every thread, and one project's in every project."""
+        async with get_session_factory()() as session:
+            conv_a, conv_b = Conversation(), Conversation()
+            session.add_all([conv_a, conv_b])
+            await session.commit()
+            a_id, b_id = conv_a.id, conv_b.id
+        text = "in this thread the codeword is falcon"
+        row = await _stored(text, scope="conversation", conversation_id=a_id)
+        await client.delete(f"{API}/memories/{row.id}?mode=forget")
+        assert (
+            await check_suppressed(text, "conversation", None, conversation_id=a_id) is True
+        )  # the thread that forgot it
+        assert (
+            await check_suppressed(text, "conversation", None, conversation_id=b_id) is False
+        )  # every other thread is untouched
+
+        pk_row = await _stored("the apollo budget is frozen", scope="project", project_key="apollo")
+        await client.delete(f"{API}/memories/{pk_row.id}?mode=forget")
+        assert await check_suppressed("the apollo budget is frozen", "project", None) is False
+        assert (
+            await check_suppressed(
+                "the apollo budget is frozen", "project", None, project_key="zeus"
+            )
+            is False
+        )
+        assert (
+            await check_suppressed(
+                "the apollo budget is frozen", "project", None, project_key="apollo"
+            )
+            is True
+        )
+
     async def test_unforget_makes_the_fact_learnable_again(self, client: Any) -> None:
         row = await _stored("the oncall rotation is weekly")
         await client.delete(f"{API}/memories/{row.id}?mode=forget")

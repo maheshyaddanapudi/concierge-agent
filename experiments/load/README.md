@@ -29,8 +29,20 @@ Writes `baseline.json` (the full record) and `baseline.md` (the tables).
 `--scenarios api,chat` narrows the run; `--keep-data` leaves the seeded
 rows in place. Every seeded row carries the `loadgen` marker and the
 settings the harness changes (`default_model`, `embedding_model`,
-`memory_enabled`, `ambient_enabled`, the two ambient caps) are restored at
-the end.
+`memory_enabled`, `ambient_enabled`, the two ambient caps, and the two
+rate-limit keys) are restored at the end.
+
+**The inbound rate limit.** Since `code_setting_ui_hardening` the limiter is
+unconditional — it used to sit behind auth, which ships dark, so a load run
+never met it. At the defaults (`rate_limit_burst` 120, `rate_limit_per_s`
+10) it is keyed on the caller's address, so *every* request this harness
+makes shares one bucket and `--api-requests 100` at concurrency 10 would
+report the token bucket's latency rather than the system's. The harness
+therefore raises both keys for the duration of its run and restores them in
+the same `finally` block as everything else. Pass `--respect-rate-limit` to
+leave them alone when the limiter itself is what you are measuring; the
+`api` scenario reports status codes per endpoint, so a `429` count is
+visible in the record either way.
 
 Live-model sample:
 

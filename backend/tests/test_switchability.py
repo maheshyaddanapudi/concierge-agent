@@ -92,6 +92,7 @@ class TestGateStructure:
         from app.memory.lifecycle import gate_open
 
         await _set(
+            memory_enabled=True,
             memory_decay_enabled=False,
             memory_extraction_learning="off",
             embedding_model=None,
@@ -107,7 +108,131 @@ class TestGateStructure:
         assert await gate_open("memory_decay_enabled")
         assert await gate_open("memory_extraction_learning")
         assert await gate_open("embedding_model")
+        # and the family master closes every shape at once
+        await _set(memory_enabled=False)
+        assert not await gate_open("memory_decay_enabled")
+        assert not await gate_open("memory_extraction_learning")
+        assert not await gate_open("embedding_model")
         await _set(memory_extraction_learning="off", embedding_model=None)
+
+
+class TestMasterHoldsOnDirectCalls:
+    """§3.7.1, one level up from the sub-gates. Four of the six memory job
+    gates DEFAULT to true, so with the family master off and nobody having
+    touched a sub-gate, a direct call used to expire memories, quarantine
+    rows, hard-delete digests and spend a summarization call per community —
+    in a deployment whose memory layer reads off and byte-identical.
+
+    The old suite could not see this: its fixture turned the master ON."""
+
+    @pytest.fixture(autouse=True)
+    async def _memory_off(self, client: Any) -> Any:
+        # master off, every sub-gate at its shipped default (four are true)
+        await _set(memory_enabled=False)
+        yield
+
+    async def test_every_memory_job_refuses_behind_the_master(self, client: Any) -> None:
+        from sqlalchemy import func, select
+
+        from app.memory.communities import rebuild_communities
+        from app.memory.episodic import compact_digests
+        from app.memory.extract_learn import run_extraction_tuner
+        from app.memory.lifecycle import (
+            contradiction_sweep,
+            decay_sweep,
+            embedding_backfill,
+            reflection,
+        )
+        from app.models import ConversationRollup, Memory, RunDigest
+
+        async def _counts() -> tuple[int, int, int]:
+            async with get_session_factory()() as session:
+                return (
+                    int((await session.execute(select(func.count(Memory.id)))).scalar_one()),
+                    int((await session.execute(select(func.count(RunDigest.id)))).scalar_one()),
+                    int(
+                        (
+                            await session.execute(
+                                select(func.count(ConversationRollup.conversation_id))
+                            )
+                        ).scalar_one()
+                    ),
+                )
+
+        before = await _counts()
+        assert await decay_sweep() == 0
+        assert await contradiction_sweep() == 0
+        assert await compact_digests() == 0
+        assert await rebuild_communities() == 0
+        assert await reflection() == 0
+        assert await embedding_backfill() == 0
+        assert (await run_extraction_tuner())["floor_moves"] == 0
+        assert await _counts() == before, "a memory job wrote with the master off"
+
+    async def test_post_run_pipeline_refuses_behind_the_master(self, client: Any) -> None:
+        from sqlalchemy import func, select
+
+        from app.memory.episodic import digest_run, update_rollup
+        from app.memory.scheduler import process_run
+        from app.models import Conversation, ConversationRollup, Run, RunDigest
+
+        async with get_session_factory()() as session:
+            conv = Conversation(title="master-off probe")
+            session.add(conv)
+            await session.flush()
+            run = Run(
+                conversation_id=conv.id,
+                chat_message="does the master hold?",
+                status="completed",
+                final_answer="done",
+            )
+            session.add(run)
+            await session.commit()
+            run_id, conv_id = run.id, conv.id
+
+        assert await digest_run(run_id) is None
+        assert await update_rollup(conv_id) is None
+        await process_run(run_id)
+        async with get_session_factory()() as session:
+            digests = int((await session.execute(select(func.count(RunDigest.id)))).scalar_one())
+            rollups = int(
+                (
+                    await session.execute(select(func.count(ConversationRollup.conversation_id)))
+                ).scalar_one()
+            )
+        assert (digests, rollups) == (0, 0), "the post-run pipeline wrote with the master off"
+
+
+class TestAmbientMasterHoldsOnDirectCalls:
+    """The same rule for the ambient family: twelve tick evaluators used to be
+    gated only by the tick that calls them, so a direct `flush_deliveries()`
+    delivered an outbox written while ambient was dark."""
+
+    async def test_every_tick_evaluator_refuses_behind_the_master(self, client: Any) -> None:
+        from app.ambient.channels import retry_external_sends
+        from app.ambient.decide import sweep_hitl_aging
+        from app.ambient.deliver import flush_deliveries
+        from app.ambient.drain import drain_once
+        from app.ambient.patterns import expire_pattern_deadlines
+        from app.ambient.presence import evaluate_presence
+        from app.ambient.triggers import (
+            evaluate_schedules,
+            evaluate_state_conditions,
+            poll_due_intents,
+        )
+        from app.ambient.wakeups import fire_due_wakeups
+
+        await _set(ambient_enabled=False)
+        assert await evaluate_schedules() == 0
+        assert await poll_due_intents() == 0
+        assert await evaluate_state_conditions() == 0
+        assert await expire_pattern_deadlines() == 0
+        assert await fire_due_wakeups() == 0
+        assert await sweep_hitl_aging() == 0
+        assert await drain_once() == 0
+        assert await evaluate_presence(10) is None
+        assert await flush_deliveries() == {}
+        assert await retry_external_sends() == 0
 
 
 class TestGatesHoldOnDirectCalls:

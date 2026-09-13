@@ -306,6 +306,15 @@ class OpenRouterProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {
             "base_url": _OPENROUTER_BASE_URL,
             "api_key": config.openrouter_api_key,
+            # LangChain only defaults `stream_usage` on when no base URL is
+            # set, so setting one silently suppressed `stream_options
+            # .include_usage` and NO usage chunk came back. Graph mode's
+            # aggregator — the run's largest output-token consumer and the
+            # one streamed call in the system — therefore recorded 0/0 on
+            # this provider, which is the provider every acceptance frame ran
+            # on: run totals under-reported, cost under-priced, the shared
+            # daily ceiling under-counted. The fake provider hid it entirely.
+            "stream_usage": True,
             **port_limits(),
         }
         extra_body: dict[str, Any] = {}
@@ -370,6 +379,11 @@ class CustomGatewayProvider(ModelProviderBase):
         kwargs: dict[str, Any] = {
             "base_url": config.custom_gateway_base_url,
             "api_key": config.custom_gateway_api_key,
+            # same reason as the openrouter adapter: a base URL turns
+            # LangChain's streaming-usage default off, so the aggregator's
+            # tokens came back empty. A gateway that does not support
+            # `stream_options` ignores the field.
+            "stream_usage": True,
             **port_limits(),
         }
         if params:

@@ -69,6 +69,11 @@ async def evaluate_presence(idle_minutes: int) -> str | None:
 
     Returns the emitted event kind, if any.
     """
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return None
     from sqlalchemy import select
 
     from app.ambient.store import emit_event

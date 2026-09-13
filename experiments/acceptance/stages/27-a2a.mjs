@@ -34,20 +34,25 @@ async function setMode(url, mode) {
 }
 
 export default async function (ctx) {
-  const { page, nav, shot, settings, get, post, patch, del, api, log, closeDrawer, submitSave, click, newConversation, askAndSettle, sendChat, waitRun, steps } = ctx
+  const { page, nav, shot, settings, get, post, patch, del, api, log, closeDrawer, submitSave, click, newConversation, askAndSettle, sendChat, waitRun, steps, expect, expectEq, expectMatch, expectStatus } = ctx
   const initial = (await get('/settings')).json
   await settings({ orchestrator_mode: 'graph', default_model_params: null, a2a_enabled: false, ambient_enabled: true })
   await setMode(CP.bearer, null)
 
   // the dark gate: no nav item while off; the switch reveals it
   await nav(page, 'settings')
-  log(`nav shows Remote Agents while off: ${await page.getByRole('link', { name: /Remote Agents/ }).count()}`)
+  const darkNav = await page.getByRole('link', { name: /Remote Agents/ }).count()
+  log(`nav shows Remote Agents while off: ${darkNav}`)
+  // the dark gate: §19 ships off, and nothing about it is reachable
+  expectEq(darkNav, 0, 'Remote Agents is not in the nav while A2A is off')
   await page.getByText('A2A — remote agents (§19)', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
   await shot(page, '00-dark-nav-no-remote-agents')
   await page.getByRole('switch', { name: 'A2A' }).first().click()
   await page.waitForTimeout(1200)
-  log(`nav shows Remote Agents after the switch: ${await page.getByRole('link', { name: /Remote Agents/ }).count()}`)
+  const litNav = await page.getByRole('link', { name: /Remote Agents/ }).count()
+  log(`nav shows Remote Agents after the switch: ${litNav}`)
+  expect(litNav > 0, 'the switch revealed Remote Agents in the nav')
   await shot(page, '01-enabled-nav-remote-agents')
 
   // the empty registry, then a registration against the bearer counterparty
@@ -75,7 +80,8 @@ export default async function (ctx) {
   const agents = (await get('/remote-agents')).json
   const agent = agents.find((a) => a.name === 'polyglot-agent')
   log(`registered: ${agent?.name} status=${agent?.status} auth=${agent?.auth_status} tools=${agent?.tool_count} card=${agent?.card_url}`)
-  if (!agent) throw new Error('polyglot-agent not registered')
+  expect(!!agent, 'the agent card registered against the live counterparty')
+  expectEq(agent.status, 'active', 'and came up active')
   await closeDrawer(page)
   await shot(page, '04-agent-registered-active')
 
@@ -97,6 +103,9 @@ export default async function (ctx) {
   await page.waitForTimeout(2000)
   const a2 = (await get(`/remote-agents/${agent.id}`)).json
   log(`after save + refresh: auth=${a2.auth_status} schemes=${JSON.stringify(a2.card?.securitySchemes || {}).slice(0, 120)} credentials in API response: ${JSON.stringify(a2).includes('stub-bearer-token') ? 'LEAKED' : 'never returned'}`)
+  // credentials are WRITE-ONLY: the secret just saved must never come back
+  expect(!JSON.stringify(a2).includes('stub-bearer-token'), 'the saved credential is never returned by the API')
+  expectEq(a2.auth_status, 'ok', 'the card refresh authenticated with it')
   await drawer.getByText('Auth (per card scheme)', { exact: true }).scrollIntoViewIfNeeded()
   await shot(page, '07-auth-ok-after-save')
   await closeDrawer(page)
@@ -107,6 +116,9 @@ export default async function (ctx) {
   await page.waitForTimeout(800)
   const a2aTools = (await get('/tools')).json.filter((t) => t.kind === 'a2a')
   log(`a2a tools: ${a2aTools.map((t) => t.tool_key).join(', ')}`)
+  // §19: the remote card's skills are projected into the tool registry
+  expect(a2aTools.length > 0, `the agent's skills are projected as kind=a2a tools (${a2aTools.length})`)
+  expect(a2aTools.every((t) => t.tool_key.startsWith('polyglot-agent.')), 'keyed {agent}.{skill}')
   await shot(page, '08-tools-kind-a2a-projected')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(900)
@@ -128,8 +140,11 @@ export default async function (ctx) {
   await page.locator('textarea[rows="14"]').fill(`# Purpose\n1. Send the user's question to {tool:${research.tool_key}} as the message.\n2. Relay what the remote agent returned, marked as untrusted, in one paragraph.\n`)
   await page.waitForTimeout(400)
   await shot(page, '10-skill-editor-a2a-tool')
-  log(`create skill → ${JSON.stringify(await submitSave(page, 'Create skill', { acceptOverlap: true }))}`)
+  const skillSave = await submitSave(page, 'Create skill', { acceptOverlap: true })
+  log(`create skill → ${JSON.stringify(skillSave)}`)
+  expectEq(skillSave.outcome, 'saved', 'a skill authored on the remote tool saved')
   const skill = (await get('/skills')).json.find((s) => s.name === 'remote-researcher')
+  expect(!!skill, 'remote-researcher is in the registry')
   await closeDrawer(page)
   await shot(page, '11-skill-saved-a2a-badge')
 
@@ -147,7 +162,9 @@ export default async function (ctx) {
   for (let i = 0; i < n; i++) await skillSelects.nth(i).selectOption(skill.id)
   await page.waitForTimeout(300)
   await shot(page, '12-excomm-builder')
-  log(`create sub agent → ${JSON.stringify(await submitSave(page, 'Create sub agent', { acceptOverlap: true }))}`)
+  const excommSave = await submitSave(page, 'Create sub agent', { acceptOverlap: true })
+  log(`create sub agent → ${JSON.stringify(excommSave)}`)
+  expectEq(excommSave.outcome, 'saved', 'the ExComm sub agent saved')
   await closeDrawer(page)
   await shot(page, '13-excomm-saved')
 
@@ -158,12 +175,19 @@ export default async function (ctx) {
   await page.waitForTimeout(2500)
   const r1 = (await get('/runs?limit=1')).json[0]
   const planCard = page.locator('text=/PLAN · /i').first()
+  // a probe: whether the plan card is still on screen races the run settling
   if (await planCard.waitFor({ timeout: 45000 }).then(() => true).catch(() => false)) await shot(page, '14-organic-plan-routes-translation')
   else log('no plan card before the run settled (recorded as-is)')
   const done1 = await waitRun(r1.id, ['completed', 'failed', 'cancelled'], 300)
   await page.waitForTimeout(1500)
   log(`organic run → ${done1.status}; steps: ${steps(done1)}`)
   log(`answer: ${(done1.final_answer || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+  // organic routing: the planner reached the REMOTE capability by itself
+  expectStatus(done1, 'completed', 'the organically routed remote run')
+  expect(
+    (done1.steps || []).some((x) => x.step_type === 'tool_call' && /polyglot/.test(x.node_id || '')),
+    'the planner routed to the remote agent without being told which tool',
+  )
   await shot(page, '15-organic-answer-completed')
   await nav(page, 'runs')
   await page.locator('table tbody tr').first().click()
@@ -180,6 +204,12 @@ export default async function (ctx) {
   const sawFence = await fenced.count()
   if (sawFence) await fenced.scrollIntoViewIfNeeded()
   log(`fenced remote output in the trace: ${sawFence ? 'yes (tool step expanded)' : 'not in frame'}`)
+  // §19: remote output is untrusted and must be FENCED wherever it is stored
+  expectMatch(
+    JSON.stringify(done1.steps || []),
+    /untrusted_remote_agent_output/,
+    "the remote agent's output is fenced in the run's own trace",
+  )
   await shot(page, '17-trace-fenced-remote-output')
   await closeDrawer(page)
 
@@ -213,9 +243,14 @@ export default async function (ctx) {
       if (['completed', 'failed', 'cancelled'].includes(cur?.status)) return cur
       if (cur?.status === 'paused_hitl') {
         const btn = page.getByRole('button', { name: act === 'deny' ? /✕ Deny/ : /✓ Submit answers|✓ Approve/ }).first()
+        // a probe: a card mid-render reports neither enabled nor disabled,
+        // and this loop simply tries again on the next pass
         if ((await btn.count()) && (await btn.isEnabled().catch(() => false))) {
           rounds += 1
           log(`gate armed again (round ${rounds}) — ${label}`)
+          // both swallows are deliberate: this loop races a card that can be
+          // re-rendered between the isEnabled() check and the click, and a
+          // miss here is retried on the next pass rather than failing
           if (act !== 'deny') await page.getByPlaceholder('type your answer…').first().fill('the 1790s').catch(() => {})
           await btn.click().catch(() => {})
           await page.waitForTimeout(3000)
@@ -227,6 +262,8 @@ export default async function (ctx) {
   const done2 = await settleGates(r2.id, 'answer', 'answering')
   await page.waitForTimeout(1500)
   log(`question run → ${done2.status}; answer: ${(done2.final_answer || '').replace(/\s+/g, ' ').slice(0, 160)}`)
+  // the remote agent's question reached a human and the answer went back
+  expectStatus(done2, 'completed', 'the run whose remote question was answered from the HITL card')
   await shot(page, '20-hitl-approved-remote-completed')
 
   await setMode(CP.bearer, { kind: 'ask', question: 'Which decade should the research focus on?' })
@@ -245,6 +282,12 @@ export default async function (ctx) {
   await page.waitForTimeout(1500)
   const stateAfter = await control(CP.bearer, 'state')
   log(`deny → ${done3.status}; error: ${String(done3.error || '').slice(0, 120)}; counterparty cancelled tasks ${stateBefore.cancelled_tasks?.length ?? '?'} → ${stateAfter.cancelled_tasks?.length ?? '?'}`)
+  // a denial must NOT quietly become an answer to the remote agent
+  expectStatus(done3, ['completed', 'failed'], 'the denied remote run settled')
+  expect(
+    (stateAfter.cancelled_tasks?.length ?? 0) > (stateBefore.cancelled_tasks?.length ?? 0),
+    'the deny cancelled the task on the counterparty',
+  )
   await shot(page, '22-hitl-denied-run-outcome')
 
   // Stop mid-call: the remote task is cancelled on the counterparty
@@ -268,6 +311,12 @@ export default async function (ctx) {
   await page.waitForTimeout(2500)
   const after4 = await control(CP.bearer, 'state')
   log(`stop → ${done4.status}; counterparty cancelled tasks ${before4.cancelled_tasks?.length ?? '?'} → ${after4.cancelled_tasks?.length ?? '?'}`)
+  // Stop propagates: the cancel reaches the remote side, it is not just local
+  expectStatus(done4, 'cancelled', 'the run stopped mid remote call')
+  expect(
+    (after4.cancelled_tasks?.length ?? 0) > (before4.cancelled_tasks?.length ?? 0),
+    'the counterparty saw the cancel',
+  )
   await shot(page, '24-stopped-run')
 
   // park: the in-run budget expires, the answer carries the parked note, the poller delivers to the Inbox
@@ -276,6 +325,9 @@ export default async function (ctx) {
   await newConversation(page)
   const done5 = await askAndSettle(page, 'Ask the remote polyglot agent to research the metric system; if it is slow, do not wait.', { approve: false, timeoutS: 300 })
   log(`parked note in the answer: ${/parked/i.test(done5.final_answer || '')}`)
+  // the in-run budget expired: the answer says so instead of pretending
+  expectStatus(done5, 'completed', 'the run whose remote call outlived its budget')
+  expectMatch(done5.final_answer, /park/i, 'the answer carries the parked note')
   await shot(page, '25-parked-answer-note')
   await nav(page, 'remote-agents')
   await page.getByText('polyglot-agent', { exact: true }).first().click()
@@ -293,6 +345,8 @@ export default async function (ctx) {
     await page.waitForTimeout(3000)
   }
   log(`a2a delivery: ${delivery ? `${delivery.tier}/${delivery.channel || 'pending'}: ${delivery.title}` : 'none within 3 minutes'}`)
+  // the poller turned the parked task into an §18.4 delivery
+  expect(!!delivery, "the parked task's outcome reached the Inbox as an a2a delivery")
   await nav(page, 'ambient')
   await page.waitForTimeout(1200)
   await shot(page, '27-ambient-inbox-a2a-delivery')
@@ -316,6 +370,7 @@ export default async function (ctx) {
     await page.waitForTimeout(3000)
   }
   log(`input-required task: ${needsInput ? needsInput.question : 'none within 3 minutes'}`)
+  expect(!!needsInput, 'the parked task that needs input surfaced as input-required')
   await nav(page, 'ambient')
   await page.waitForTimeout(1500)
   await shot(page, '29-inbox-needs-input-tier1')
@@ -338,6 +393,10 @@ export default async function (ctx) {
     await shot(page, '31-drawer-replied-completed')
     tasks = (await get(`/remote-agents/${agent.id}/tasks`)).json
     log(`tasks after the reply: ${(Array.isArray(tasks) ? tasks : tasks.items || []).map((t) => t.state).join(', ')}`)
+    expect(
+      (Array.isArray(tasks) ? tasks : tasks.items || []).some((t) => t.id === needsInput?.id && t.state === 'completed'),
+      'the reply from the task drawer completed the remote task',
+    )
   } else {
     log('no reply box in the drawer — the task did not reach input-required (recorded as-is)')
   }
@@ -355,7 +414,10 @@ export default async function (ctx) {
   await nav(page, 'tools')
   await page.getByPlaceholder('Search…').fill('polyglot-agent.')
   await page.waitForTimeout(800)
-  log(`a2a tools after drift: ${(await get('/tools')).json.filter((t) => t.kind === 'a2a').map((t) => t.tool_key + ':' + t.status).join(', ')}`)
+  const drifted = (await get('/tools')).json.filter((t) => t.kind === 'a2a')
+  log(`a2a tools after drift: ${drifted.map((t) => t.tool_key + ':' + t.status).join(', ')}`)
+  // card drift: a skill that appeared on the counterparty becomes a tool here
+  expect(drifted.some((t) => t.tool_key === 'polyglot-agent.translate'), 'the new remote skill is projected as a tool')
   await shot(page, '33-drift-tool-projected')
 
   // the auth matrix: apiKey via env, oauth2, and an unsupported scheme
@@ -368,6 +430,14 @@ export default async function (ctx) {
   await page.waitForTimeout(800)
   const matrix = (await get('/remote-agents')).json
   log(`auth matrix: ${matrix.map((a) => `${a.name}=${a.auth_status}/${a.status}`).join(', ')}`)
+  // the matrix is the claim: two supported schemes authenticate, the
+  // unsupported one says so rather than pretending
+  expectEq(matrix.find((a) => a.name === 'keyed-agent')?.auth_status, 'ok', 'apiKey via env authenticated')
+  expectEq(matrix.find((a) => a.name === 'oauth-agent')?.auth_status, 'ok', 'oauth2 authenticated')
+  expect(
+    matrix.find((a) => a.name === 'mtls-agent')?.auth_status !== 'ok',
+    'the unsupported mutualTLS scheme is NOT reported as ok',
+  )
   await shot(page, '34-auth-matrix-agent-list')
   await page.getByText('keyed-agent', { exact: true }).first().click()
   await page.waitForTimeout(1000)
@@ -391,15 +461,24 @@ export default async function (ctx) {
   const SENTENCE = 'the metric system spread with the Napoleonic wars'
   const k = await askAndSettle(page, `Use the keyed-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
   log(`apikey-env call: ${k.status}; steps: ${steps(k)}; fenced: ${/untrusted_remote_agent_output|stub-echo/.test(JSON.stringify(k.steps || []))}`)
+  expectStatus(k, 'completed', 'the apiKey-via-env call')
   await shot(page, '37-auth-apikey-env-call-answer')
   await newConversation(page)
   const o = await askAndSettle(page, `Use the oauth-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
-  log(`oauth2 call: ${o.status}; steps: ${steps(o)}; token requests on the counterparty: ${(await control(CP.oauth, 'state')).token_requests ?? '?'}`)
+  const tokenReqs = (await control(CP.oauth, 'state')).token_requests ?? 0
+  log(`oauth2 call: ${o.status}; steps: ${steps(o)}; token requests on the counterparty: ${tokenReqs}`)
+  expectStatus(o, 'completed', 'the oauth2 call')
+  expect(tokenReqs > 0, 'the backend really fetched an oauth2 token')
   await shot(page, '38-auth-oauth2-call-answer')
   await newConversation(page)
   const m = await askAndSettle(page, `Use the mtls-agent.summarize tool to summarize this sentence: ${SENTENCE}.`, { approve: false })
   const mtlsStep = (m.steps || []).find((s) => s.step_type === 'tool_call' && /mtls/.test(s.node_id || ''))
   log(`unsupported-scheme call: run ${m.status}; tool step ${mtlsStep?.status}: ${String(mtlsStep?.error || m.error || '').slice(0, 160)}`)
+  // the negative case of the matrix: an unsupported scheme must FAIL loudly
+  expect(
+    m.status === 'failed' || mtlsStep?.status === 'failed',
+    'the call through the unsupported mutualTLS scheme failed instead of silently succeeding',
+  )
   await shot(page, '39-auth-unsupported-call-fails')
 
   await setMode(CP.bearer, null)

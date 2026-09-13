@@ -8,14 +8,17 @@ It proves the subgraph-as-tool path alongside MCP tools in the same skill.
 import json
 from typing import Any, Literal, TypedDict
 
+import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.db import get_session_factory
 from app.llm import ModelParams, get_model
 from app.native.provider import native_tool
 from app.prompts import load_prompt
+
+logger = structlog.get_logger("native.tools")
 
 
 class StructuredSummary(BaseModel):
@@ -25,6 +28,10 @@ class StructuredSummary(BaseModel):
     summary: str = Field(description="faithful 2-4 sentence summary")
     key_points: list[str] = Field(description="3-7 most important points")
     entities: list[str] = Field(description="named people/organizations/products")
+
+
+# the fetched body a summarize call may carry; the fence truncates past it
+_SUMMARIZE_MAX_CHARS = 20000
 
 
 class _SummarizeState(TypedDict):
@@ -44,9 +51,21 @@ async def _resolve_default_model() -> tuple[str, ModelParams | None]:
 
 def build_summarize_graph() -> Any:
     async def summarize_node(state: _SummarizeState, config: RunnableConfig) -> dict[str, Any]:
+        from app import untrusted
+
         ref, params = await _resolve_default_model()
         model = get_model(ref, params).with_structured_output(StructuredSummary)
-        prompt = load_prompt("summarize_and_structure").format(text=state["text"])
+        # M52: this is the CANONICAL untrusted path — `web-research` chains
+        # fetch → summarize, so the text is whatever a fetched page said, and
+        # it used to arrive unfenced. A page's instructions were read as
+        # instructions, and the summary they produced was trusted downstream.
+        prompt = untrusted.render(
+            load_prompt("summarize_and_structure"),
+            mode="replace",
+            body_var="text",
+            body=str(state["text"]),
+            max_chars=_SUMMARIZE_MAX_CHARS,
+        )
         try:
             result = await model.ainvoke(prompt, config=config)
         except Exception as exc:  # noqa: BLE001 — parser/validation error types vary by adapter; one repair retry
@@ -83,6 +102,13 @@ async def summarize_and_structure(
 
 
 class _ChartSeries(BaseModel):
+    # NaN/Infinity are refused at the schema boundary (hardening): a
+    # non-finite number survives pydantic's default float validation, rides
+    # into the run's JSONB `charts` column, and Postgres then rejects the
+    # bare `NaN` as invalid JSON — the commit raises and an already-produced
+    # final answer is lost. Nothing non-finite may get past this model.
+    model_config = ConfigDict(allow_inf_nan=False)
+
     # Chart.js-style `label`/`data` accepted as validation aliases so a
     # first call in that common convention succeeds instead of burning a
     # repair round-trip; canonical dump stays `name`/`values` (the renderer
@@ -147,7 +173,14 @@ _NAMED_SERIES_KINDS = {
 
 
 class _ChartSpec(BaseModel):
-    """render_chart args (spec §5b): data the caller actually holds."""
+    """render_chart args (spec §5b): data the caller actually holds.
+
+    The single validation boundary for every chart that reaches the
+    renderer — the native tool, the formatter's own chart components and
+    the tool charts replayed out of the run steps all go through it, so
+    one contract governs one renderer (`validate_chart_spec`)."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
 
     kind: ChartKind
     title: str = ""
@@ -205,6 +238,48 @@ class _ChartSpec(BaseModel):
         return self
 
 
+def _error_summary(exc: ValidationError, limit: int = 3) -> str:
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or 'spec'}: {err['msg']}"
+        for err in exc.errors()[:limit]
+    )
+
+
+def _nonfinite_locations(exc: ValidationError) -> list[str]:
+    """Where a NaN/Infinity was refused (pydantic's `finite_number`)."""
+    return [
+        ".".join(str(p) for p in err["loc"])
+        for err in exc.errors()
+        if err["type"] == "finite_number"
+    ]
+
+
+def validate_chart_spec(spec: Any, *, source: str) -> dict[str, Any] | None:
+    """Put an arbitrary chart spec through the renderer's contract.
+
+    Every chart that reaches `ChartSvg` must pass here, whoever produced
+    it — the render_chart tool validated its own args from the start, but
+    the formatter's chart components and the tool charts collected from
+    run steps used to be waved through on a "has a kind and a series"
+    glance. Returns the canonical (normalized) spec, or None with a log
+    line naming what was dropped and why."""
+    if not isinstance(spec, dict):
+        logger.info("chart_spec_dropped", source=source, reason="not a chart object")
+        return None
+    try:
+        validated = _ChartSpec.model_validate(spec)
+    except ValidationError as exc:
+        logger.info(
+            "chart_spec_dropped",
+            source=source,
+            kind=spec.get("kind"),
+            title=spec.get("title"),
+            reason=_error_summary(exc),
+        )
+        return None
+    return validated.model_dump(exclude_none=True)
+
+
 @native_tool(
     "render_chart",
     "Validate and normalize a chart specification from data you already hold — "
@@ -230,9 +305,30 @@ async def render_chart(
     ranges: list[list[str]] | None = None,
 ) -> str:
     """Pure validation/normalization — no model call, no side effects."""
-    spec = _ChartSpec.model_validate(
-        {"kind": kind, "title": title, "labels": labels, "series": series, "ranges": ranges}
-    )
+    try:
+        spec = _ChartSpec.model_validate(
+            {"kind": kind, "title": title, "labels": labels, "series": series, "ranges": ranges}
+        )
+    except ValidationError as exc:
+        bad = _nonfinite_locations(exc)
+        if not bad:
+            raise  # shape errors stay hard errors — the loop repairs them
+        # a non-finite number is not a shape mistake the loop can read off a
+        # traceback: name the exact points so the next call is a clean repair,
+        # and make sure NaN/Infinity never reaches the run's JSONB charts
+        logger.info("chart_spec_dropped", source="render_chart", kind=kind, reason="non-finite")
+        return json.dumps(
+            {
+                "status": "chart rejected — nothing was rendered",
+                "error": (
+                    "non-finite number(s) at "
+                    + ", ".join(bad)
+                    + ". NaN and Infinity cannot be stored or drawn. Re-send the "
+                    "chart with finite numbers only (drop the offending points, or "
+                    "supply the real value)."
+                ),
+            }
+        )
     # the tool result is the model's only observation of what happened — say
     # explicitly that a real chart WILL render, or models hedge with ASCII
     # duplicates of the same data in their prose answer

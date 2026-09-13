@@ -15,7 +15,7 @@ async function setMode(url, mode) {
 }
 
 export default async function (ctx) {
-  const { page, nav, shot, settings, get, post, api, log, closeDrawer, submitSave, click, newConversation, askAndSettle, sendChat, waitRun, openConversation } = ctx
+  const { page, nav, shot, settings, get, post, api, log, closeDrawer, submitSave, click, newConversation, askAndSettle, sendChat, waitRun, openConversation, expect, expectEq, expectMatch, expectStatus } = ctx
   const initial = (await get('/settings')).json
   await settings({ orchestrator_mode: 'graph', default_model_params: null, ambient_enabled: true, a2a_enabled: true })
 
@@ -31,6 +31,7 @@ export default async function (ctx) {
   await shot(page, '00-conv-a-pinned')
   const a1 = await askAndSettle(page, 'Summarize this: 8 and 9 make seventeen; publish the summary.')
   log(`conversation A run: target=${a1.target_sub_agent_id ? 'site-analyst (direct)' : 'orchestrator'} status=${a1.status}`)
+  expectEq(a1.target_sub_agent_id, analyst?.id, 'conversation A ran against the pinned sub agent')
   await shot(page, '01-conv-a-direct-run')
   const convA = a1.conversation_id
   await newConversation(page)
@@ -39,11 +40,14 @@ export default async function (ctx) {
   await shot(page, '02-conv-b-picker-auto')
   const b1 = await askAndSettle(page, 'Use the sitefiles add tool to add 3 and 4. Number only.')
   log(`conversation B run: target=${b1.target_sub_agent_id || 'orchestrator'} status=${b1.status}`)
+  // the pin is PER CONVERSATION: B must not inherit A's
+  expect(!b1.target_sub_agent_id, 'a new conversation starts on the orchestrator, not on A\'s pin')
   await shot(page, '03-conv-b-planner-run')
   await openConversation(page, 'Summarize this: 8 and 9')
   await page.waitForTimeout(800)
   const restored = await target().inputValue()
   log(`back in A: pin restored=${restored === analyst?.id}`)
+  expectEq(restored, analyst?.id, "reopening A restores that conversation's pin")
   const summary = page.locator('label').filter({ hasText: /summary/i }).locator('input[type=checkbox]').first()
   if (await summary.count()) {
     await summary.check()
@@ -52,12 +56,16 @@ export default async function (ctx) {
   await shot(page, '04-conv-a-pin-restored-summary-checked')
   await openConversation(page, 'Use the sitefiles add tool to add 3 and 4')
   await page.waitForTimeout(600)
-  log(`back in B: picker=${(await target().inputValue()) || 'auto'}`)
+  const bPicker = (await target().inputValue()) || 'auto'
+  log(`back in B: picker=${bPicker}`)
+  expectEq(bPicker, 'auto', 'and B is still on the orchestrator')
   await shot(page, '05-conv-b-still-auto')
   await openConversation(page, 'Summarize this: 8 and 9')
   await page.waitForTimeout(600)
   const a2 = await askAndSettle(page, 'Now summarize this too: 20 and 22 make forty-two; publish it.')
   log(`conversation A second run: target=${a2.target_sub_agent_id ? 'direct' : 'orchestrator'} include_history_summary=${a2.include_history_summary}`)
+  expectEq(a2.target_sub_agent_id, analyst?.id, "A's second run used the restored pin")
+  expectStatus(a2, 'completed', "A's second run")
   await shot(page, '06-conv-a-second-direct-plus-ctx')
   await target().selectOption({ label: 'Orchestrator (auto)' })
 
@@ -74,12 +82,18 @@ export default async function (ctx) {
   await tick.blur()
   await page.waitForTimeout(1000)
   log(`tick read-back: settings.ambient_tick_interval_s=${(await get('/settings')).json.ambient_tick_interval_s}; field shows ${await tick.inputValue()}`)
+  expectEq((await get('/settings')).json.ambient_tick_interval_s, 45, 'a valid tick was written and read back')
   await shot(page, '10-settings-tick-45-readback')
   await tick.fill('5')
   await tick.blur()
   await page.waitForTimeout(1200)
+  // a probe: the inline note may render before or after this read
   const note = await page.locator('.bg-rose-500\\/10').first().textContent().catch(() => '')
   log(`tick=5 → inline: ${String(note).trim().slice(0, 140)}; setting still ${(await get('/settings')).json.ambient_tick_interval_s}`)
+  // the 422 guard: an out-of-range value is REFUSED and the stored setting
+  // is untouched — the whole point of the frame
+  expectEq((await get('/settings')).json.ambient_tick_interval_s, 45, 'the rejected tick=5 did not reach the settings')
+  expectMatch(note, /.+/, 'the refusal is shown inline')
   await shot(page, '11-settings-422-inline')
   await tick.fill(String(initial.ambient_tick_interval_s))
   await tick.blur()
@@ -102,7 +116,7 @@ export default async function (ctx) {
     await nav(page, '')
     await newConversation(page)
     const parked = await askAndSettle(page, 'Ask the remote polyglot agent to research tick-bounded polling; do not wait if it is slow.', { approve: false })
-    log(`parked: ${/parked/i.test(parked.final_answer || '')}`)
+    expectMatch(parked.final_answer, /park/i, 'the slow remote call parked')
     await shot(page, '15-poll-throttle-parked-answer')
     await page.waitForTimeout(30000)
     const listTasks = async () => {
@@ -131,6 +145,8 @@ export default async function (ctx) {
       await page.waitForTimeout(3000)
     }
     log(`tick lowered to 15s → delivered within 2 minutes: ${delivered}`)
+    // the throttle is tick-bounded: it only delivered once the TICK allowed it
+    expect(delivered, 'lowering the tick let the poll interval take effect')
     await page.getByText('polyglot-agent', { exact: true }).first().click()
     await page.waitForTimeout(1000)
     await page.getByTestId('a2a-tasks').scrollIntoViewIfNeeded()
@@ -158,6 +174,10 @@ export default async function (ctx) {
   await shot(page, '19-overlap-near-duplicate-form')
   const res = await submitSave(page, 'Create skill', { onOverlap: () => shot(page, '20-overlap-dialog-at-threshold-10') })
   log(`near-duplicate save at threshold 10% → ${JSON.stringify(res)}`)
+  // a 10% threshold must make the judge stop a near-duplicate of an existing
+  // skill: that is what moving the knob is for
+  expect(res.outcome === 'overlap' || res.sawOverlap, 'the overlap dialog raised at threshold 10%')
+  // cleanup click; the dialog may already be gone after the assertion above
   if (res.outcome === 'overlap') await page.getByRole('button', { name: /Cancel/ }).first().click().catch(() => {})
   await closeDrawer(page)
   await settings({ overlap_threshold_percent: initial.overlap_threshold_percent })
@@ -172,6 +192,7 @@ export default async function (ctx) {
   await nav(page, 'settings')
   await page.getByLabel('Rate-limit burst').scrollIntoViewIfNeeded()
   log(`rate_limit_burst=5 rate_limit_per_s=1 set live (the 429 boundary is exercised under an identity in prod/m34-auth.sh)`)
+  expectEq((await get('/settings')).json.rate_limit_burst, 5, 'the rate-limit burst took live')
   await shot(page, '21-guardrails-burst-5')
   await api('PATCH', '/settings', { rate_limit_burst: initial.rate_limit_burst, rate_limit_per_s: initial.rate_limit_per_s })
 
@@ -190,10 +211,16 @@ export default async function (ctx) {
       `docker exec ${DB} psql -U ${process.env.ACC_DB_USER || 'concierge'} -d ${process.env.ACC_DB_NAME || 'concierge'} -tAc "with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, 'payments-api p99 error rate 9.4% and rising', 'one in eleven checkouts failing; no rollback yet', now()) returning id) select id from ins"`,
       { encoding: 'utf8' },
     ).trim()
-  } catch {}
+  } catch {
+    // the db container is not always reachable from the host running this
+    // driver; the assertion below is skipped rather than faked
+  }
   log(`tier-0 delivery seeded server-side: ${seeded}`)
+  // a probe: the assertion below only applies when the row really was seeded
   const seen = await page.getByTestId('ambient-toaster').waitFor({ timeout: 40000 }).then(() => true).catch(() => false)
   log(seen ? `toast: ${(await page.getByTestId('ambient-toaster').textContent()).trim().slice(0, 120)}` : 'no toast within 40s (a tier-0 delivery needs the interrupt tick + SSE)')
+  // when the row really was inserted, the toast is the claim of this frame
+  if (/^[0-9a-f-]{36}$/.test(seeded)) expect(seen, 'the tier-0 delivery interrupted with a toast on an unrelated page')
   await shot(page, '24-ambient-toast-visible')
   await settings({ ambient_tick_interval_s: initial.ambient_tick_interval_s, a2a_poll_interval_s: initial.a2a_poll_interval_s, a2a_task_timeout_s: initial.a2a_task_timeout_s, ambient_quiet_hours: initial.ambient_quiet_hours })
 
@@ -203,11 +230,15 @@ export default async function (ctx) {
   await ambient.scrollIntoViewIfNeeded()
   if ((await ambient.getAttribute('aria-checked')) === 'true') await ambient.click()
   await page.waitForTimeout(1000)
-  log(`ambient off → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
+  const offLinks = await page.getByRole('link', { name: /Ambient/ }).count()
+  log(`ambient off → nav Ambient links: ${offLinks}`)
+  expectEq(offLinks, 0, 'the master switch off removes Ambient from the nav, live')
   await shot(page, '07-settings-ambient-master-off')
   await ambient.click()
   await page.waitForTimeout(1000)
-  log(`ambient on → nav Ambient links: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
+  const onLinks = await page.getByRole('link', { name: /Ambient/ }).count()
+  log(`ambient on → nav Ambient links: ${onLinks}`)
+  expect(onLinks > 0, '…and back on restores it without a reload')
   await shot(page, '08-settings-ambient-on-nav-live')
   log('note: this off/on once stalled the leader tick until a restart (report.md finding 2, fixed — prod/FIXES/ambient-toggle.md re-verifies it); nothing in this stage depends on the tick afterwards')
 }

@@ -24,10 +24,100 @@ export const VIEWPORT = { width: 1440, height: 900 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export { sleep }
 
+// ── assertions ────────────────────────────────────────────────────────
+//
+// A stage that only LOGS its outcome proves nothing: the runner exits 0, the
+// frames get published, and a run that failed or a gate that never armed
+// reads as a pass. Everything below THROWS, which the runner turns into a
+// `zz-failure.png` and a non-zero exit — and `publish.mjs` refuses to
+// publish a stage that has one.
+
+export class AcceptanceFailure extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'AcceptanceFailure'
+  }
+}
+
+/** The base assertion: everything else is sugar over it. */
+export function expect(condition, message) {
+  if (!condition) {
+    log(`ASSERTION FAILED: ${message}`)
+    throw new AcceptanceFailure(message)
+  }
+  log(`ok — ${message}`)
+  return true
+}
+
+export function expectEq(actual, wanted, what) {
+  return expect(actual === wanted, `${what}: ${JSON.stringify(actual)} === ${JSON.stringify(wanted)}`)
+}
+
+export function expectOneOf(actual, wanted, what) {
+  return expect(wanted.includes(actual), `${what}: ${JSON.stringify(actual)} ∈ ${JSON.stringify(wanted)}`)
+}
+
+export function expectMatch(text, pattern, what) {
+  const re = pattern instanceof RegExp ? pattern : new RegExp(pattern, 'i')
+  return expect(re.test(String(text ?? '')), `${what} matches ${re} (got ${JSON.stringify(String(text ?? '').slice(0, 200))})`)
+}
+
+/** A run reached the status the stage exists to demonstrate. */
+export function expectStatus(r, wanted = 'completed', what = 'run') {
+  const statuses = Array.isArray(wanted) ? wanted : [wanted]
+  const got = r?.status
+  if (!statuses.includes(got)) {
+    const why = (r?.error || r?.final_answer || '').toString().replace(/\s+/g, ' ').slice(0, 200)
+    log(`ASSERTION FAILED: ${what} ${r?.id?.slice?.(0, 8) ?? '?'} → ${got}, wanted ${statuses.join('|')}`)
+    throw new AcceptanceFailure(`${what} ${r?.id ?? '?'} → ${got} (wanted ${statuses.join('|')})${why ? `: ${why}` : ''}`)
+  }
+  log(`ok — ${what} ${r?.id?.slice?.(0, 8) ?? ''} → ${got}`)
+  return r
+}
+
+/** An API call returned the status code the stage is about. */
+export function expectHttp(res, wanted, what) {
+  const codes = Array.isArray(wanted) ? wanted : [wanted]
+  if (!codes.includes(res?.status)) {
+    const body = JSON.stringify(res?.json ?? null).slice(0, 300)
+    log(`ASSERTION FAILED: ${what} → HTTP ${res?.status}, wanted ${codes.join('|')}`)
+    throw new AcceptanceFailure(`${what} → HTTP ${res?.status} (wanted ${codes.join('|')}): ${body}`)
+  }
+  log(`ok — ${what} → HTTP ${res.status}`)
+  return res
+}
+
+/** A locator the stage claims the UI shows. */
+export async function expectVisible(page, locator, what, timeout = 30000) {
+  const target = typeof locator === 'string' ? page.locator(locator) : locator
+  try {
+    await target.first().waitFor({ state: 'visible', timeout })
+  } catch {
+    log(`ASSERTION FAILED: ${what} never appeared within ${timeout}ms`)
+    throw new AcceptanceFailure(`${what} never appeared within ${timeout}ms`)
+  }
+  log(`ok — ${what} is on screen`)
+  return true
+}
+
+/** Some step of the run is of this type (the trace the stage screenshots). */
+export function expectStep(r, pattern, what = 'step') {
+  const re = pattern instanceof RegExp ? pattern : new RegExp(pattern, 'i')
+  const found = (r?.steps || []).some((s) => re.test(`${s.step_type}:${s.node_id || ''}`))
+  return expect(found, `${what} — a step matching ${re} is in the trace (${steps(r)})`)
+}
+
 // ── transcript ────────────────────────────────────────────────────────
 let current = null
 export function stageStart(name) {
   const dir = path.join(SHOTS, name)
+  // clear before capturing: the directory used to be created and never
+  // emptied, so a stage whose frame names carry run-dependent values (35
+  // puts the schema version in each filename) accumulated frames across
+  // re-runs and publish copied all of them — that is where the eight stale
+  // PNGs in the published stage-35 tree came from. A stage owns its capture
+  // directory; the previous run's frames are not evidence for this one.
+  fs.rmSync(dir, { recursive: true, force: true })
   fs.mkdirSync(dir, { recursive: true })
   current = { name, dir, lines: [], t0: Date.now(), n: 0 }
   log(`# ${name} — ${new Date().toISOString()}`)
@@ -105,8 +195,27 @@ export async function waitRun(runId, statuses = ['completed', 'failed', 'cancell
     await sleep(1000)
   }
   const r = await run(runId)
-  log(`run ${runId} still ${r?.status} after ${timeoutS}s (wait timed out)`)
-  return r
+  // a timeout is a FAILED wait, not a result: resolving here is what let a
+  // stage log "still running" and carry on asserting nothing
+  log(`ASSERTION FAILED: run ${runId} still ${r?.status} after ${timeoutS}s`)
+  throw new AcceptanceFailure(
+    `run ${runId} did not reach ${statuses.join('|')} within ${timeoutS}s (still ${r?.status})`,
+  )
+}
+
+/**
+ * The same wait, for a stage that is deliberately checking a run does NOT
+ * settle inside a window (it is parked on a gate, or stopped). Returns the
+ * run either way, never throws on the timeout.
+ */
+export async function pollRun(runId, statuses = ['completed', 'failed', 'cancelled'], timeoutS = 30) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeoutS * 1000) {
+    const r = await run(runId)
+    if (r && statuses.includes(r.status)) return r
+    await sleep(1000)
+  }
+  return await run(runId)
 }
 
 export function steps(r, n = 16) {
@@ -211,7 +320,12 @@ export async function setTheme(page, theme) {
 
 /** Start a fresh conversation on the Chat page (already navigated). */
 export async function newConversation(page) {
-  await page.getByRole('button', { name: '+ New conversation' }).click().catch(() => {})
+  const btn = page.getByRole('button', { name: '+ New conversation' })
+  // an explicit branch, not a swallowed click: on the chat home with no
+  // conversations yet the composer IS a fresh conversation and the button
+  // is not rendered
+  if (await btn.count()) await btn.first().click()
+  else log('no "+ New conversation" button — the empty chat home is already a fresh conversation')
   await page.waitForTimeout(400)
 }
 
@@ -224,11 +338,15 @@ export async function askAndSettle(page, text, { approve = true, timeoutS = 300,
   await sendChat(page, text)
   await page.waitForTimeout(2000)
   const r = (await get('/runs?limit=1')).json[0]
+  if (!r?.id) throw new AcceptanceFailure(`no run appeared after sending: ${text.slice(0, 80)}`)
   if (approve) {
     const gate = page.getByText('HUMAN APPROVAL REQUIRED').first()
     const armed = await Promise.race([
+      // both halves are deliberate PROBES — "did a gate arm before the run
+      // settled?" — so neither may throw. pollRun, not waitRun: a run that
+      // is still going after gateWaitS is the answer, not a failure.
       gate.waitFor({ timeout: gateWaitS * 1000 }).then(() => true).catch(() => false),
-      waitRun(r.id, ['completed', 'failed', 'cancelled'], gateWaitS).then((x) => (x && ['completed', 'failed', 'cancelled'].includes(x.status) ? false : null)),
+      pollRun(r.id, ['completed', 'failed', 'cancelled'], gateWaitS).then((x) => (x && ['completed', 'failed', 'cancelled'].includes(x.status) ? false : null)),
     ])
     if (armed) {
       if (answerForm) await answerForm(page)

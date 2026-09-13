@@ -6,11 +6,11 @@ registries via the three registry middlewares; spin_worker covers rung 4 and
 use_full_catalog is the logged fallback escalation.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolCallId, StructuredTool
 
 from app.db import get_checkpointer, get_session_factory
 from app.factory.worker import _usage_from_messages, resolve_node_model
@@ -26,7 +26,11 @@ logger = structlog.get_logger("orchestrator.agentic")
 
 
 def _spin_worker_tool() -> StructuredTool:
-    async def spin_worker(skill_ids: list[str], task: str) -> str:
+    async def spin_worker(
+        skill_ids: list[str],
+        task: str,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ) -> str:
         """Build a one-off ephemeral worker over registry skills (rung-4
         fallback) and run it on the task. skill_ids MUST be registry skill
         ids (uuids) exactly as shown in the Available skills catalog — never
@@ -46,9 +50,12 @@ def _spin_worker_tool() -> StructuredTool:
             kind="dynamic",
             source="dynamic",
         )
-        # unique node id per spin: parallel workers must not share the
-        # checkpoint thread ("agentic:spin_worker" would collide)
-        node_id = f"agentic:{resolution.payload.get('callsign', 'spin_worker')}"
+        # unique node id per spin, keyed on the TOOL CALL rather than the
+        # callsign. Callsigns come from a per-run counter that restarts at
+        # `worker-alpha` when a HITL resume builds a fresh RunContext, so a
+        # second worker resumed after a gate adopted the FIRST worker's
+        # completed thread and returned its answer, orphaning its own.
+        node_id = f"agentic:spin:{tool_call_id or resolution.payload.get('callsign', 'worker')}"
         result = await execute_resolution(resolution, task, node_id)
         if result.get("status") == "denied":
             # the worker's text already carries the human reviewer's verdict
@@ -65,7 +72,19 @@ def _use_full_catalog_tool() -> StructuredTool:
         """Unlock every active tool and skill in the registry for the rest of
         this run (fallback escalation — use only when the exposed selection
         cannot cover the request)."""
+        from app.registry_cache import get_cache
+
         ctx = require_run_context()
+        # §7.0: `orchestrator_full_fallback_enabled` gates this escalation.
+        # Graph mode honours it in two places; agentic mode never read it, so
+        # with the setting OFF a steered model could still call this and make
+        # every deliberately-hidden tool in the registry callable.
+        if not bool(await get_cache().setting("orchestrator_full_fallback_enabled")):
+            return (
+                "The full-catalog fallback is switched off for this deployment. "
+                "Work with the capabilities you were given, or say plainly that "
+                "none of them covers the request."
+            )
         ctx.flags.full_catalog = True
         await ctx.recorder.record_route(
             capability={"type": "full_catalog"},
@@ -89,6 +108,15 @@ async def build_agentic_agent() -> Any:
 
     stack = build_middleware_stack(AgenticLoopContext(model=model, max_tool_iterations=max_iter))
     checkpointer = await get_checkpointer()
+    # §7.0: the escalation tool is not even registered when its gate is off,
+    # so the model is never shown a capability it would be refused
+    full_fallback_on = True
+    try:
+        from app.registry_cache import get_cache
+
+        full_fallback_on = bool(await get_cache().setting("orchestrator_full_fallback_enabled"))
+    except Exception:  # noqa: BLE001 — a settings hiccup keeps the shipped default
+        full_fallback_on = True
     # spec §16.3: the concierge system prompt carries the remembered-context
     # block for this run's task — fail-open, empty when memory is off
     from app.memory.inject import build_memory_block
@@ -103,7 +131,11 @@ async def build_agentic_agent() -> Any:
     system_prompt = load_prompt("concierge") + (f"\n\n{memory_block}" if memory_block else "")
     return create_agent(
         model,
-        tools=[_spin_worker_tool(), _use_full_catalog_tool()],
+        tools=(
+            [_spin_worker_tool(), _use_full_catalog_tool()]
+            if full_fallback_on
+            else [_spin_worker_tool()]
+        ),
         system_prompt=system_prompt,
         middleware=stack,
         checkpointer=checkpointer,

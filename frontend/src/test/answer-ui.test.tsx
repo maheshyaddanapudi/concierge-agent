@@ -201,6 +201,112 @@ describe('ChartSvg kinds (spec §7.1)', () => {
     expect(shaded.length).toBe(2) // only the numeric column shades
   })
 
+  const VIEW_H = 200 // the chart viewBox: anything drawn outside is invisible
+
+  /** Marks the browser would reject (NaN/negative size) or never show
+   * (drawn off the bottom of the viewBox — where a zero-baseline scale
+   * puts every negative value). */
+  const brokenGeometry = (container: HTMLElement): string[] => {
+    const broken: string[] = []
+    for (const el of Array.from(
+      container.querySelectorAll('svg rect, svg circle, svg line, svg polyline, svg polygon'),
+    )) {
+      const num = (a: string) => {
+        const v = el.getAttribute(a)
+        return v == null ? null : Number(v)
+      }
+      for (const a of ['width', 'height', 'r']) {
+        const v = num(a)
+        if (v != null && (!Number.isFinite(v) || v < 0)) broken.push(`${el.tagName}.${a}=${v}`)
+      }
+      const ys = ['y', 'y1', 'y2', 'cy'].map(num).filter((v): v is number => v != null)
+      ys.push(
+        ...(el.getAttribute('points') ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((p) => Number(p.split(',')[1])),
+      )
+      for (const y of ys) {
+        if (!Number.isFinite(y) || y < 0 || y > VIEW_H)
+          broken.push(`${el.tagName} y=${y} outside the viewBox`)
+      }
+      const xs = ['x', 'x1', 'x2', 'cx'].map(num).filter((v): v is number => v != null)
+      for (const x of xs) if (!Number.isFinite(x)) broken.push(`${el.tagName} x=${x}`)
+    }
+    return broken
+  }
+
+  it('scales negative values instead of drawing nothing (item 7)', () => {
+    // a series that crosses zero: every scaled kind must draw real geometry
+    // on both sides of the baseline, none of it negative-sized or NaN
+    const kinds = [
+      'bar', 'hbar', 'line', 'area', 'lollipop', 'stacked_bar', 'stacked_area', 'combo',
+    ] as const
+    for (const kind of kinds) {
+      const { container } = render(
+        <ChartSvg
+          spec={{
+            kind,
+            title: 'N',
+            labels: ['a', 'b', 'c'],
+            series: [{ name: 's', values: [-40, 10, 30] }],
+          }}
+        />,
+      )
+      expect(brokenGeometry(container), `${kind}: ${brokenGeometry(container).join(', ')}`).toEqual(
+        [],
+      )
+      const drawn = container.querySelectorAll('svg rect, svg polyline, svg polygon, svg circle')
+      expect(drawn.length, `${kind} drew nothing`).toBeGreaterThan(0)
+    }
+  })
+
+  it('an all-negative series still renders (item 7)', () => {
+    const { container } = render(
+      <ChartSvg
+        spec={{ kind: 'bar', title: 'N', labels: ['a', 'b'], series: [{ name: 's', values: [-5, -12] }] }}
+      />,
+    )
+    const bars = Array.from(container.querySelectorAll('rect')).filter(
+      (r) => Number(r.getAttribute('height')) > 0,
+    )
+    expect(bars.length).toBe(2)
+    expect(brokenGeometry(container)).toEqual([])
+  })
+
+  it('non-finite values and absurd series lengths never reach the maths (item 7)', () => {
+    const huge = Array.from({ length: 20000 }, (_, i) => i)
+    const { container } = render(
+      <ChartSvg
+        spec={
+          {
+            kind: 'line',
+            title: 'X',
+            labels: huge.map(String),
+            series: [{ name: 's', values: huge.map((v) => (v % 3 === 0 ? NaN : v)) }],
+          } as never
+        }
+      />,
+    )
+    expect(container.querySelector('svg')).not.toBeNull()
+    expect(brokenGeometry(container)).toEqual([])
+  })
+
+  it('a garbage tool chart renders nothing instead of blanking the panel (item 6)', () => {
+    const { container } = render(
+      <AnswerBlock
+        markdown="the raw answer survives"
+        payload={{ a2ui: a2uiSegment('structured body', 'g1'), presentation: 'raw_first', coverage: 100 }}
+        toolCharts={[{ kind: 'radar', labels: 'not-an-array', series: null }, CHART]}
+      />,
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('the raw answer survives')
+    // the valid one still renders; the malformed one draws nothing at all
+    expect(text).toContain('Mid-flow chart')
+    expect(brokenGeometry(container)).toEqual([])
+  })
+
   it('thins dense date labels and drops the year after the first tick', () => {
     const labels = Array.from({ length: 30 }, (_, i) =>
       `2026-08-${String(i + 1).padStart(2, '0')}`,

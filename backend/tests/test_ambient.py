@@ -107,15 +107,15 @@ async def test_kill_switch_per_routine_hour() -> None:
         session.add(routine)
         await session.commit()
         await session.refresh(routine)
-    old = ambient_store.RULE_KILL_SWITCH_PER_HOUR
-    ambient_store.RULE_KILL_SWITCH_PER_HOUR = 3
-    try:
-        for i in range(3):
-            assert await emit_event(kind=f"e{i}", source="webhook", routine_id=routine.id)
-        with pytest.raises(ChainGuardError, match="kill switch"):
-            await emit_event(kind="e3", source="webhook", routine_id=routine.id)
-    finally:
-        ambient_store.RULE_KILL_SWITCH_PER_HOUR = old
+    # the cap is the operator's setting, not a module constant: lowering it in
+    # Settings must actually lower it (it used to display 20 and enforce 50).
+    assert not hasattr(ambient_store, "RULE_KILL_SWITCH_PER_HOUR")
+    async with get_session_factory()() as session:
+        await update_settings(session, {"ambient_routine_events_per_hour": 3})
+    for i in range(3):
+        assert await emit_event(kind=f"e{i}", source="webhook", routine_id=routine.id)
+    with pytest.raises(ChainGuardError, match="cap 3"):
+        await emit_event(kind="e3", source="webhook", routine_id=routine.id)
 
 
 # ── drain (spec §17.2) ───────────────────────────────────────────────

@@ -39,8 +39,14 @@ graph TB
   anthropic["Anthropic API"]
   google["Google Gemini API"]
   openai["OpenAI API"]
+  openrouter["OpenRouter<br>(one key, many vendors)"]
+  gateway["Custom OpenAI-compatible gateway<br>CUSTOM_GATEWAY_*"]
   mcpstdio["MCP servers — stdio<br>(subprocesses, e.g. fetch, filesystem)"]
   mcphttp["MCP servers — streamable HTTP<br>(remote endpoints)"]
+  a2a["Remote A2A agents (§19)<br>Agent Card + tasks, outbound only"]
+  feeds["Poll sources (§18.3)<br>http_json / rss endpoints"]
+  smtp["SMTP sink (§18.4)<br>digest email"]
+  hook["Webhook sink (§18.4)<br>AMBIENT_WEBHOOK_URL"]
   langsmith["LangSmith (optional)<br>local or remote endpoint"]
   otel["OTel collector (optional)"]
 
@@ -49,13 +55,21 @@ graph TB
   app -->|"chat + embeddings calls (HTTPS)"| anthropic
   app -->|"chat + embeddings calls (HTTPS)"| google
   app -->|"chat + embeddings calls (HTTPS)"| openai
+  app -->|"chat calls (HTTPS)"| openrouter
+  app -->|"chat calls (HTTPS)"| gateway
   app -->|"JSON-RPC over stdio"| mcpstdio
   app -->|"JSON-RPC over streamable HTTP"| mcphttp
+  app -->|"A2A JSON-RPC: card, tasks/send, tasks/get, tasks/cancel"| a2a
+  app -->|"scheduled polls"| feeds
+  app -->|"SMTP"| smtp
+  app -->|"HTTP POST envelope"| hook
   app -->|"run traces (HTTPS)"| langsmith
   app -->|"OTLP/HTTP spans"| otel
 ```
 
-Provider API keys enter only as environment variables (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`) read by `backend/app/config.py` — never stored in the database or exposed through the UI. A key's presence is what enables its provider in the Settings model selects (`is_configured()` per adapter). A scriptable fake provider (`backend/app/llm/fake.py`, `fake:scripted`, gated by `FAKE_LLM_ENABLED`) makes the whole stack runnable with no keys at all.
+Everything on the right-hand side except the two observability sinks and the four provider APIs is reached **only** through `app/egress.py` (`EGRESS_POLICY`, M52): A2A cards and calls, poll sources, HTTP MCP servers and the webhook channel are all fetched on someone else's say-so, so each URL is judged by literal address and by resolution, every redirect hop is re-checked, and bodies stream under `EGRESS_MAX_BYTES`. Outbound A2A is **outbound only** — nothing calls in.
+
+Provider API keys enter only as environment variables — `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, **`OPENROUTER_API_KEY`**, and the custom gateway's **`CUSTOM_GATEWAY_BASE_URL` / `_API_KEY` / `_MODELS`** — read by `backend/app/config.py` and never stored in the database or exposed through the UI. (The other secrets on the same rule: `LANGSMITH_API_KEY`, `SMTP_PASSWORD`, `AMBIENT_WEBHOOK_URL`, `REDIS_URL`, `DATABASE_URL` — see [../security.md](../security.md).) A key's presence is what enables its provider in the Settings model selects (`is_configured()` per adapter). A scriptable fake provider (`backend/app/llm/fake.py`, `fake:scripted`, gated by `FAKE_LLM_ENABLED`) makes the whole stack runnable with no keys at all.
 
 ## Containers (C4 level 2)
 
@@ -87,7 +101,7 @@ graph TB
 
 Container notes, from the code:
 
-- **frontend** — a multi-stage Dockerfile (`frontend/Dockerfile`) builds the Vite app and serves it with nginx. `frontend/nginx.conf` proxies `/api/` to `backend:8000` with `proxy_buffering off` and a one-hour read timeout so SSE streams survive, and proxies `/metrics` for Prometheus scrapes. The UI is seven pages (`frontend/src/pages/`): Chat, MCP Servers, Tools, Skills, Sub Agents, Runs, Settings.
+- **frontend** — a multi-stage Dockerfile (`frontend/Dockerfile`) builds the Vite app and serves it with nginx. `frontend/nginx.conf` proxies `/api/` to `backend:8000` with `proxy_buffering off` and a one-hour read timeout so SSE streams survive, and proxies `/metrics` for Prometheus scrapes. The UI is **eleven** pages (`frontend/src/pages/`): Chat, MCP Servers, Remote Agents, Tools, Skills, Sub Agents, Runs, Evals, Memory, Ambient, Settings — Remote Agents and Ambient appear in the nav only while `a2a_enabled` / `ambient_enabled` are on. Since M54 nginx resolves `backend` per request through Docker's DNS, so replicas join and leave under `--scale` without a restart; since the hardening wave its listener is on **8080**, not 80, so the container runs unprivileged (the published host port is unchanged).
 - **backend** — one FastAPI process (`backend/app/main.py`). Runs are `asyncio.Task`s in the same process (`start_run_task` in `backend/app/orchestrator/runner.py`); there is no broker, queue, or worker pool. Startup lifecycle: Alembic `upgrade head` → seed load → checkpointer table setup → registry cache warm-up → MCP manager reconnect (non-blocking) → embedding backfill (non-blocking).
 - **db** — the only mandatory stateful service. The backend opens two connection paths: an async SQLAlchemy engine over `asyncpg` (`backend/app/db.py:get_engine`) for application tables, and a `psycopg` `AsyncConnectionPool` for LangGraph's `AsyncPostgresSaver` checkpointer (`backend/app/db.py:get_checkpointer`), which creates its own checkpoint tables.
 - **redis** — exists solely as an alternative backend for the registry cache (`backend/app/registry_cache.py`); enabled with `docker compose --profile redis up` plus `REDIS_URL`. Execution never depends on Redis.
@@ -98,8 +112,8 @@ Container notes, from the code:
 ```mermaid
 graph TB
   subgraph api["API layer — backend/app/api, mounted at /api/v1"]
-    routers["Routers: chat, runs, tools, skills, sub_agents,<br>mcp_servers, settings, cache, seed, fake_llm"]
-    sse["SSE endpoint<br>GET /chat/stream/{run_id}"]
+    routers["17 router modules / 20 mounted routers:<br>chat, runs, tools, skills, sub_agents, mcp_servers,<br>remote_agents, memories, routines(+presence), ambient(×3),<br>evals, auth, settings, ops, cache, seed, fake_llm"]
+    sse["SSE endpoints<br>GET /chat/stream/{run_id} · GET /ambient/stream"]
   end
 
   subgraph orch["Orchestrator — backend/app/orchestrator"]
@@ -195,7 +209,7 @@ graph TB
 
   subgraph net["compose network"]
     frontend["frontend<br>nginx :80 in-container<br>published FRONTEND_PORT (default 5173)"]
-    backend["backend<br>uvicorn :8000<br>published BACKEND_PORT (default 8000)"]
+    backend["backend<br>uvicorn :8000<br>published from BACKEND_PORT_RANGE (default 8000-8010)"]
     db[("db — postgres:16<br>no published port")]
     redis[("redis — redis:7-alpine<br>profile 'redis' only<br>published 127.0.0.1:6379")]
   end
@@ -205,7 +219,7 @@ graph TB
   envfile[".env — API keys and config"]
 
   host -->|"FRONTEND_PORT:80"| frontend
-  host -->|"BACKEND_PORT:8000"| backend
+  host -->|"BACKEND_PORT_RANGE → 8000"| backend
   frontend -->|"depends_on"| backend
   backend -->|"depends_on: service_healthy (pg_isready)"| db
   db --- pgdata
@@ -216,7 +230,7 @@ graph TB
   backend -.->|"REDIS_URL, only with --profile redis"| redis
 ```
 
-- **Ports.** `frontend` publishes `${FRONTEND_PORT:-5173}:80`; `backend` publishes `${BACKEND_PORT:-8000}:8000`; `db` publishes nothing; `redis` (profile only) binds `127.0.0.1:6379:6379`.
+- **Ports.** `frontend` publishes `${FRONTEND_PORT:-5173}:8080` (its nginx listens on 8080 so the container can run unprivileged); `backend` publishes the **range** `${BACKEND_PORT_RANGE:-8000-8010}:8000`, one host port per replica under `--scale backend=N`; `db` publishes nothing; `redis` (profile only) binds `127.0.0.1:6379:6379`. `BACKEND_PORT` is *not* the published port — it is the port the backend is reached on outside compose (the fast dev loop's `uvicorn --port`, `VITE_API_BASE_URL`); the lifecycle scripts ask `docker compose port backend 8000` instead of assuming the two agree.
 - **Volumes.** `pgdata` persists Postgres; `workspace` is mounted at `/workspace` in the backend as the sandbox root for the seeded filesystem MCP server (`WORKSPACE_DIR`).
 - **Env var flow for keys.** Provider, LangSmith, and Redis credentials travel exclusively `.env → compose environment → backend process env → app/config.py`. They are never written to Postgres, never returned by the API, never rendered in the UI. Key presence toggles provider availability at runtime.
 - **Redis profile.** The default stack is three services. `docker compose --profile redis up` plus `REDIS_URL=redis://redis:6379/0` adds the optional cache backend; actually using it remains a Settings decision (`registry_cache_mode=redis`).

@@ -14,6 +14,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.cost import enforce_job_ceiling, job_spend
 from app.db import get_session_factory
 from app.models import Delivery, Run, StandingIntent
 
@@ -70,6 +71,8 @@ async def run_anticipation(now: datetime | None = None) -> list[UUID] | None:
     # it answers to a switch — not only to the hit-rate floor learning it
     if not bool(await get_cache().setting("ambient_anticipation_enabled")):
         return None
+    if not await enforce_job_ceiling("anticipation"):
+        return None
 
     now = now or datetime.now(UTC)
     window_key = f"anticipation:{now.strftime('%Y%m%d%H')}"
@@ -122,7 +125,10 @@ async def run_anticipation(now: datetime | None = None) -> list[UUID] | None:
         watches="\n".join(f"- {w}" for w in watches) or "(none)",
     )
     try:
-        out = await model.with_structured_output(AnticipationOutput).ainvoke(prompt)
+        async with job_spend("anticipation", ref) as cb:
+            out = await model.with_structured_output(AnticipationOutput).ainvoke(
+                prompt, config={"callbacks": cb}
+            )
         if not isinstance(out, AnticipationOutput):
             raise TypeError(f"expected AnticipationOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — anticipation never breaks the tick

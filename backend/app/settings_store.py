@@ -57,8 +57,14 @@ DEFAULTS: dict[str, Any] = {
     "langsmith_endpoint": "",
     "langsmith_project": "concierge-agent",
     "otlp_endpoint": "",
-    # registry cache (spec §7.3)
-    "registry_cache_mode": "bypass",
+    # registry cache (spec §7.3). `memory` is the shipped default
+    # (code_setting_ui_hardening): invalidation is event-driven and
+    # exhaustive — every write path calls invalidate() before returning, and
+    # TTLs are forbidden — so the in-process cache is the mode the design was
+    # built for, while `bypass` re-read the registry from Postgres on every
+    # resolution. `bypass` stays available and remains an instant escape
+    # hatch; it is a live read, not a faster cache.
+    "registry_cache_mode": "memory",
     # progressive-disclosure retrieval (spec §7.4) — dark by default
     "retrieval_enabled": False,
     "retrieval_threshold": 30,
@@ -176,6 +182,17 @@ DEFAULTS: dict[str, Any] = {
     "retention_a2a_tasks_days": 90,
     "retention_auth_sessions_enabled": True,
     "retention_auth_sessions_days": 7,
+    # the run ledger grows with every chat turn, ambient fire and eval case,
+    # and until now only the all-or-nothing §8.7 history purge could trim it.
+    # Same discipline, same shape, born dark: the run summary may outlive its
+    # trace, the trace may outlive its checkpoints, and a queued, running or
+    # paused run is never touched at any age.
+    "retention_runs_enabled": False,
+    "retention_runs_days": 90,
+    "retention_run_steps_enabled": False,
+    "retention_run_steps_days": 30,
+    "retention_checkpoints_enabled": False,
+    "retention_checkpoints_days": 7,
     # M53 MCP reconnection: automatic, with backoff (5 s doubling to 5 min)
     # and a circuit breaker after this many failed attempts; the operator's
     # reconnect button resets the breaker. Its own gate, like every job.
@@ -197,6 +214,9 @@ RETENTION_DAY_KEYS = {
     "retention_pattern_instances_days",
     "retention_a2a_tasks_days",
     "retention_auth_sessions_days",
+    "retention_runs_days",
+    "retention_run_steps_days",
+    "retention_checkpoints_days",
 }
 
 _MODEL_KEYS = {
@@ -278,12 +298,18 @@ _BOOL_KEYS = {
     "retention_pattern_instances_enabled",
     "retention_a2a_tasks_enabled",
     "retention_auth_sessions_enabled",
+    "retention_runs_enabled",
+    "retention_run_steps_enabled",
+    "retention_checkpoints_enabled",
     "mcp_auto_reconnect_enabled",
     "spend_ceiling_enabled",
 }
 _PRESENTATIONS = {"a2ui_first", "raw_first"}
 _CACHE_MODES = {"bypass", "memory", "redis"}
 _STR_KEYS = {"langsmith_endpoint", "langsmith_project", "otlp_endpoint"}
+# string settings that name an outbound host: judged by the egress policy at
+# save time, because what they carry is the API key and the whole trace body.
+_ENDPOINT_KEYS = {"langsmith_endpoint", "otlp_endpoint"}
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 
 
@@ -362,6 +388,12 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
     for key, value in updates.items():
         if key not in DEFAULTS:
             errors.append(f"unknown setting {key!r}")
+            continue
+        if isinstance(value, bool) and key not in _BOOL_KEYS:
+            # `True` is an `int` in Python, so every numeric range check below
+            # would accept it: `mcp_health_interval_s: true` became a 1-second
+            # tick. A boolean is only ever a value for a boolean key.
+            errors.append(f"{key} must not be a boolean")
             continue
         if key == "orchestrator_mode" and value not in {"graph", "agentic"}:
             errors.append("orchestrator_mode must be 'graph' or 'agentic'")
@@ -501,11 +533,18 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
         elif key in {"ambient_digest_times", "ambient_quiet_hours"}:
             import re as _re
 
+            # the old pattern accepted hours 00-29, and the consumer raises on
+            # `replace(hour=29)` OUTSIDE its try — one typo killed the whole
+            # delivery stage on every tick, forever and silently.
             ok = isinstance(value, list) and all(
-                isinstance(v, str) and _re.fullmatch(r"[0-2]\d:[0-5]\d", v) for v in value
+                isinstance(v, str) and _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v) for v in value
             )
             if not ok:
-                errors.append(f"{key} must be a list of HH:MM strings")
+                errors.append(f"{key} must be a list of HH:MM strings (00:00-23:59)")
+            elif key == "ambient_quiet_hours" and len(value) not in (0, 2):
+                # a list of any other length silently disabled quiet hours
+                # while the UI went on showing the value the operator set.
+                errors.append("ambient_quiet_hours must be exactly two HH:MM strings (or empty)")
         elif key == "memory_half_life_days" and (
             not isinstance(value, int | float) or float(value) <= 0
         ):
@@ -530,6 +569,20 @@ def validate_updates(current: dict[str, Any], updates: dict[str, Any]) -> list[s
             errors.append(f"{key} must be a boolean")
         elif key in _STR_KEYS and not isinstance(value, str):
             errors.append(f"{key} must be a string")
+        elif key in _ENDPOINT_KEYS and isinstance(value, str) and value.strip():
+            # these two settings send the API key and the full trace body to
+            # whatever host they name. "" disables; anything else is judged by
+            # the same egress policy every other outbound call answers to.
+            from app.egress import EgressError, check_url_static
+
+            try:
+                check_url_static(value.strip())
+            except EgressError as exc:
+                errors.append(f"{key}: {exc}")
+        elif key == "default_model" and value is None:
+            # every other role falls back to this one; clearing it makes
+            # get_model("None") the next thing that happens everywhere.
+            errors.append("default_model cannot be cleared — it is the fallback for every role")
         elif key in _MODEL_KEYS and value is not None and not isinstance(value, str):
             errors.append(f"{key} must be a 'provider:model' string or null")
         elif key in _PARAMS_KEYS and value is not None and not isinstance(value, dict):

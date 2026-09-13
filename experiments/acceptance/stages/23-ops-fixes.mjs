@@ -20,7 +20,7 @@ const ckpt = (runId) =>
     ? sql(`select (select count(*) from checkpoints where thread_id='${runId}')||'/'||(select count(*) from checkpoint_writes where thread_id='${runId}')||'/'||(select count(*) from checkpoint_blobs where thread_id='${runId}')`)
     : sql(`select (select count(*) from checkpoints)||'/'||(select count(*) from checkpoint_writes)||'/'||(select count(*) from checkpoint_blobs)`)
 
-export default async function ({ page, nav, shot, settings, get, log, closeDrawer, click, newConversation, askAndSettle }) {
+export default async function ({ page, nav, shot, settings, get, log, closeDrawer, click, newConversation, askAndSettle, expect, expectEq, expectStatus }) {
   const initial = (await get('/settings')).json
   await nav(page, 'settings')
 
@@ -31,6 +31,7 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   await otlp.blur()
   await page.waitForTimeout(1000)
   log(`otlp_endpoint → ${(await get('/settings')).json.otlp_endpoint}`)
+  expectEq((await get('/settings')).json.otlp_endpoint, 'http://otel-collector:4318', 'the OTLP endpoint took, live')
   await shot(page, '02-otlp-endpoint-set')
 
   // log level, live
@@ -38,6 +39,7 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   await level.selectOption('DEBUG')
   await page.waitForTimeout(1000)
   log(`log_level → ${(await get('/settings')).json.log_level}`)
+  expectEq((await get('/settings')).json.log_level, 'DEBUG', 'the log level took, live')
   await shot(page, '03-debug-selected-visible')
   await settings({ otlp_endpoint: initial.otlp_endpoint ?? '', log_level: initial.log_level })
   log(`restored otlp_endpoint='${initial.otlp_endpoint}' log_level=${initial.log_level}`)
@@ -46,9 +48,13 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   await nav(page, '')
   await newConversation(page)
   const done = await askAndSettle(page, 'Use the sitefiles add tool to add 5 and 6 and answer with the number only.')
+  expectStatus(done, 'completed', 'the run to be deleted')
   const before = ckpt(done.id)
   const totalBefore = ckpt(null)
   log(`checkpoints/writes/blobs for run ${done.id.slice(0, 8)}: ${before ?? 'db not reachable'}; totals: ${totalBefore ?? '-'}`)
+  // the db container is optional evidence; when it IS reachable the run must
+  // have left checkpoints behind for the delete to have anything to clean
+  if (before !== null) expect(before !== '0/0/0', `the run left LangGraph checkpoints (${before})`)
   await nav(page, 'runs')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(1200)
@@ -56,7 +62,11 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   await click(page, 'Delete')
   await page.waitForTimeout(1500)
   const after = ckpt(done.id)
-  log(`after the per-run delete: run → HTTP ${(await get(`/runs/${done.id}`)).status}; checkpoints/writes/blobs: ${after ?? 'db not reachable'}; totals: ${ckpt(null) ?? '-'}`)
+  const gone = (await get(`/runs/${done.id}`)).status
+  log(`after the per-run delete: run → HTTP ${gone}; checkpoints/writes/blobs: ${after ?? 'db not reachable'}; totals: ${ckpt(null) ?? '-'}`)
+  // the fix this stage is named for: deleting a run also drops ITS checkpoints
+  expectEq(gone, 404, 'the run is gone')
+  if (after !== null) expectEq(after, '0/0/0', "…and so are the run's checkpoints, writes and blobs")
   await shot(page, '05-after-per-run-delete')
 
   // purge → empty
@@ -66,7 +76,9 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   page.once('dialog', (d) => void d.accept())
   await purge.click()
   await page.waitForTimeout(2500)
-  log(`after purge: runs=${(await get('/runs?limit=5')).json.length}; checkpoint totals: ${ckpt(null) ?? '-'}`)
+  const left = (await get('/runs?limit=5')).json.length
+  log(`after purge: runs=${left}; checkpoint totals: ${ckpt(null) ?? '-'}`)
+  expectEq(left, 0, 'the purge left the Runs table empty')
   await nav(page, 'runs')
   await shot(page, '06-runs-empty-post-purge')
 }

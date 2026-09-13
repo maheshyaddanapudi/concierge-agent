@@ -480,25 +480,38 @@ async def reap_stalled_runs(now: datetime | None = None, stall_after_s: int | No
                 )
             ).scalars()
         )
-        for run in stale:
-            run.status = "stalled"
-            run.error = f"stalled: no heartbeat for over {stall_after_s}s"
-            run.finished_at = now
-        await session.commit()
-    for run in stale:
-        task = RUNNING_TASKS.get(run.id)
+        # the reaper used to write `stalled` straight onto the row and stop
+        # there, so a stalled run kept `running` steps, was never priced, and
+        # sent no terminal notification — which is why a stream opened on one
+        # stayed open until the client gave up. Route it through the same
+        # finalisation every other terminal path uses.
+        reaped = [
+            (run.id, run.orchestrator_mode or "graph", dict(run.trigger or {})) for run in stale
+        ]
+    for run_id, _mode, _trigger in reaped:
+        task = RUNNING_TASKS.get(run_id)
         if task is not None and not task.done():
             task.cancel()
-        routine_id = (run.trigger or {}).get("routine_id")
+    from app.orchestrator.runner import _finalize_failure
+
+    for run_id, run_mode, _trigger in reaped:
+        await _finalize_failure(
+            run_id,
+            run_mode,
+            "stalled",
+            f"stalled: no heartbeat for over {stall_after_s}s",
+        )
+    for run_id, _mode, trigger in reaped:
+        routine_id = trigger.get("routine_id")
         if routine_id:
             async with get_session_factory()() as session:
                 routine = await session.get(Routine, UUID(str(routine_id)))
                 if routine is not None and routine.status == "active":
                     routine.status = "paused"
-                    routine.status_reason = f"auto-paused: run {run.id} stalled (no heartbeat)"
+                    routine.status_reason = f"auto-paused: run {run_id} stalled (no heartbeat)"
                     await session.commit()
         from app import obs
 
         obs.AMBIENT_OPS.labels(kind="stall", status="reaped").inc()
-        logger.warning("ambient_run_stalled", tier="ambient", kind="stall", run_id=str(run.id))
+        logger.warning("ambient_run_stalled", tier="ambient", kind="stall", run_id=str(run_id))
     return len(stale)

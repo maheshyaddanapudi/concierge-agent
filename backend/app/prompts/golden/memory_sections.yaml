@@ -1,0 +1,22 @@
+# Golden set for memory_sections.md (spec §16.3): the five headings of the
+# remembered-context block, in render order.
+#
+# They are model-facing text — they tell the model what each group of lines
+# IS — so they live with the block rather than as literals in the injector.
+# The instructions heading used to read "follow them" inside a block whose own
+# header says the content is never instructions to follow; the assertion below
+# is what keeps that contradiction from coming back.
+consumer: app/memory/inject.py
+render: format
+cases:
+  - name: five_headings_in_order
+    vars: {}
+    must_contain:
+      - "Pinned profile"
+      - "Standing instructions the user approved"
+      - "the current request still wins"
+      - "Relevant memories"
+      - "Similar past episodes (other conversations)"
+      - "Community context (related-entity summaries)"
+    must_not_contain:
+      - "follow them"

@@ -173,6 +173,12 @@ async def _request_hook(request: httpx.Request) -> None:
     await check_url(str(request.url))  # a refusal counts and logs itself
 
 
+def request_hook() -> Callable[[httpx.Request], Any]:
+    """The policy hook, for a client this module does not build itself — the
+    OAuth2 token client, whose construction authlib owns."""
+    return _request_hook
+
+
 def client(
     *,
     timeout: float = 20.0,

@@ -24,29 +24,35 @@ async function setInt(page, label, value, key, { settings, get, log }) {
   }
 }
 
-async function quickRun(page, ctx, mode) {
-  const { settings, get, sendChat, waitRun, steps, log, nav } = ctx
+async function quickRun(page, ctx, mode, what) {
+  const { settings, get, sendChat, waitRun, pollRun, steps, log, nav, newConversation, expectStatus, expectMatch } = ctx
   await settings({ orchestrator_mode: mode })
   await nav(page, '')
-  await page.getByRole('button', { name: '+ New conversation' }).click().catch(() => {})
-  await page.waitForTimeout(400)
+  await newConversation(page)
   await sendChat(page, ASK)
   await page.waitForTimeout(2000)
   const r = (await get('/runs?limit=1')).json[0]
   const gate = page.getByText('HUMAN APPROVAL REQUIRED').first()
+  // both halves are deliberate probes — "did a gate arm before the run
+  // settled?" — so pollRun, which does not throw on its window expiring
   const armed = await Promise.race([
+    // (see the note above: both halves of this race are probes)
     gate.waitFor({ timeout: 40000 }).then(() => true).catch(() => false),
-    waitRun(r.id, ['completed', 'failed', 'cancelled'], 40).then(() => false).catch(() => false),
+    pollRun(r.id, ['completed', 'failed', 'cancelled'], 40).then(() => false),
   ])
   if (armed) await page.getByRole('button', { name: /✓ Approve/ }).first().click()
   const done = await waitRun(r.id, ['completed', 'failed', 'cancelled'], 300)
   await page.waitForTimeout(1200)
   log(`${mode} run → ${done.status}; answer: ${(done.final_answer || '').slice(0, 80)}; steps: ${steps(done)}`)
+  // every cache mode and retrieval setting in this stage must still produce
+  // a WORKING run — that is the whole claim of switching them
+  expectStatus(done, 'completed', `${mode} run ${what}`)
+  expectMatch(done.final_answer, /42/, `${mode} run ${what} answered correctly`)
   return done
 }
 
 export default async function (ctx) {
-  const { page, nav, shot, settings, get, post, log } = ctx
+  const { page, nav, shot, settings, get, post, log, expect, expectEq } = ctx
   const initial = (await get('/settings')).json
   const status = async () => (await get('/cache/status')).json
   const gens = (s) => Object.entries(s.registries).map(([k, v]) => `${k}:g${v.generation}${v.records != null ? '/' + v.records : ''}`).join(' ')
@@ -60,16 +66,19 @@ export default async function (ctx) {
   await settings({ registry_cache_mode: 'bypass', default_model_params: null })
   await cacheSection()
   log(`bypass: ${(await status()).mode} ${gens(await status())}`)
+  expectEq((await status()).mode, 'bypass', 'the cache reports bypass mode')
   await shot(page, '00-cache-bypass-status')
   await page.getByRole('button', { name: 'memory', exact: true }).first().click()
   await page.waitForTimeout(1500)
   const mem = await status()
   log(`memory: ${mem.mode} ${gens(mem)}`)
+  // the mode button in the UI wrote it, not just the API
+  expectEq(mem.mode, 'memory', 'the Settings button switched the cache to memory mode')
   await shot(page, '01-cache-memory-live')
 
-  await quickRun(page, ctx, 'graph')
+  await quickRun(page, ctx, 'graph', 'in memory cache mode')
   await shot(page, '02-graph-run-memory-mode')
-  await quickRun(page, ctx, 'agentic')
+  await quickRun(page, ctx, 'agentic', 'in memory cache mode')
   await shot(page, '03-agentic-run-memory-mode')
 
   // a registry write bumps the skills generation
@@ -81,6 +90,8 @@ export default async function (ctx) {
   await page.waitForTimeout(800)
   const g1 = (await status()).registries.skills.generation
   log(`skills generation after a write: ${g0} → ${g1}`)
+  // §7.3: a registry write must invalidate the cached projection
+  expect(g1 > g0, `a registry write bumped the skills generation (${g0} → ${g1})`)
   await cacheSection()
   await shot(page, '04-generation-bumped')
   await page.getByRole('button', { name: /Refresh all caches/ }).first().click()
@@ -97,15 +108,19 @@ export default async function (ctx) {
   await setInt(page, 'Top K', 1, 'retrieval_top_k', ctx)
   const rs = (await get('/settings')).json
   log(`retrieval: enabled=${rs.retrieval_enabled} threshold=${rs.retrieval_threshold} top_k=${rs.retrieval_top_k} embedding_model=${rs.embedding_model}`)
+  expectEq(rs.retrieval_enabled, true, 'top-K retrieval is on')
+  expectEq(rs.retrieval_top_k, 1, '…with top-K 1, so the catalog is really truncated')
   await page.getByText('Retrieval (progressive disclosure)', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
   await shot(page, '06-retrieval-enabled')
-  await quickRun(page, ctx, 'graph')
+  await quickRun(page, ctx, 'graph', 'with top-K retrieval truncating the catalog')
   await shot(page, '07-run-with-retrieval-active')
   try {
     const line = execSync(`docker logs --since 3m ${CONTAINER} 2>&1 | grep -a retrieval_truncated_catalog | tail -n 2`, { encoding: 'utf8' }).trim()
     log(line ? `backend log: ${line.slice(0, 400)}` : 'backend log: no retrieval_truncated_catalog line in the last 3 minutes')
   } catch {
+    // corroboration only: the run assertion above is the proof, the log line
+    // is the nice-to-have when the container happens to be reachable
     log('backend log not reachable from this host — retrieval truncation not corroborated here')
   }
   await settings({ retrieval_enabled: initial.retrieval_enabled, retrieval_threshold: initial.retrieval_threshold, retrieval_top_k: initial.retrieval_top_k })
@@ -123,6 +138,7 @@ export default async function (ctx) {
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.waitForTimeout(300)
   log(`tools header: ${(await header.textContent()).trim()}`)
+  expectEq((await status()).mode, 'memory', 'the Tools page header reflects the live cache mode')
   await shot(page, '09-tools-cache-header-memory')
   const gt0 = (await status()).registries.tools.generation
   await page.getByPlaceholder('Search…').fill('sitefiles.add')
@@ -142,6 +158,7 @@ export default async function (ctx) {
   await page.waitForTimeout(600)
   await page.evaluate(() => window.scrollTo(0, 0))
   log(`tools generation after the exposure toggle: ${gt0} → ${gt1}; header: ${(await page.getByText(/cache: memory/i).first().textContent()).trim()}`)
+  expect(gt1 > gt0, `the Tools-page exposure toggle bumped the tools generation (${gt0} → ${gt1})`)
   await shot(page, '10-generation-bumped-after-toggle')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(800)
@@ -152,9 +169,9 @@ export default async function (ctx) {
 
   // runs under bypass
   await settings({ registry_cache_mode: 'bypass' })
-  await quickRun(page, ctx, 'graph')
+  await quickRun(page, ctx, 'graph', 'in bypass cache mode')
   await shot(page, '11-bypass-graph-run')
-  await quickRun(page, ctx, 'agentic')
+  await quickRun(page, ctx, 'agentic', 'in bypass cache mode')
   await shot(page, '12-bypass-agentic-run')
 
   // redis (shared backend) when the stack runs one
@@ -162,10 +179,21 @@ export default async function (ctx) {
   await page.getByRole('button', { name: 'redis', exact: true }).first().click()
   await page.waitForTimeout(1500)
   const rd = await status()
+  // a negative probe on purpose: the compose stack may ship no redis, and
+  // the error note is then the documented outcome
   const err = await page.locator('.bg-rose-500\\/10').first().textContent({ timeout: 1500 }).catch(() => '')
   log(`redis: mode=${rd.mode} ${gens(rd)}${err ? ' — ' + String(err).trim().slice(0, 120) : ''}`)
+  expect(
+    rd.mode === 'redis' || !!err,
+    'picking redis either switched the cache or said plainly why it could not',
+  )
   await shot(page, '13-cache-redis-status')
 
   await settings({ registry_cache_mode: initial.registry_cache_mode, orchestrator_mode: 'graph' })
   log(`restored registry_cache_mode=${initial.registry_cache_mode}`)
+  expectEq(
+    (await get('/settings')).json.registry_cache_mode,
+    initial.registry_cache_mode,
+    'the cache mode is restored for the stages that follow',
+  )
 }

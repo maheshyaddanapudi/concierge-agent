@@ -425,7 +425,7 @@ async def test_mcp_env_and_headers_are_write_only(client: AsyncClient) -> None:
         json={
             "name": "m52-stdio",
             "transport": "stdio",
-            "command": "echo",
+            "command": "npx",  # on the stdio allowlist; the subject here is env masking
             "env": {"TOKEN": "s3cret-value"},
         },
     )

@@ -27,7 +27,10 @@ those are the policy working; the ledger says so.
 ```bash
 curl -s http://localhost:8000/metrics | grep -E 'concierge_backlog_depth|concierge_delivery_sends_total|concierge_ambient_leader'
 curl -s 'http://localhost:8000/api/v1/deliveries?pending=true&limit=20'
-docker compose logs --since 15m backend | grep -E 'ambient_(deliver|delivery_send_failed|delivery_dead)'
+# the real event names (app/ambient/channels.py): a failed external send is
+# `ambient_channel_failed`, a retry-ladder attempt `ambient_channel_retry`.
+docker compose logs --since 15m backend \
+  | grep -E 'ambient_(channel_failed|channel_retry|delivered_unseen|pursuit_held)'
 curl -s http://localhost:8000/api/v1/settings | grep -oE '"ambient_(channels|quiet_hours|digest_times|pursuit|notification_budget_per_day)": *[^,]*'
 ```
 

@@ -6,7 +6,7 @@
 // or failed at run time — there is nothing to fall back to).
 import { useState } from 'react'
 import { AnswerUiView } from './AnswerUiView'
-import { ChartSvg, type ChartSpec } from './ChartSvg'
+import { ChartSvg, isChartSpec, type ChartSpec } from './ChartSvg'
 import { Markdown } from './Markdown'
 import { TableBlock, type TableSpec } from './TableBlock'
 
@@ -45,6 +45,18 @@ function CoverageBadge({ coverage, flagBelow }: { coverage?: number; flagBelow?:
       coverage {coverage}%{low ? ' ⚠' : ''}
     </span>
   )
+}
+
+// a spec that renders as nothing — keeps tool-chart indices stable when an
+// entry is unrenderable, so `tool_chart_ref` never points at the wrong chart
+const NOT_A_CHART: ChartSpec = { kind: 'bar', title: '', labels: [], series: [] }
+
+/** Tool charts are produced by third-party tools and arrive unvalidated at
+ * the panel: anything that is not a chart spec renders as nothing rather
+ * than reaching the renderer. (The spec contract itself is enforced on the
+ * way in, backend-side.) */
+function toolChartsOf(charts: unknown[] | null | undefined): ChartSpec[] {
+  return (charts ?? []).map((c) => (isChartSpec(c) ? c : NOT_A_CHART))
 }
 
 function ToolCharts({ charts }: { charts: ChartSpec[] }) {
@@ -116,7 +128,7 @@ export function AnswerBlock({
   streaming?: boolean
 }) {
   const [showAlt, setShowAlt] = useState(false)
-  const charts = (toolCharts ?? []) as ChartSpec[]
+  const charts = toolChartsOf(toolCharts)
   const hasArtifact = !!payload && (!!payload.a2ui || !!payload.charts?.length)
   const a2uiFirst = hasArtifact && payload?.presentation === 'a2ui_first'
 
@@ -190,7 +202,7 @@ export function AnswerTrace({
   payload: AnswerUiPayload | null | undefined
   toolCharts?: unknown[] | null
 }) {
-  const charts = (toolCharts ?? []) as ChartSpec[]
+  const charts = toolChartsOf(toolCharts)
   const hasArtifact = !!payload && (!!payload.a2ui || !!payload.charts?.length)
   return (
     <div className="space-y-2">

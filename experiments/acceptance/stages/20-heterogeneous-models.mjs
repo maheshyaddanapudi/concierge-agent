@@ -8,7 +8,7 @@ import { TRIAL_MESSAGE } from './_trial.mjs'
 const PLANNER = process.env.ACC_PLANNER_MODEL || 'openrouter:qwen/qwen3.6-plus'
 const FORMATTER = process.env.ACC_FORMATTER_MODEL || 'openrouter:qwen/qwen3.6-plus'
 
-export default async function ({ page, nav, shot, settings, get, log, MODEL, newConversation, askAndSettle, closeDrawer }) {
+export default async function ({ page, nav, shot, settings, get, log, MODEL, newConversation, askAndSettle, closeDrawer, expect, expectEq, expectStatus }) {
   await settings({
     orchestrator_mode: 'graph',
     default_model: MODEL,
@@ -25,6 +25,11 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL, new
   await nav(page, 'settings')
   const s = (await get('/settings')).json
   log(`roles: default=${s.default_model}@${s.default_model_params?.effort} planner=${s.planner_model}@${s.planner_model_params?.effort} aggregator=${s.aggregator_model || '(default)'} formatter=${s.formatter_model}@${s.formatter_model_params?.effort}`)
+  // the UI selects wrote per-role models that DIFFER from the default —
+  // without that this stage is one model wearing three hats
+  expectEq(s.planner_model, PLANNER, 'the Settings select set the planner model')
+  expectEq(s.formatter_model, FORMATTER, 'the Settings select set the formatter model')
+  expect(s.planner_model !== s.default_model, `the planner is on a different model from the default (${s.default_model})`)
   await page.getByText('Models', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
   await shot(page, '00-role-mix-settings')
@@ -46,10 +51,18 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL, new
   const planModel = (done.steps || []).find((x) => x.step_type === 'plan')?.model
   const fmtModel = (done.steps || []).find((x) => x.step_type === 'format' || x.step_type === 'formatter')?.model
   log(`plan step model=${planModel} formatter step model=${fmtModel || '(no formatter step recorded)'}`)
+  // the trace is the evidence: the plan step really ran on the planner model
+  expectStatus(done, 'completed', 'the run under the role mix')
+  expectEq(planModel, PLANNER, 'the trace shows the plan step on the planner model')
+  expect(
+    (done.steps || []).some((x) => x.model && x.model !== PLANNER),
+    'and at least one other step on a different model',
+  )
 
   await nav(page, 'runs')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(1200)
+  // framing only
   await page.locator('.fixed.inset-0').last().getByText(/step timeline/i).first().scrollIntoViewIfNeeded().catch(() => {})
   await page.waitForTimeout(500)
   await shot(page, '03-trace-models-per-step')
@@ -57,4 +70,5 @@ export default async function ({ page, nav, shot, settings, get, log, MODEL, new
 
   await settings({ planner_model: null, planner_model_params: null, formatter_model: null, formatter_model_params: null, default_model_params: null })
   log('roles restored to the default model')
+  expectEq((await get('/settings')).json.planner_model, null, 'the role mix is unwound for the stages that follow')
 }

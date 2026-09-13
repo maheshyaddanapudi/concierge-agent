@@ -1,7 +1,7 @@
 // Stage 02 — MCP servers (spec §14 step 2): register a stdio server from the
 // UI, watch it connect and ingest, open its drawer, refresh its tools (busy
 // state), reconnect it; the http register form as the alternative transport.
-export default async function ({ page, nav, shot, get, del, log, click, closeDrawer }) {
+export default async function ({ page, nav, shot, get, del, log, click, closeDrawer, expect, expectEq }) {
   // idempotent: a previous pass may have left the server behind
   for (const s of (await get('/mcp-servers')).json) if (s.name === 'sitefiles') await del(`/mcp-servers/${s.id}`)
   await nav(page, 'mcp-servers')
@@ -19,7 +19,8 @@ export default async function ({ page, nav, shot, get, del, log, click, closeDra
   const servers = (await get('/mcp-servers')).json
   const mine = servers.find((s) => s.name === 'sitefiles')
   log(`registered: ${mine?.name} ${mine?.status} tools=${mine?.tool_count} transport=${mine?.transport}`)
-  if (mine?.status !== 'active') throw new Error(`sitefiles not active: ${JSON.stringify(mine)}`)
+  expectEq(mine?.status, 'active', 'the server registered from the UI connected')
+  expect(mine?.tool_count > 0, `it ingested its toolset (tool_count=${mine?.tool_count})`)
   await shot(page, '02-sitefiles-active')
 
   // the http transport's form (not submitted — no http server in the seed)
@@ -46,6 +47,10 @@ export default async function ({ page, nav, shot, get, del, log, click, closeDra
   await page.waitForTimeout(3500)
   const after = (await get(`/mcp-servers/${mine.id}`)).json
   log(`after reconnect: ${after.status} tools=${after.tool_count} last_connected=${after.last_connected_at}`)
+  // the drawer's reconnect is the other half of this stage: it brings the
+  // server back up rather than leaving it in error
+  expectEq(after.status, 'active', 'the server is active again after the drawer reconnect')
+  expect(!!after.last_connected_at, 'the reconnect stamped last_connected_at')
   await shot(page, '06-reconnect-done')
   await closeDrawer(page)
 }

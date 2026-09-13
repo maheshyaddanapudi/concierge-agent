@@ -31,6 +31,10 @@ REQUIRED_STATIC_SKILLS = ("web-research", "file-ops")
 # the static sub-agent name seed_sub_agents owns; an .agent.md claiming it
 # would fight the code path for the same registry row
 STATIC_SEED_AGENT_NAMES = ("research-concierge",)
+# the workspace sandbox's pinned version. MUST equal the Dockerfile's
+# MCP_FILESYSTEM_VERSION build argument — the image prewarms that exact spec
+# into the npx cache, and npx keys the cache directory off the whole spec.
+MCP_FILESYSTEM_VERSION = "2026.8.31"
 
 
 async def seed_mcp_servers(session: AsyncSession) -> None:
@@ -49,7 +53,18 @@ async def seed_mcp_servers(session: AsyncSession) -> None:
             "description": "Reference MCP filesystem server sandboxed to the workspace volume.",
             "transport": "stdio",
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", config.workspace_dir],
+            # PINNED, and the pin must match the one the image prewarms
+            # (backend/Dockerfile MCP_FILESYSTEM_VERSION): npx keys its cache
+            # directory off the FULL package spec, so an unpinned spec here
+            # misses the baked cache and fetches from the registry at first
+            # spawn. The whole path-confinement boundary — normalisation,
+            # symlink resolution, the allowed-prefix check — lives in this
+            # package, so "whatever npm serves today" is not a version.
+            "args": [
+                "-y",
+                f"@modelcontextprotocol/server-filesystem@{MCP_FILESYSTEM_VERSION}",
+                config.workspace_dir,
+            ],
         },
     ]
     for data in servers:
@@ -225,11 +240,33 @@ async def _resolve_covers(session: AsyncSession, covers: list[str]) -> list[str]
             continue
         except ValueError:
             pass
-        skill = (await session.execute(select(Skill).where(Skill.name == ref))).scalar_one_or_none()
-        if skill is None:
+        # skill names carry no uniqueness constraint and POST /skills does not
+        # reject a duplicate, so this used to be `scalar_one_or_none()` on an
+        # unfiltered query: a user-created skill named `web-research` made the
+        # next seed raise MultipleResultsFound inside the boot lock and the
+        # application could not start — with the API needed to fix it down.
+        # Prefer the static row, take the oldest, and say so when ambiguous.
+        matches = list(
+            (
+                await session.execute(
+                    select(Skill)
+                    .where(Skill.name == ref, Skill.deleted_at.is_(None))
+                    .order_by(Skill.source.desc(), Skill.created_at, Skill.id)
+                )
+            ).scalars()
+        )
+        if not matches:
             logger.warning("native_covers_unresolved", ref=ref)
             continue
-        resolved.append(str(skill.id))
+        if len(matches) > 1:
+            logger.warning(
+                "native_covers_ambiguous",
+                ref=ref,
+                matches=len(matches),
+                chose=str(matches[0].id),
+                source=matches[0].source,
+            )
+        resolved.append(str(matches[0].id))
     return resolved
 
 
@@ -246,11 +283,18 @@ async def seed_agent_files(session: AsyncSession, directory: Path | None = None)
     for err in parse_errors:
         logger.error("agent_file_unparseable", error=err)
 
+    # ordered so a duplicate name resolves deterministically to the STATIC row
+    # (the dict comprehension keeps the LAST value for a repeated key, so the
+    # ordering is deliberately reversed): an .agent.md that names a skill must
+    # not silently bind to whichever row Postgres happened to return first,
+    # least of all for the node that writes to the workspace.
     active_skills = {
         s.name: s
         for s in (
             await session.execute(
-                select(Skill).where(Skill.status == "active", Skill.deleted_at.is_(None))
+                select(Skill)
+                .where(Skill.status == "active", Skill.deleted_at.is_(None))
+                .order_by(Skill.source.asc(), Skill.created_at.desc(), Skill.id)
             )
         ).scalars()
     }
@@ -372,10 +416,21 @@ async def upsert_native_sub_agents(session: AsyncSession) -> None:
 
 # First-boot default-model resolution (spec §13): the code default's provider
 # may have no key configured. Preference order — flagships per provider.
+#
+# code_setting_ui_hardening: `openrouter` and `custom` were missing, so an
+# install keyed ONLY with OPENROUTER_API_KEY — the provider every acceptance
+# frame in this repository was captured on — matched nothing here, kept the
+# unconfigured `anthropic:claude-sonnet-4-6` code default, and could not run
+# a single chat until a human opened Settings and picked a model. The list
+# now covers every adapter that can serve the default role. `custom` is last
+# because its model ids are deployment-specific (resolved from
+# CUSTOM_GATEWAY_MODELS), and `fake` after it because it is a test provider.
 _FLAGSHIPS: tuple[tuple[str, str], ...] = (
     ("anthropic", "anthropic:claude-sonnet-4-6"),
     ("google_genai", "google_genai:gemini-3.6-flash"),
     ("openai", "openai:gpt-5.6-luna"),
+    ("openrouter", "openrouter:qwen/qwen3.8-max"),
+    ("custom", ""),  # "" = ask the adapter for its first configured model
     ("fake", "fake:scripted"),
 )
 
@@ -402,6 +457,14 @@ async def resolve_first_boot_default_model(session: AsyncSession) -> str | None:
     for provider_id, ref in _FLAGSHIPS:
         adapter = providers.get(provider_id)
         if adapter is not None and adapter.is_configured():
+            if not ref:
+                # a deployment-specific model list (the custom gateway): take
+                # the first id the adapter actually declares, and skip the
+                # provider entirely if it only has its placeholder
+                models = [m for m in adapter.list_models() if m.id != "gateway-model"]
+                if not models:
+                    continue
+                ref = f"{provider_id}:{models[0].id}"
             session.add(AppSetting(key="default_model", value={"value": ref}))
             await session.commit()
             from app.registry_cache import get_cache

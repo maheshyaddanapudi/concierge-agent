@@ -438,6 +438,11 @@ async def flush_deliveries(now: datetime | None = None) -> dict[str, int]:
     (presence/deferral), and time-based digests. §18.8: with auth on the
     pass runs per owner bucket under each owner's effective settings;
     dark = one unscoped bucket, byte-identical to M23–M25."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return {}
     from app.auth import tenancy_on
 
     now = now or datetime.now(UTC)

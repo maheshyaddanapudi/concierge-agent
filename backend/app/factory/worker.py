@@ -67,7 +67,9 @@ class WorkerState(TypedDict, total=False):
 class ConditionChoice(BaseModel):
     """Router structured output: index of the matching condition."""
 
-    index: int = Field(description="zero-based index of the chosen condition")
+    index: int = Field(
+        description="zero-based index of the chosen condition, or -1 if none of them matches"
+    )
 
 
 def sanitize_tool_name(tool_key: str) -> str:
@@ -173,6 +175,43 @@ def build_ephemeral_snapshot(
 # ── live tool resolution (used by ToolsRegistryMiddleware) ───────
 
 
+# the argument names the filesystem server treats as paths
+_PATH_ARGS = ("path", "source", "destination", "paths")
+
+
+def _check_workspace_paths(tool_key: str, kwargs: dict[str, Any]) -> None:
+    """Defence in depth for the seeded filesystem sandbox.
+
+    Confinement lives entirely inside a third-party npm package: it
+    normalises, resolves symlinks and checks the allowed-directory prefix,
+    and it does that well — but nothing on our side notices if that ever
+    regresses, and model-supplied arguments used to be forwarded untouched.
+    This refuses an obviously-escaping path before the call leaves the
+    process. It is a second lock on the same door, not the only one."""
+    import posixpath
+
+    if not tool_key.startswith("filesystem."):
+        return
+    from app.config import get_config
+
+    root = posixpath.normpath(get_config().workspace_dir)
+    for name in _PATH_ARGS:
+        value = kwargs.get(name)
+        candidates = value if isinstance(value, list) else [value]
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if "\x00" in candidate:
+                raise RuntimeError(f"{name}: path contains a NUL byte")
+            resolved = posixpath.normpath(
+                candidate if candidate.startswith("/") else posixpath.join(root, candidate)
+            )
+            if resolved != root and not resolved.startswith(root.rstrip("/") + "/"):
+                raise RuntimeError(
+                    f"{name}: {candidate!r} is outside the workspace sandbox ({root})"
+                )
+
+
 def _make_mcp_proxy(row: dict[str, Any]) -> BaseTool:
     """Lazy proxy: resolves the live MCP session at call time, so a dead
     server surfaces as a tool error (→ error-edge semantics), and a
@@ -189,6 +228,7 @@ def _make_mcp_proxy(row: dict[str, Any]) -> BaseTool:
         tools = await manager.get_langchain_tools(UUID(server_id), [tool_name])
         if not tools:
             raise RuntimeError(f"tool {tool_name!r} not exposed by its server")
+        _check_workspace_paths(row["tool_key"], kwargs)
         return await tools[0].ainvoke(kwargs)
 
     return StructuredTool(
@@ -562,17 +602,32 @@ async def _pick_condition(
             usage[k] += int(raw_usage.get(k) or 0)
         choice = result.get("parsed")
         if isinstance(choice, ConditionChoice):
-            index = max(0, min(choice.index, len(conditional_edges) - 1))
-            return conditional_edges[index]["to"], usage, "router model selected condition"
+            if 0 <= choice.index < len(conditional_edges):
+                return (
+                    conditional_edges[choice.index]["to"],
+                    usage,
+                    "router model selected condition",
+                )
+            # an out-of-range index was CLAMPED into a real edge and recorded
+            # as "selected", indistinguishable from a real choice. Index -1 is
+            # the model's documented way of saying nothing matched.
+            return (
+                "END",
+                usage,
+                f"router model matched no condition (index {choice.index}) — routed to END",
+            )
         logger.warning(
             "router_choice_unparsed",
             attempt=attempt,
             error=str(result.get("parsing_error") or "no parsed choice"),
         )
+    # falling through to edge 0 put the run on the SUCCESS branch of the
+    # shipped workflow — straight into the gate that writes — on the strength
+    # of two unparseable replies. An unknown route ends the branch instead.
     return (
-        conditional_edges[0]["to"],
+        "END",
         usage,
-        "router model gave no parseable choice twice — first condition taken",
+        "router model gave no parseable choice twice — routed to END",
     )
 
 

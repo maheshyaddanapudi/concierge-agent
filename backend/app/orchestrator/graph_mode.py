@@ -240,9 +240,48 @@ def dispatch_ready(state: OrchestratorState) -> list[Send] | str:
         return "aggregate"
     max_parallel = int(state.get("max_parallel", 4))
     return [
-        Send("dispatch", {"entry": entry, "resolution": resolutions.get(entry["id"])})
+        Send(
+            "dispatch",
+            {
+                "entry": entry,
+                "resolution": resolutions.get(entry["id"]),
+                # the outputs this entry declared it needs. `depends_on` used
+                # to SEQUENCE only: the dependent ran after its dependency and
+                # was handed nothing, while the planner prompt tells the model
+                # `depends_on` means "entries whose output this entry needs".
+                "dependency_outputs": {
+                    dep: outputs.get(dep) for dep in entry.get("depends_on", [])
+                },
+            },
+        )
         for entry in ready[:max_parallel]
     ]
+
+
+_DEP_OUTPUT_CHARS = 4000
+
+
+def _task_with_dependencies(task: str, dependency_outputs: dict[str, Any]) -> str:
+    """Prepend the outputs this entry declared it needs, fenced as data.
+
+    §7.1: `depends_on` is documented to the planner as "entries whose output
+    this entry needs", and it only ever sequenced them. A dependent step was
+    handed nothing and had to guess, which is exactly the failure the plan
+    structure exists to prevent."""
+    usable = {
+        key: value for key, value in dependency_outputs.items() if isinstance(value, dict) and value
+    }
+    if not usable:
+        return task
+    parts: list[str] = []
+    for key, value in usable.items():
+        text = str(value.get("output") or value.get("result") or value.get("answer") or "").strip()
+        if not text:
+            continue
+        parts.append(f"[{key}] {text[:_DEP_OUTPUT_CHARS]}")
+    if not parts:
+        return task
+    return load_prompt("prior_outputs").format(outputs="\n\n".join(parts), task=task)
 
 
 async def dispatch_node(payload: Any) -> dict[str, Any]:
@@ -253,7 +292,7 @@ async def dispatch_node(payload: Any) -> dict[str, Any]:
         resolution = await resolve_capability(entry["capability"])
     else:
         resolution = Resolution(**state_res)
-    task = entry["task"]
+    task = _task_with_dependencies(entry["task"], payload.get("dependency_outputs") or {})
     result = await execute_resolution(resolution, task, entry["id"])
     if result.get("status") == "error" and result.get("fatal"):
         raise RunFailed(str(result.get("error")))
@@ -296,11 +335,11 @@ async def fallback_node(state: OrchestratorState) -> dict[str, Any]:
         agent = create_agent(
             model,
             tools=[],
-            system_prompt=(
-                "You are the concierge orchestrator in full-catalog fallback mode: "
-                "routing by description failed, so every active tool and skill is "
-                "available to you directly. Solve the user's request yourself."
-            ),
+            # a whole system prompt, previously a Python literal: no file, no
+            # golden, unrecorded by the run's prompt hashes, and missing the
+            # chart, hidden-skill and untrusted-content rules its sibling
+            # carries (CLAUDE.md: all LLM prompts live in app/prompts/)
+            system_prompt=load_prompt("fallback"),
             middleware=stack,
         )
         with current_step(step_id):

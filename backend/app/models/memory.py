@@ -43,6 +43,13 @@ class Memory(Base):
         # the table for rows that point at the deleted one (§14q-95 found it)
         Index("memories_supersedes_idx", "supersedes"),
         Index("memories_superseded_by_idx", "superseded_by"),
+        # created by migration, never declared here: §18.2 project scoping
+        # and §18.8 tenancy, both of which every retrieval filters on
+        Index("memories_project_idx", "project_key"),
+        Index("memories_user_idx", "user_id"),
+        # R7.3: the run FK was unindexed, so provenance lookups and the
+        # cascade behind every run delete scanned the whole table
+        Index("memories_run_idx", "run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -235,6 +242,10 @@ class MemoryEntity(Base):
 
 class MemoryEntityLink(Base):
     __tablename__ = "memory_entity_links"
+    # R7.3: the composite PK indexes memory_id (leading column) but not
+    # entity_id — "which memories mention this entity", and the cascade
+    # behind every entity delete, both scanned the table
+    __table_args__ = (Index("memory_entity_links_entity_idx", "entity_id"),)
 
     memory_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True
@@ -269,7 +280,12 @@ class RunDigest(Base):
     run-digests (kind='period', run_id NULL, covers_from..covers_to)."""
 
     __tablename__ = "run_digests"
-    __table_args__ = (Index("run_digests_fts_idx", "fts", postgresql_using="gin"),)
+    __table_args__ = (
+        Index("run_digests_fts_idx", "fts", postgresql_using="gin"),
+        # R7.3: the per-conversation episodic read and the conversation
+        # cascade both scanned the table (run_id is already unique-indexed)
+        Index("run_digests_conversation_idx", "conversation_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -314,7 +330,12 @@ class PlanExemplar(Base):
     task text, with the ExpeL vote lifecycle (spec §16.5)."""
 
     __tablename__ = "plan_exemplars"
-    __table_args__ = (Index("plan_exemplars_fts_idx", "fts", postgresql_using="gin"),)
+    __table_args__ = (
+        Index("plan_exemplars_fts_idx", "fts", postgresql_using="gin"),
+        # R7.3: unindexed FK — the deferred vote lookup by run, and the
+        # cascade behind every run delete, scanned the table
+        Index("plan_exemplars_run_idx", "run_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))

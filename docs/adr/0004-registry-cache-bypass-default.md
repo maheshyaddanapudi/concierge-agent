@@ -1,8 +1,15 @@
 # ADR-0004: RegistryCache facade with bypass as the shipped default
 
-Status: Accepted
+Status: **Accepted, default amended** (see *Amendment, 2026-09-13*)
 
 Date: 2026-08-06
+
+> The facade, the three backends, the invalidation contract and the rollback
+> lever all stand exactly as decided here. **One thing changed: the shipped
+> default is now `memory`, not `bypass`.** The record below is left as it was
+> written in M7 — the reasoning that produced the original choice is the
+> point of keeping it — and the amendment at the end says what changed and
+> why. The file keeps its name so existing links resolve.
 
 ## Context
 
@@ -22,7 +29,7 @@ facade (`backend/app/registry_cache.py`) exposing typed reads
 `sub_agent_snapshot`, `setting`, …). Its storage backend is selected by the
 live `registry_cache_mode` setting and flippable at runtime (spec §7.3):
 
-- **`bypass` (default)** — stateless; every read executes the same Postgres
+- **`bypass`** *(the default as decided here; see the amendment)* — stateless; every read executes the same Postgres
   queries as before the layer existed. Byte-identical semantics. This is the
   shipped default and the no-degradation rollback lever: flipping back to
   `bypass` is an instant escape hatch from any cache bug.
@@ -62,6 +69,57 @@ Negative:
   remember to call `invalidate()` — there is no TTL safety net by design.
 - Three backends triple the storage-contract test surface; the redis backend
   is env-gated out of the default test run.
+
+## Amendment — 2026-09-13: the shipped default becomes `memory`
+
+**What changed.** `DEFAULTS["registry_cache_mode"]` in
+`backend/app/settings_store.py` is now `"memory"`. Nothing else about this
+decision moves: `bypass` remains a valid mode, remains live-flippable from
+Settings with no restart, and remains the rollback lever this ADR made it.
+
+**Why.** The original decision optimised for *rollout* risk and read as
+though `bypass` bought extra freshness. It does not, and that is the whole
+argument:
+
+- Invalidation is event-driven and exhaustive — every write path calls
+  `invalidate(registry)` **before returning** — so a cached read is never
+  staler than a bypassed one. The freshness contract is "visible at the next
+  model call", and `memory` mode satisfies it by construction.
+- Therefore `bypass` was paying a full Postgres round-trip on every
+  registry and settings read, per model call, for a guarantee the cache
+  already gave. The M49 load baseline and the M50 code review both landed on
+  the same observation from the other end: `RegistryCache.setting(key)` is
+  called ~15 times per ambient tick and several times per run, each a
+  round-trip on its own pooled connection in `bypass`.
+- **`bypass` is a live read, not a faster cache.** That is the sentence to
+  carry: it exists so an operator can take the cache out of the picture while
+  diagnosing, not because it is the safe default.
+
+**What did not change, and was verified before the flip.** The cache-mode
+contract suite (`tests/test_registry_cache.py`) runs identically over
+`bypass` and `memory`, the orchestrator suite is parametrized over both, and
+the invalidation-heavy modules (MCP manager, A2A substrate and execution,
+seed, orchestrator, M53 operate, switchability) were re-run under the new
+default. The flip changes **where a read comes from**, not what it returns.
+
+**One correction to the text above.** This ADR states "**TTLs are
+forbidden**: an entry is either current or explicitly invalidated". That was
+true when written and is no longer literally true: M54 added
+`REGISTRY_CACHE_TTL_S` (300 s), on which every `memory`-mode entry and every
+redis blob expires. The *rule* is unchanged — invalidate on every write —
+but the TTL now bounds the damage of a **lost cross-replica NOTIFY**, which
+exhaustive invalidation alone cannot detect. Reloads are additionally
+generation-guarded, and `GET /cache/status` reports `dirty` per registry so a
+bumped generation whose data has not been reloaded is visible rather than
+hidden. Read that sentence as "no TTL is the freshness mechanism", not as
+"no TTL exists".
+
+**Consequence for the "Negative" list above.** The first bullet — "the
+performance win is opt-in; a deployment that never flips to `memory` pays
+the facade indirection for nothing" — is what this amendment resolves. The
+second bullet stands and is now more load-bearing, not less: a new write
+path that forgets `invalidate()` is wrong, and the TTL is a backstop, not an
+excuse.
 
 ## References
 

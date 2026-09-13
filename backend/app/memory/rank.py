@@ -5,16 +5,28 @@ model_key), composite scoring in Python over the fused candidate set:
 
     score = (w_rel·relevance + w_rec·recency + w_imp·importance/10) / Σw
 
-- relevance: normalized RRF of the two rank lists (rank positions, so the
-  lexical leg's lack of IDF is blunted — research 04 §2)
+- relevance: the blend of the two legs' ABSOLUTE match scores — cosine
+  similarity from the vector leg, query coverage (`ts_rank_cd` over the
+  doc ÷ `ts_rank_cd` over the query's own tsvector) from the lexical one.
+  Reciprocal-rank fusion still fuses the two candidate sets and breaks
+  score ties, but it never *scores*: RRF is rank-normalized, so its top
+  hit is 1.0 however bad the match — the same reasoning `store.py` records
+  for the dedup gate ("the RRF relevance is rank-normalized … so it must
+  never gate"). With rank-normalized relevance no query could ever return
+  empty over a non-empty store, because the vector leg carries no distance
+  predicate and so returns rows for literally any query.
 - recency:   exp(−ln2 · hours_since_last_ACCESS / half_life) — rehearsal
   refreshes memories (Generative Agents; research 03 §2)
 - importance: the write-time 1–10 score
 
 Score floor: below it nothing is returned — an empty block beats a
-distracting one (research 03 §6). Pinned rows bypass the floor (they are the
-always-injected profile, spec §16.3). `as_of` switches to bi-temporal
-point-in-time predicates. No embedding model ⇒ lexical-only, silently.
+distracting one (research 03 §6). The floor gates the composite AND the
+absolute relevance, because recency+importance alone carry
+(W_REC + W_IMP/2)/ΣW ≈ 0.46 of the composite for any fresh row: a row that
+is not ABOUT the query has to be refused on relevance itself or recall can
+never abstain. Pinned rows bypass the floor (they are the always-injected
+profile, spec §16.3). `as_of` switches to bi-temporal point-in-time
+predicates. No embedding model ⇒ lexical-only, silently.
 """
 
 import math
@@ -35,6 +47,15 @@ logger = structlog.get_logger("memory")
 _RRF_K = 60
 _CANDIDATES_PER_LEG = 40
 W_REL, W_REC, W_IMP = 1.0, 0.8, 0.6
+# the two legs' weights inside `relevance`. A row only one leg returned
+# keeps only that leg's weight — agreement IS evidence, and the damping is
+# what lets the floor refuse a row the vector leg dragged back for a query
+# it shares nothing with. Lexical leads because coverage is calibrated and
+# query-anchored: it is exactly 0 on a non-match, where cosine has no zero
+# and no cross-model calibration. When no embedding model is configured the
+# vector leg never runs and the lexical score stands alone undamped (§7.4
+# degradation, not a penalty).
+W_ABS_VEC, W_ABS_LEX = 0.4, 0.6
 DEFAULT_HALF_LIFE_HOURS = 30.0 * 24
 
 
@@ -137,6 +158,13 @@ async def recall(
     query = " ".join(query.split())
     if not query:
         return []
+    # `concierge_memory_recall_seconds` was declared and never observed, so
+    # the one latency the memory layer is judged on had no series behind it
+    import time as _time
+
+    from app import obs
+
+    _t0 = _time.perf_counter()
 
     where, vparams = visibility_sql(
         scopes=scopes,
@@ -146,11 +174,27 @@ async def recall(
         as_of=as_of,
         auth_user_id=str(_auth_uid()) if _auth_uid() else None,
     )
-    params: dict[str, Any] = {"q": or_tsquery(query), "n": _CANDIDATES_PER_LEG, **vparams}
+    params: dict[str, Any] = {
+        "q": or_tsquery(query),
+        "qtext": query,
+        "n": _CANDIDATES_PER_LEG,
+        **vparams,
+    }
 
+    # the lexical leg's ABSOLUTE score is coverage: this row's cover-density
+    # rank over the rank the query's own text would earn. Full coverage is
+    # 1.0, half the query's lexemes ≈ 0.5, no match 0 — unlike raw
+    # ts_rank_cd it is comparable across queries, which is what a floor needs.
     lexical_sql = sql_text(
         f"""
-        SELECT m.id FROM memories m, to_tsquery('english', :q) tsq
+        SELECT m.id,
+               LEAST(
+                 COALESCE(
+                   ts_rank_cd(m.fts, tsq)
+                   / NULLIF(ts_rank_cd(to_tsvector('english', :qtext), tsq), 0),
+                   0),
+                 1.0) AS lex
+        FROM memories m, to_tsquery('english', :q) tsq
         WHERE m.fts @@ tsq AND {where}
         ORDER BY ts_rank_cd(m.fts, tsq) DESC
         LIMIT :n
@@ -165,9 +209,14 @@ async def recall(
 
     typed = vector_column(model_key) if model_key else None
 
+    vector_leg = qvec is not None and model_key is not None and typed is not None
+
     async with get_session_factory()() as session:
-        lex_ids = [r[0] for r in (await session.execute(lexical_sql, params)).all()]
+        lex_rows = (await session.execute(lexical_sql, params)).all()
+        lex_ids = [r[0] for r in lex_rows]
+        lex_scores: dict[UUID, float] = {r[0]: float(r[1] or 0.0) for r in lex_rows}
         vec_ids: list[UUID] = []
+        vec_scores: dict[UUID, float] = {}
         if qvec is not None and model_key is not None and typed is not None:
             col, vtype = typed
             vector_sql = sql_text(
@@ -189,15 +238,19 @@ async def recall(
                 )
             ).all()
             vec_ids = [r[0] for r in vec_rows]
+            # the similarity the leg already computes — carried through to
+            # scoring instead of discarded with the rest of the row
+            vec_scores = {r[0]: max(0.0, min(1.0, float(r[1]))) for r in vec_rows}
 
-        # reciprocal-rank fusion over whichever legs exist
+        # reciprocal-rank fusion over whichever legs exist — the candidate
+        # union and the tiebreak, never the relevance score
         rrf: dict[UUID, float] = {}
         for ranking in ([lex_ids] if lex_ids else []) + ([vec_ids] if vec_ids else []):
             for i, mid in enumerate(ranking):
                 rrf[mid] = rrf.get(mid, 0.0) + 1.0 / (_RRF_K + i + 1)
         if not rrf:
+            obs.MEMORY_RECALL_SECONDS.observe(_time.perf_counter() - _t0)
             return []
-        max_rrf = max(rrf.values())
 
         # ORM load by id — NEVER a raw `SELECT *` with positional column
         # mapping: a migrated DB's column order can differ from the model's
@@ -210,8 +263,15 @@ async def recall(
         )
         now = datetime.now(UTC)
         hits: list[RecallHit] = []
+        # NOTE: a row can match lexically and still miss the lexical leg's
+        # top-N cut; it then scores as vector-only. That is the candidate
+        # budget showing through, not a scoring rule.
+        weight_total = W_ABS_LEX + (W_ABS_VEC if vector_leg else 0.0)
         for mem in mem_rows:
-            relevance = rrf[mem.id] / max_rrf
+            relevance = (
+                W_ABS_LEX * lex_scores.get(mem.id, 0.0)
+                + (W_ABS_VEC * vec_scores.get(mem.id, 0.0) if vector_leg else 0.0)
+            ) / weight_total
             half_life_h = (
                 float(mem.half_life_days) * 24 if mem.half_life_days else DEFAULT_HALF_LIFE_HOURS
             )
@@ -222,7 +282,7 @@ async def recall(
             score = (W_REL * relevance + W_REC * recency + W_IMP * importance) / (
                 W_REL + W_REC + W_IMP
             )
-            if mem.pinned or score >= floor:
+            if mem.pinned or (relevance >= floor and score >= floor):
                 hits.append(
                     RecallHit(
                         memory=mem,
@@ -232,7 +292,12 @@ async def recall(
                         importance=importance,
                     )
                 )
-        hits.sort(key=lambda h: h.score, reverse=True)
+        # deterministic order: composite score, then the fused rank (RRF's
+        # remaining job), then the id — equal scores must not come back in
+        # whatever order the result set happened to arrive in
+        hits.sort(
+            key=lambda h: (h.score, rrf.get(h.memory.id, 0.0), str(h.memory.id)), reverse=True
+        )
         hits = hits[:k]
 
         # §16.7 entity hop: up to 2 extra active memories sharing an entity
@@ -240,25 +305,26 @@ async def recall(
         # floor-exempt, scored at a fixed discount of the weakest direct hit,
         # and skipped for filtered (kinds) or point-in-time (as_of) recalls
         if hits and as_of is None and kinds is None:
+            # the hop is a THIRD read path, so it reuses the very predicate
+            # the two legs ran under — it used to hand-roll a conversation
+            # clause and miss the project clause (§18.2) and the tenancy
+            # fragment (§18.8) entirely, hopping across a project boundary.
+            # `where` is already the right shape here: the hop only runs
+            # with as_of=None (⇒ status='active') and kinds=None.
             hop_rows = (
                 await session.execute(
                     sql_text(
-                        """
+                        f"""
                         SELECT DISTINCT m.id FROM memories m
                         JOIN memory_entity_links l1 ON l1.memory_id = m.id
                         JOIN memory_entity_links l2 ON l2.entity_id = l1.entity_id
                         WHERE l2.memory_id = ANY(:hit_ids)
                           AND m.id != ALL(:hit_ids)
-                          AND m.status = 'active'
-                          AND (m.scope != 'conversation'
-                               OR m.conversation_id = :conversation_id)
+                          AND {where}
                         LIMIT 2
-                        """
+                        """  # noqa: S608 — fragments are code constants; values are bound params
                     ),
-                    {
-                        "hit_ids": [h.memory.id for h in hits],
-                        "conversation_id": conversation_id,
-                    },
+                    {**vparams, "hit_ids": [h.memory.id for h in hits]},
                 )
             ).all()
             hop_ids = [r[0] for r in hop_rows]
@@ -289,6 +355,7 @@ async def recall(
             )
             await session.commit()
 
+    obs.MEMORY_RECALL_SECONDS.observe(_time.perf_counter() - _t0)
     logger.info(
         "memory_recall",
         tier="memory",

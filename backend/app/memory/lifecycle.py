@@ -14,6 +14,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text, true
 
+from app.cost import enforce_job_ceiling, job_spend
 from app.db import get_session_factory
 from app.models import Memory, MemoryEmbedding, PlanExemplar, RunDigest
 
@@ -53,16 +54,52 @@ JOB_GATES: dict[int, str] = {
 }
 
 
+# gates that ride this module's scheduler without belonging to the memory
+# family, so the memory master must NOT silence them (spec §4)
+_NOT_MEMORY_FAMILY = {"registry_overlap_audit_enabled"}
+
+
 async def gate_open(key: str) -> bool:
     """Is the named §3.7 gate letting its job run? Uniform over the three
     shapes a gate takes: a boolean switch, an `off|propose|auto` mode, and
-    a nullable model reference."""
+    a nullable model reference.
+
+    §3.7.1: the family MASTER is checked here too, not only at the caller.
+    Four of the six memory job gates default `True`, so a direct call —
+    the experiment harness this module invites, a test, an ops endpoint —
+    used to expire, quarantine and HARD-DELETE in a deployment whose
+    memory layer reads off. The gate is in the behavior now.
+
+    `_NOT_MEMORY_FAMILY` names the jobs that merely live in this module's
+    scheduler without belonging to the memory layer — the registry overlap
+    audit is a §4 job with its own gate and must keep running when memory
+    is dark, which is exactly what its own docstring says."""
     from app.registry_cache import get_cache
 
-    value = await get_cache().setting(key)
+    cache = get_cache()
+    if key not in _NOT_MEMORY_FAMILY and not bool(await cache.setting("memory_enabled")):
+        return False
+    value = await cache.setting(key)
     if isinstance(value, str):
         return value != "off"
     return bool(value)
+
+
+async def _consolidation_window_open() -> bool:
+    """`memory_idle_minutes` — the quiet window the two LLM-bearing
+    consolidation jobs wait for (§16.2: consolidate when the platform is
+    quiet). It used to be rendered in Settings and read nowhere, so an
+    operator could change it and watch nothing happen. Cheap SQL jobs —
+    decay, contradiction, compaction — keep their own intervals; only
+    reflection and the community rebuild, which each spend a model call
+    per pass, defer while someone is actually using the system."""
+    from app.ambient.presence import is_platform_idle
+    from app.registry_cache import get_cache
+
+    minutes = int(await get_cache().setting("memory_idle_minutes") or 0)
+    if minutes <= 0:
+        return True  # 0 disables the wait: consolidate on the interval alone
+    return await is_platform_idle(minutes)
 
 
 # GA-style reflection trigger: summed importance of unreflected memories
@@ -146,10 +183,11 @@ async def reflection() -> int:
     unreflected memories crosses the trigger, synthesize up to 3 `inferred`
     memories with explicit evidence citations. Inferred instructions
     quarantine (store rules). Returns insights written."""
-    from app.registry_cache import get_cache
-
-    cache = get_cache()
-    if not await cache.setting("memory_reflection_enabled"):
+    if not await gate_open(JOB_GATES[JOB_REFLECT]):
+        return 0
+    if not await _consolidation_window_open():
+        return 0
+    if not await enforce_job_ceiling("reflection"):
         return 0
     async with get_session_factory()() as session:
         recent = list(
@@ -177,10 +215,13 @@ async def reflection() -> int:
         from app.memory.extract import _extraction_model
         from app.prompts import load_prompt
 
-        _, model = await _extraction_model()
+        model_ref, model = await _extraction_model()
         structured = model.with_structured_output(ReflectionOutput)  # type: ignore[attr-defined]
         listing = "\n".join(f"{i + 1}. [{m.kind}] {m.text}" for i, m in enumerate(fresh))
-        out = await structured.ainvoke(load_prompt("memory_reflect").format(memories=listing))
+        async with job_spend("reflection", model_ref) as cb:
+            out = await structured.ainvoke(
+                load_prompt("memory_reflect").format(memories=listing), config={"callbacks": cb}
+            )
         if not isinstance(out, ReflectionOutput):
             raise TypeError(f"expected ReflectionOutput, got {type(out).__name__}")
     except Exception as exc:  # noqa: BLE001 — reflection is optional cognition
@@ -222,9 +263,14 @@ async def contradiction_sweep() -> int:
     (M48 §3.7.1)."""
     if not await gate_open(JOB_GATES[JOB_CONTRADICT]):
         return 0
-    # M54 (spec §18.9): set-based — rank each (scope, entity_key) group by
-    # validity (newest first, NULLs first as before) and quarantine every
-    # row but the first, without materialising the table in the process.
+    # M54 (spec §18.9): set-based — rank each group by validity (newest
+    # first) and quarantine every row but the first, without materialising
+    # the table in the process. The group is the scope INSTANCE, not the
+    # scope WORD: partitioning on 'conversation'/'project' alone made two
+    # different conversations' rows — or two different projects', or two
+    # users' — duplicates of each other, and quarantined the older one.
+    # `id DESC` last so two rows written in the same transaction (identical
+    # recorded_at) resolve the same way on every plan.
     async with get_session_factory()() as session:
         result = await session.execute(
             text(
@@ -232,8 +278,9 @@ async def contradiction_sweep() -> int:
                 WITH ranked AS (
                     SELECT id,
                            row_number() OVER (
-                               PARTITION BY scope, entity_key
-                               ORDER BY valid_from DESC, recorded_at DESC
+                               PARTITION BY scope, entity_key,
+                                            conversation_id, project_key, user_id
+                               ORDER BY valid_from DESC, recorded_at DESC, id DESC
                            ) AS rn
                       FROM memories
                      WHERE status = 'active' AND entity_key IS NOT NULL
@@ -276,6 +323,10 @@ async def embedding_backfill(limit: int = 500) -> int:
     from app.memory.store import active_model_key
     from app.registry_cache import get_cache
 
+    # §3.7.1: the master is enforced here, not only at run_due_jobs — this
+    # function spends provider calls and is directly awaitable.
+    if not bool(await get_cache().setting("memory_enabled")):
+        return 0
     key = await active_model_key()
     if key is None:
         return 0
@@ -529,6 +580,13 @@ async def run_periodic_loop(stop: asyncio.Event, tick_s: float = 60.0) -> None:
             if await job_due("ratelimit:evict", IDLE_EVICT_S):
                 await evict_idle()
                 await job_ran("ratelimit:evict")
+            # §15: an eval batch whose process restarted mid-flight left a row
+            # at `running` forever, with nothing to clear it
+            if await job_due("evals:reap", 300):
+                from app.evals.runner import reap_stalled_eval_runs
+
+                await reap_stalled_eval_runs()
+                await job_ran("evals:reap")
         except Exception as exc:  # noqa: BLE001 — cluster housekeeping must never take the loop down
             obs.LOOP_ERRORS.labels(loop="cluster").inc()
             logger.warning("cluster_housekeeping_failed", error=str(exc))

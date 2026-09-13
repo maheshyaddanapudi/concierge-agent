@@ -31,6 +31,31 @@ def list_filters(
 FiltersDep = Annotated[ListFilters, Depends(list_filters)]
 
 
+async def reject_duplicate_name[R: RegistryRecord](
+    session: AsyncSession,
+    model: type[R],
+    name: str,
+    *,
+    exclude_id: UUID | None = None,
+) -> None:
+    """§4: a registry name is how humans and documents refer to a record, and
+    several resolution paths look records up BY NAME — `covers_skill_ids` on a
+    native card, the skill names in an `.agent.md` workflow, the fallback
+    miner. A duplicate made those paths ambiguous and, before this wave, made
+    boot itself fail. Rejected here rather than by a database constraint, so
+    an upgrade over a database that already holds duplicates cannot fail."""
+    from sqlalchemy import select
+
+    stmt = select(model.id).where(model.name == name, model.deleted_at.is_(None))
+    if exclude_id is not None:
+        stmt = stmt.where(model.id != exclude_id)
+    if (await session.execute(stmt.limit(1))).first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"the name {name!r} is already taken — registry names must be unique",
+        )
+
+
 def apply_filters[R: RegistryRecord](
     stmt: Select[tuple[R]], model: type[R], f: ListFilters
 ) -> Select[tuple[R]]:

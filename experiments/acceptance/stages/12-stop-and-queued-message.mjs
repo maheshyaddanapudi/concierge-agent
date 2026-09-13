@@ -4,11 +4,10 @@
 // its own as the next turn of the same conversation.
 import { TRIAL_MESSAGE } from './_trial.mjs'
 
-export default async function ({ page, nav, shot, settings, get, log, sendChat, waitRun, steps }) {
+export default async function ({ page, nav, shot, settings, get, log, sendChat, waitRun, steps, newConversation, expect, expectEq, expectMatch, expectStatus }) {
   await settings({ orchestrator_mode: 'graph', default_model_params: null })
   await nav(page, '')
-  await page.getByRole('button', { name: '+ New conversation' }).click().catch(() => {})
-  await page.waitForTimeout(400)
+  await newConversation(page)
   await sendChat(page, TRIAL_MESSAGE)
   await page.waitForTimeout(2000)
   const r1 = (await get('/runs?limit=1')).json[0]
@@ -28,6 +27,8 @@ export default async function ({ page, nav, shot, settings, get, log, sendChat, 
   log('■ Stop clicked')
   const done1 = await waitRun(r1.id, ['cancelled', 'completed', 'failed'], 120)
   log(`run 1 → ${done1.status}; steps: ${steps(done1)}`)
+  // ■ Stop must CANCEL the live run — the stage is worthless if it completed
+  expectStatus(done1, 'cancelled', 'the live run stopped from the composer')
   await page.waitForTimeout(1500)
   await shot(page, '01-stopped')
 
@@ -40,12 +41,15 @@ export default async function ({ page, nav, shot, settings, get, log, sendChat, 
     }
     return null
   })()
-  if (!r2) throw new Error('the queued message did not fire after the stop')
+  expect(!!r2, 'the queued message fired on its own once the conversation went idle')
   log(`queued message fired as run ${r2.id} (conversation ${r2.conversation_id === done1.conversation_id ? 'same' : 'DIFFERENT'})`)
   const done2 = await waitRun(r2.id, ['completed', 'failed', 'cancelled'], 300)
   await page.waitForTimeout(1500)
   await shot(page, '02-after-stop-queue-state')
   log(`run 2 → ${done2.status}; answer: ${(done2.final_answer || '').slice(0, 120)}`)
+  expectStatus(done2, 'completed', 'the queued message ran as the next turn')
+  expectEq(r2.conversation_id, done1.conversation_id, 'it fired in the SAME conversation')
+  expectMatch(done2.final_answer, /\b4\b/, 'and it answered the queued question')
   const conv = (await get(`/conversations/${done1.conversation_id}`)).json
   log(`conversation runs: ${(conv.runs || []).map((r) => r.status).join(', ')}`)
 }

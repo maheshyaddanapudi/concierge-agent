@@ -640,6 +640,10 @@ class TestCacheCoherency:
                 await cache._mark_dirty("tools")  # a peer's NOTIFY lands mid-load
             return data
 
+        # `memory` is the shipped default (code_setting_ui_hardening), so
+        # set_mode("memory") is a no-op unless we leave it first — and the
+        # warm load this test needs only happens on a real transition
+        await cache.set_mode("bypass")
         monkeypatch.setattr(registry_cache, "_load_registry", slow_load)
         await cache.set_mode("memory")  # the warm load is the load the mark lands in
         assert "tools" in cache._dirty, "the generation moved under the load: still dirty"
@@ -662,6 +666,9 @@ class TestCacheCoherency:
             calls.append(registry)
             return await real_load(registry)
 
+        # as above: `memory` is now the default, so the flip that produces
+        # the warm load has to start from somewhere else
+        await cache.set_mode("bypass")
         monkeypatch.setattr(registry_cache, "_load_registry", counted)
         monkeypatch.setattr(registry_cache, "CACHE_TTL_S", 0.1)
         await cache.set_mode("memory")  # the warm load is the first load

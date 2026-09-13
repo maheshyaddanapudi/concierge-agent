@@ -1,6 +1,6 @@
 """Memory substrate tests (spec §16.1/16.2/16.3/16.4 — milestone M13)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -104,6 +104,39 @@ async def test_supersede_closes_old_row_bitemporally() -> None:
     assert old_row.valid_to == new_row.valid_from
     assert new_row.supersedes == old.id
     assert new_row.status == "active"
+
+
+async def test_supersede_carries_the_scope_key_forward() -> None:
+    """An edit routes to supersede. Copying `scope` but not `project_key`
+    left the successor at project_key=NULL, which §18.2's
+    `project_key = :project_key` is NULL-false against under EVERY key —
+    with the predecessor already superseded, the project lost the fact."""
+    await _enable_memory()
+    old = await remember(
+        text="apollo booster uses RP-1 fuel",
+        kind="fact",
+        scope="project",
+        source="user_stated",
+        project_key="apollo",
+    )
+    new = await supersede(old.id, text="apollo booster uses methalox fuel", source="user_edited")
+    assert new.scope == "project" and new.project_key == "apollo"
+    hits = await recall("apollo booster fuel", project_key="apollo", floor=0.0)
+    assert new.id in [h.memory.id for h in hits]
+
+
+async def test_supersede_rejects_an_inverted_validity_interval() -> None:
+    old = await remember(text="the office is in Porto", kind="fact", source="user_stated")
+    with pytest.raises(MemoryWriteError, match="precedes"):
+        await supersede(
+            old.id,
+            text="the office is in Lisbon",
+            source="user_edited",
+            valid_from=datetime.now(UTC) - timedelta(days=1),
+        )
+    async with get_session_factory()() as session:
+        fresh = await session.get(Memory, old.id)
+    assert fresh is not None and fresh.status == "active"  # nothing was closed
 
 
 async def test_double_supersede_rejected() -> None:
@@ -257,10 +290,20 @@ async def test_recall_ranks_relevant_memory_first() -> None:
 
 
 async def test_recall_score_floor_abstains_on_junk() -> None:
+    """At the PRODUCTION floor, not a pinned 0.95 near the theoretical
+    maximum: the vector leg carries no distance predicate, so a junk query
+    still drags the row back as a candidate — recall has to refuse it on
+    the absolute match score or it can never return empty at all."""
+    from app.settings_store import DEFAULTS
+
     await _enable_memory()
     await remember(text="the sprint retro is on fridays", kind="fact", source="user_stated")
-    hits = await recall("zorblax quantum jabberwock phase", k=5, floor=0.95)
+    floor = float(DEFAULTS["memory_score_floor"])
+    assert floor == 0.35
+    hits = await recall("zorblax quantum jabberwock phase", k=5, floor=floor)
     assert hits == []
+    # the same store answers a real question at the same floor
+    assert await recall("when is the sprint retro", k=5, floor=floor)
 
 
 async def test_recall_lexical_only_without_embedding_model() -> None:

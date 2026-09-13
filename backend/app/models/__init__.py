@@ -11,7 +11,7 @@ from app.models.ambient import (
     UserPresence,
 )
 from app.models.base import Base, RegistryRecord
-from app.models.cluster import JobClock, RateBucket, Replica
+from app.models.cluster import JobClock, JobUsage, RateBucket, Replica
 from app.models.eval import EvalCase, EvalDataset, EvalResult, EvalRun
 from app.models.mcp_server import McpServer
 from app.models.memory import (
@@ -69,6 +69,7 @@ __all__ = [
     "RegistryRecord",
     "Replica",
     "JobClock",
+    "JobUsage",
     "RateBucket",
     "RemoteAgent",
     "Routine",

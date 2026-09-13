@@ -17,7 +17,10 @@ WF="{\"nodes\":[{\"id\":\"sum\",\"type\":\"skill\",\"skill_id\":\"$SKILL\"},{\"i
 curl -s -X PATCH $API/sub-agents/$AGENT -H "$H" -d "{\"workflow\":$WF}" | py 'print("PATCH sub agent → nodes", [n["id"] for n in d["workflow"]["nodes"]])'
 kill_stub
 STUB=$(curl -s $API/mcp-servers | py 'print([s["id"] for s in d if s["name"]=="demo-stub"][0])')
-curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"command":"/nonexistent-mcp-binary"}' -o /dev/null; curl -s -X POST $API/mcp-servers/$STUB/reconnect | py 'print("server:", d["status"], "|", (d.get("last_error") or "")[:60])'
+# break it by pointing an ALLOWED launcher at a script that is not there:
+# the stdio allowlist refuses an arbitrary command at the edit path now, so
+# a nonexistent binary never reaches the breaker to begin with
+curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"args":["/app/tests/no_such_server.py"]}' -o /dev/null; curl -s -X POST $API/mcp-servers/$STUB/reconnect | py 'print("server:", d["status"], "|", (d.get("last_error") or "")[:60])'
 R8=$(curl -s -X POST $API/sub-agents/$AGENT/invoke -H "$H" -d '{"message":"Summarize this: 2 and 3 make five; publish it."}' | py 'print(d["run_id"])')
 echo "direct invocation run $R8 → $(wait_run $R8)"
 curl -s $API/runs/$R8 | py 'print([(s["step_type"], s.get("node_id"), s["status"]) for s in d["steps"]]); print("answer:", (d.get("final_answer") or "")[:160])'

@@ -14,7 +14,9 @@ Rules:
     "id": "<uuid of the tool/skill/sub agent>"}} — for spin_worker use
     {{"type": "spin_worker", "skill_ids": ["<uuid>", ...]}} instead of id.
   - task: the concrete instruction for that capability
-  - depends_on: ids of entries whose output this entry needs (else [])
+  - depends_on: ids of entries whose output this entry needs (else []). Those
+    outputs are handed to the entry when it runs, so write its task assuming
+    it will see them — do not restate their content in the task text.
 - Prefer directly usable capabilities for simple needs; use sub agents for
   multi-step work their description covers; use spin_worker over skills only
   when no sub agent covers them.

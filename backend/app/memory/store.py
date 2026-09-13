@@ -74,6 +74,18 @@ def _validate(kind: str, scope: str, source: str) -> None:
         raise MemoryWriteError("; ".join(errors))
 
 
+def _validate_scope_keys(scope: str, conversation_id: UUID | None, project_key: str | None) -> None:
+    """A scope is only a scope with its key: a project row without a
+    project_key is invisible to §18.2's `project_key = :project_key`
+    predicate under every project, including no project at all. Called by
+    remember() AND supersede() — the successor inherits the predecessor's
+    scope, so it has to clear the same bar."""
+    if scope == "project" and not project_key:
+        raise MemoryWriteError("scope 'project' requires project_key")
+    if scope == "conversation" and conversation_id is None:
+        raise MemoryWriteError("scope 'conversation' requires conversation_id")
+
+
 async def active_model_key() -> str | None:
     """The embedding side-table key: 'provider:model@dims' (spec §16.1)."""
     from app.registry_cache import get_cache
@@ -146,6 +158,13 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
 
         from app.models import MemoryEntity, MemoryEntityLink
 
+        # the lookup folds case but the input list does not: an extractor
+        # returning ["Postgres", "postgres"] resolves to ONE entity twice
+        # and would queue two links on the same composite PK. The flush
+        # raises, the except below swallows it — and the caller's commit
+        # then dies of PendingRollbackError, losing the whole memory write
+        # that this "best-effort decoration" promised never to fail.
+        linked: set[UUID] = set()
         for raw in names[:3]:
             name = " ".join(raw.split())
             if len(name) < 2:
@@ -159,6 +178,9 @@ async def _link_entities(sess: AsyncSession, memory_id: UUID, names: list[str]) 
                 entity = MemoryEntity(name=name)
                 sess.add(entity)
                 await sess.flush()
+            if entity.id in linked:
+                continue
+            linked.add(entity.id)
             sess.add(MemoryEntityLink(memory_id=memory_id, entity_id=entity.id))
         await sess.flush()
     except Exception as exc:  # noqa: BLE001 — entity linking is best-effort decoration
@@ -192,22 +214,25 @@ async def remember(
         from app.auth import current_user_id
 
         user_id = current_user_id()  # §18.8: memories belong to the requester
-    if scope == "project" and not project_key:
-        raise MemoryWriteError("scope 'project' requires project_key")
+    _validate_scope_keys(scope, conversation_id, project_key)
     # inferred memories may cite other memories instead of a run — the
     # evidence list IS their provenance (spec §16.2 reflection)
     cites_evidence = source == "inferred" and bool(payload and payload.get("evidence"))
     if source in MACHINE_SOURCES and run_id is None and not cites_evidence:
         raise MemoryWriteError(f"source '{source}' requires provenance (run_id)")
-    if scope == "conversation" and conversation_id is None:
-        raise MemoryWriteError("scope 'conversation' requires conversation_id")
     text = " ".join(text.split())
     if not text:
         raise MemoryWriteError("text must not be empty")
     if source == "user_stated":
         # M44 §16.2: the human re-asserting a forgotten fact beats their
         # earlier forget — matching tombstones are removed, the write lands
-        await _unforget_by_assertion(text, scope, user_id)
+        await _unforget_by_assertion(
+            text,
+            scope,
+            user_id,
+            conversation_id=conversation_id,
+            project_key=project_key,
+        )
 
     status = "active"
     review_note: str | None = None
@@ -302,15 +327,32 @@ async def supersede(
         if old.superseded_at is not None:
             raise MemoryWriteError(f"memory {old_id} is already superseded")
         _validate(old.kind, old.scope, source)
+        # the successor inherits the WHOLE scope key, not just the word:
+        # copying `scope` alone left project_key/user_id at their NULL
+        # defaults, so an edit of a project memory produced a successor no
+        # project could see while the predecessor was already superseded —
+        # the project lost the fact outright. Constructing the ORM row here
+        # also walked past remember()'s scope/key rule; it is enforced now.
+        _validate_scope_keys(old.scope, old.conversation_id, old.project_key)
         if source in MACHINE_SOURCES and run_id is None:
             raise MemoryWriteError(f"source '{source}' requires provenance (run_id)")
 
         now = datetime.now(UTC)
         effective_from = valid_from or now
+        if old.valid_from is not None and effective_from < old.valid_from:
+            # the close sets old.valid_to = effective_from; earlier than the
+            # predecessor's own valid_from that is an inverted interval —
+            # a row visible at no point in time at all
+            raise MemoryWriteError(
+                f"valid_from {effective_from.isoformat()} precedes memory {old_id}'s "
+                f"valid_from {old.valid_from.isoformat()}"
+            )
         new = Memory(
             text=new_text,
             kind=old.kind,
             scope=old.scope,
+            user_id=old.user_id,
+            project_key=old.project_key,
             conversation_id=old.conversation_id,
             payload=payload if payload is not None else old.payload,
             entity_key=old.entity_key,
@@ -458,11 +500,26 @@ async def unforget(tombstone_id: UUID, *, reason: str = "user") -> bool:
     return True
 
 
-async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "list[Any]":
+async def _matching_tombstones(
+    text: str,
+    scope: str,
+    user_id: UUID | None,
+    *,
+    conversation_id: UUID | None = None,
+    project_key: str | None = None,
+) -> "list[Any]":
     """Live tombstones this text would re-admit: exact hash match, else
     cosine ≥ memory_forget_similarity against same-model embeddings.
     Tenant- and scope-aware like recall; hash-only when no embedding
-    model is configured (§7.4 degradation)."""
+    model is configured (§7.4 degradation).
+
+    §16.2 promises matching is scope-aware "like recall", and
+    tombstone_forget faithfully records conversation_id and project_key —
+    but matching used to read neither, so one conversation's forget
+    suppressed the same sentence in every other conversation, and one
+    project's forget suppressed it in every other project. Recall scopes a
+    conversation row by its conversation and a project row by its key; the
+    tombstone does the same, the scope word already being pinned."""
     from sqlalchemy import select as sa_select
 
     from app.models import MemoryTombstone
@@ -473,6 +530,11 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
         if user_id is not None
         else MemoryTombstone.user_id.is_(None)
     )
+    scoped = [MemoryTombstone.scope == scope]
+    if scope == "conversation":
+        scoped.append(MemoryTombstone.conversation_id == conversation_id)
+    elif scope == "project":
+        scoped.append(MemoryTombstone.project_key == project_key)
     text_h = normalized_hash(text)
     async with get_session_factory()() as session:
         exact = list(
@@ -480,7 +542,7 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
                 await session.execute(
                     sa_select(MemoryTombstone).where(
                         MemoryTombstone.text_hash == text_h,
-                        MemoryTombstone.scope == scope,
+                        *scoped,
                         owner,
                     )
                 )
@@ -512,7 +574,7 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
                     .where(
                         MemoryTombstone.embedding.isnot(None),
                         MemoryTombstone.model_key == key,
-                        MemoryTombstone.scope == scope,
+                        *scoped,
                         owner,
                     )
                     .order_by(MemoryTombstone.embedding.cosine_distance(vec))
@@ -533,7 +595,14 @@ async def _matching_tombstones(text: str, scope: str, user_id: UUID | None) -> "
     return out
 
 
-async def check_suppressed(text: str, scope: str, user_id: UUID | None) -> bool:
+async def check_suppressed(
+    text: str,
+    scope: str,
+    user_id: UUID | None,
+    *,
+    conversation_id: UUID | None = None,
+    project_key: str | None = None,
+) -> bool:
     """§16.2 admission-gate hook: True ⇒ the candidate matches a live
     tombstone and must not be written. Content-free log; the tombstone's
     suppressed_count accrues — the signal a future learner would read."""
@@ -541,7 +610,9 @@ async def check_suppressed(text: str, scope: str, user_id: UUID | None) -> bool:
 
     if not bool(await get_cache().setting("memory_forget_enabled")):
         return False
-    matches = await _matching_tombstones(text, scope, user_id)
+    matches = await _matching_tombstones(
+        text, scope, user_id, conversation_id=conversation_id, project_key=project_key
+    )
     if not matches:
         return False
     async with get_session_factory()() as session:
@@ -561,14 +632,23 @@ async def check_suppressed(text: str, scope: str, user_id: UUID | None) -> bool:
     return True
 
 
-async def _unforget_by_assertion(text: str, scope: str, user_id: UUID | None) -> None:
+async def _unforget_by_assertion(
+    text: str,
+    scope: str,
+    user_id: UUID | None,
+    *,
+    conversation_id: UUID | None = None,
+    project_key: str | None = None,
+) -> None:
     """A user re-stating a forgotten fact overrides their earlier forget:
     the matching tombstones are deleted and the write proceeds (§16.2)."""
     from app.registry_cache import get_cache
 
     if not bool(await get_cache().setting("memory_forget_enabled")):
         return
-    for m in await _matching_tombstones(text, scope, user_id):
+    for m in await _matching_tombstones(
+        text, scope, user_id, conversation_id=conversation_id, project_key=project_key
+    ):
         await unforget(m.id, reason="user_assertion")
 
 

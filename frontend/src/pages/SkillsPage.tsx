@@ -218,7 +218,24 @@ function SkillEditor({
   const [toolQuery, setToolQuery] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [overlap, setOverlap] = useState<OverlapCheck | null>(null)
+  // spec §8: static records keep their status and exposure toggles live —
+  // the definition is locked, whether the record is in service is not
+  const [status, setStatus] = useState<string>(skill?.status ?? 'active')
   const isStatic = skill?.source === 'static'
+
+  const setSkillStatus = async (next: 'active' | 'inactive') => {
+    if (!skill) return
+    const previous = status
+    setStatus(next)
+    setError(null)
+    try {
+      await api.patch(`/skills/${skill.id}`, { status: next })
+      invalidate('skills')
+    } catch (e) {
+      setStatus(previous)
+      setError(e)
+    }
+  }
 
   // system-seeded static tools first (spec §8.3)
   const sorted = [...tools].sort((a, b) =>
@@ -313,6 +330,18 @@ function SkillEditor({
           />
         </Field>
       </div>
+      {skill && (
+        <Field
+          label="Status"
+          hint="inactive skills are invisible to the planner and cannot be dispatched — live on static records (spec §8)"
+        >
+          <Toggle
+            checked={status === 'active'}
+            label={status}
+            onChange={(v) => void setSkillStatus(v ? 'active' : 'inactive')}
+          />
+        </Field>
+      )}
       <Field label="Description" hint="the planner routes by this prose — make it precise">
         <TextInput
           value={description}

@@ -22,7 +22,6 @@ logger = structlog.get_logger("ambient")
 
 NOTIFY_CHANNEL = "ambient_events"
 MAX_DEPTH = 4  # §17.3a — far below Salesforce's 16; ambient chains stay short
-RULE_KILL_SWITCH_PER_HOUR = 50
 
 
 class AmbientDisabledError(RuntimeError):
@@ -33,10 +32,19 @@ class ChainGuardError(ValueError):
     """A derived event violated a §17.3a cascade guard."""
 
 
-async def _enabled() -> bool:
+async def ambient_on() -> bool:
+    """The ambient master switch, read live.
+
+    §3.7.1: every tick evaluator calls this in its OWN body. The leader tick
+    used to be the only reader, so a direct call — a test, an ops endpoint, a
+    backfill — delivered the outbox, fired routines and polled the network in
+    a deployment whose ambient layer reads off."""
     from app.registry_cache import get_cache
 
     return bool(await get_cache().setting("ambient_enabled"))
+
+
+_enabled = ambient_on  # historical name, kept for in-module callers
 
 
 async def emit_event(
@@ -85,6 +93,12 @@ async def emit_event(
                 logger.info("ambient_event_deduped", tier="ambient", kind="ingest", event_kind=kind)
                 return None
         if routine_id is not None:
+            # §17.3: the cap is the operator's, not a constant. It used to be a
+            # hardcoded 50 while Settings displayed — and let them edit — a key
+            # that nothing read, so lowering it changed nothing.
+            from app.registry_cache import get_cache
+
+            cap = max(int(await get_cache().setting("ambient_routine_events_per_hour") or 20), 1)
             hour_ago = datetime.now(UTC) - timedelta(hours=1)
             recent = (
                 await session.execute(
@@ -94,8 +108,10 @@ async def emit_event(
                     )
                 )
             ).scalar_one()
-            if recent >= RULE_KILL_SWITCH_PER_HOUR:
-                raise ChainGuardError(f"kill switch: {recent} events for routine in the last hour")
+            if recent >= cap:
+                raise ChainGuardError(
+                    f"kill switch: {recent} events for routine in the last hour (cap {cap})"
+                )
         event = AmbientEvent(
             kind=kind,
             source=source,

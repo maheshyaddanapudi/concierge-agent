@@ -206,7 +206,25 @@ function AgentEditor({
   const [error, setError] = useState<unknown>(null)
   const [validation, setValidation] = useState<string[] | null>(null)
   const [overlap, setOverlap] = useState<OverlapCheck | null>(null)
+  // spec §8: "Static records: definition fields disabled + static notice,
+  // but status/exposure toggles remain live." Exposure was here; status was
+  // the half the page claimed and never rendered.
+  const [status, setStatus] = useState<string>(agent?.status ?? 'active')
   const isStatic = agent?.source === 'static'
+
+  const setAgentStatus = async (next: 'active' | 'inactive') => {
+    if (!agent) return
+    const previous = status
+    setStatus(next)
+    setError(null)
+    try {
+      await api.patch(`/sub-agents/${agent.id}`, { status: next })
+      invalidate('sub-agents')
+    } catch (e) {
+      setStatus(previous)
+      setError(e)
+    }
+  }
 
   const applyTemplate = (t: string) => {
     setTemplate(t)
@@ -324,6 +342,18 @@ function AgentEditor({
           onChange={(e) => setDescription(e.target.value)}
         />
       </Field>
+      {agent && (
+        <Field
+          label="Status"
+          hint="inactive agents are invisible to the planner and cannot be invoked — live on static records"
+        >
+          <Toggle
+            checked={status === 'active'}
+            label={status}
+            onChange={(v) => void setAgentStatus(v ? 'active' : 'inactive')}
+          />
+        </Field>
+      )}
       <Field
         label="Direct invocation"
         hint="exposed agents can be pinned from chat or POST /sub-agents/{id}/invoke — live on static records"
@@ -587,12 +617,38 @@ function NativeAgentCard({ agent }: { agent: SubAgent }) {
   const { data: skills = [] } = useSkills()
   const invalidate = useInvalidate()
   const [exposure, setExposure] = useState(agent.direct_exposure)
+  const [status, setStatus] = useState<string>(agent.status)
+  const [error, setError] = useState<unknown>(null)
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-300">
         Native sub agent — the graph is code; the worker factory is bypassed. Read-only except
         status and direct exposure.
       </div>
+      {/* the card said "read-only except status and direct exposure" while
+          offering only the second of the two (spec §8.4) */}
+      <Field
+        label="Status"
+        hint="inactive agents are invisible to the planner and cannot be invoked"
+      >
+        <Toggle
+          checked={status === 'active'}
+          label={status}
+          onChange={async (v) => {
+            const next = v ? 'active' : 'inactive'
+            const previous = status
+            setStatus(next)
+            setError(null)
+            try {
+              await api.patch(`/sub-agents/${agent.id}`, { status: next })
+              invalidate('sub-agents')
+            } catch (e) {
+              setStatus(previous)
+              setError(e)
+            }
+          }}
+        />
+      </Field>
       <Field label="Direct invocation" hint="exposed agents can be pinned from chat">
         <Toggle
           checked={exposure}
@@ -603,6 +659,7 @@ function NativeAgentCard({ agent }: { agent: SubAgent }) {
           }}
         />
       </Field>
+      <ErrorNote error={error} />
       <Field label="Description">
         <p className="text-sm text-slate-300">{agent.description}</p>
       </Field>

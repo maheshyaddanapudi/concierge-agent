@@ -1,6 +1,8 @@
 # REST API Reference
 
-The Concierge Agent backend is a single FastAPI process. All application routers are mounted under the **`/api/v1`** prefix (`backend/app/main.py`, `backend/app/api/__init__.py`). Two operational endpoints — `/health` and `/metrics` — live at the application root, *outside* `/api/v1`.
+The Concierge Agent backend is a single FastAPI process. All application routers are mounted under the **`/api/v1`** prefix (`backend/app/main.py`, `backend/app/api/__init__.py`): **86 paths, 115 operations** across 20 mounted routers (17 modules — `ambient.py` contributes three and `routines.py` two). Three operational endpoints — `/health`, `/ready` and `/metrics` — live at the application root, *outside* `/api/v1`.
+
+The authority is the running process: `GET /openapi.json` (or `/docs`) enumerates every path this page describes. If the two ever disagree, the OpenAPI document is right and this page is stale.
 
 Interactive OpenAPI documentation is served by FastAPI at **`/docs`** on the running backend (e.g. `http://localhost:8000/docs` on a `docker compose up` stack).
 
@@ -24,7 +26,11 @@ Related documents: [SSE event stream](sse-events.md) · [Workflow DSL](workflow-
 | 404 | Record not found or soft-deleted. Also returned by the `/_fake/*` endpoints when `FAKE_LLM_ENABLED` is not set (the router hides itself). |
 | 409 | Conflict: HITL decision posted to a run that is not `paused_hitl`; cancel/retry of a run in the wrong state; delete of a `running` run; delete of a tool/skill/MCP server that other records still bind; `tool_key` collision on tool PATCH. |
 | 422 | Validation: Pydantic request-shape errors; empty chat message; unknown/inactive `tool_ids` on skill save; `{tool:...}` mention of an unbound tool; invalid `model`/`model_params` selection; workflow DAG validation and compile failures ([workflow-dsl.md](workflow-dsl.md)); settings validation — including `registry_cache_mode: "redis"` without `REDIS_URL` set in the environment (`backend/app/settings_store.py`); unknown registry name on `POST /cache/refresh/{registry}`. |
-| 503 | MCP manager not running (reconnect/refresh-tools during startup/shutdown). |
+| 401 | Auth is on and the request carries no valid bearer session (`AuthMiddleware`, exempt: `/health`, `/metrics`, `/ready`, `/auth/login`, and the token-authenticated routine fire). |
+| 403 | Also: a non-admin principal attempting a registry or settings write when auth is on. |
+| 413 | Request body over `MAX_REQUEST_BYTES`, or an upload over `MAX_UPLOAD_BYTES` / `MAX_EVAL_ROWS`. |
+| 429 | Rate limit (`rate_limit_burst` / `rate_limit_per_s`) or the spend ceiling; both carry `Retry-After`. |
+| 503 | MCP manager not running (reconnect/refresh-tools during startup/shutdown); admission shed on `POST /chat` when the run queue is full (with `Retry-After`); `GET /ready` while draining or when the database does not answer. |
 
 ### Common list query parameters
 
@@ -55,7 +61,7 @@ Records with `source: "static"` (native tools, native skills, seeded sub-agents/
 | `GET /api/v1/providers` | Read-only provider adapter panel: `[{provider_id, configured, models: [{id, display_name, supports_effort, supports_temperature, supports_max_output_tokens}]}]`. API keys are env-only and never appear here. |
 | `GET /api/v1/hitl/pending` | All runs currently `paused_hitl`, across every conversation: `[{run_id, conversation_id, chat_message, started_at}]`. |
 
-Notable settings keys: `orchestrator_mode` (`graph`/`agentic`), `default_model` / `planner_model` / `aggregator_model` (+ `*_params`), `max_parallel_dispatch`, `max_plan_steps`, `max_tool_iterations`, `orchestrator_full_fallback_enabled`, `dynamic_worker_fallback_enabled`, `formatter_enabled`, `formatter_presentation`, `formatter_model` (+ `_params`), `formatter_coverage_flag_threshold`, `answer_ui_charts_enabled`, `registry_cache_mode` (`bypass`/`memory`/`redis`), `retrieval_enabled`, `retrieval_threshold`, `retrieval_top_k`, `embedding_model`, `log_level`, `langsmith_*`, `otlp_endpoint`, `mcp_health_interval_s`, `direct_exposure_cap_warning`.
+There are **122** settings keys; every one is enumerated with its type, default, effect and consumer in [operations/configuration.md](../operations/configuration.md), and `DEFAULTS` in `backend/app/settings_store.py` is the source both are checked against. The eight **model roles** — `default_model`, `planner_model`, `aggregator_model`, `formatter_model`, `overlap_judge_model`, `eval_judge_model`, `memory_extraction_model`, `ambient_salience_model` (each with a `*_params` sibling) — all fall back to `default_model` when null, and `PATCH` refuses a null `default_model`, params without their model ref, and a bool where an int is expected.
 
 ## Tools router — `backend/app/api/tools.py` (prefix `/tools`)
 
@@ -67,9 +73,11 @@ Tools are **never created via API** — they come from MCP ingestion or the nati
 | `GET /tools/{tool_id}` | One tool. | — | 404 |
 | `PATCH /tools/{tool_id}` | Edit `description`, `status`, `direct_exposure`, `tool_key`. | `ToolPatch` | 403 static guard (only `status`/`direct_exposure` on static); 409 `tool_key` already in use |
 | `GET /tools/{tool_id}/skills` | Skills bound to this tool. | — | 404 |
+| `POST /tools/{tool_id}/acknowledge-schema` | Operator has read a §3.2 schema change: clears `schema_changed_at` and, when the tool was quarantined, returns it to service. The version and hash stay — they are the record. | — | 404 |
+| `POST /tools/{tool_id}/restore` | Undo a soft delete (M53) — since re-ingest no longer resurrects a deleted MCP tool, restoring one is an explicit operator act. | — | 404 |
 | `DELETE /tools/{tool_id}` | Soft-delete a dynamic tool. | — | 403 static; 409 if bound to skills (`"tool is bound to skills: ..."`) |
 
-`ToolOut` fields: registry base (`id`, `name`, `description`, `source`, `status`, `created_at`, `updated_at`, `deleted_at`) + `kind` (`mcp`/`native`), `mcp_server_id`, `tool_name`, `native_ref`, `tool_key`, `direct_exposure`, `input_schema`.
+`ToolOut` fields: registry base (`id`, `name`, `description`, `source`, `status`, `created_at`, `updated_at`, `deleted_at`) + `kind` (`mcp` / `native` / `a2a`), `mcp_server_id`, `remote_agent_id`, `tool_name`, `native_ref`, `tool_key`, `direct_exposure`, `input_schema`, `schema_hash`, `schema_version`, `schema_changed_at`, `ingest_state`, `description_source`.
 
 ## Skills router — `backend/app/api/skills.py` (prefix `/skills`)
 
@@ -81,9 +89,10 @@ Tools are **never created via API** — they come from MCP ingestion or the nati
 | `GET /skills/{skill_id}` | One skill (embeds bound `tools`). | — | 404 |
 | `PATCH /skills/{skill_id}` | Partial update; re-validates tools/model/mentions on touched fields. | `SkillPatch` (adds `status`) | 403 static guard; 422 as on create |
 | `GET /skills/{skill_id}/sub-agents` | Sub-agents whose workflows use this skill. | — | 404 |
+| `POST /skills/overlap-ack` | Record that the operator saved past a flagged overlap (204) — content-free: the draft type and the percentage, never the text. | `{draft_type: "skill"\|"sub_agent", overlap_percent}` | 422 |
 | `DELETE /skills/{skill_id}` | Soft-delete. | — | 403 static; 409 if referenced by active sub-agents |
 
-Overlap check response (`OverlapCheckOut`, `backend/app/overlap.py`): `{overlap, threshold, overlap_percent, match_type, match_id, match_name, reasoning}`.
+Overlap check response (`OverlapCheckOut`, `backend/app/overlap.py`): `{overlap, threshold, overlap_percent, match_type, match_id, match_name, reasoning, judge_available}`. **`judge_available: false` means the judge could not be reached or its verdict could not be parsed** — the 0 % it reports alongside is not a real 0 %, and a caller must say so rather than present it as a clean result (the UI shows a "Saved unjudged" notice).
 
 See [skill-format.md](skill-format.md) for the `.skill.md` document shape these fields mirror.
 
@@ -97,6 +106,7 @@ See [skill-format.md](skill-format.md) for the `.skill.md` document shape these 
 | `GET /sub-agents/{agent_id}` | One sub-agent (embeds `skills`, `workflow`). | — | 404 |
 | `PATCH /sub-agents/{agent_id}` | Partial update; workflow changes re-validate and re-resolve skills. | `SubAgentPatch` (adds `status`) | 403 static guard; 403 `workflow`/`persona` on `kind: "native"`; 422 as on create |
 | `POST /sub-agents/{agent_id}/validate` | Dry-run factory compile. | — | 404. Returns `{valid, errors: []}` (native agents are always `valid: true`) |
+| `POST /sub-agents/{agent_id}/invoke` | Direct invocation (§7.5, 201): pin this sub agent, skip routing. The run keeps the full lifecycle — SSE, HITL, formatter, trace, metrics under `mode='direct'`. | `{message, conversation_id?, include_history_summary?, include_memories?}` → `{run_id, conversation_id}` | 404; **409** the agent is not `active`; **403** `direct_exposure` is off; 422 empty message, or `include_memories`/`include_history_summary` without a `conversation_id` |
 | `DELETE /sub-agents/{agent_id}` | Soft-delete. | — | 403 static |
 
 ## MCP servers router — `backend/app/api/mcp_servers.py` (prefix `/mcp-servers`)
@@ -135,7 +145,124 @@ See [skill-format.md](skill-format.md) for the `.skill.md` document shape these 
 | `DELETE /runs/{run_id}` | Hard-delete one run and its steps; also drops its SSE history. | 404; 409 if `running` (`"cancel the run before deleting it"`) |
 | `DELETE /runs` | Purge all run history (runs + steps + SSE event buffers). 204. | — |
 
-Run `status` values: `running`, `paused_hitl`, `completed`, `failed`, `cancelled`.
+Run `status` values: **`queued`**, `running`, `paused_hitl`, `completed`, `failed`, `cancelled`, **`stalled`**. `queued` (M51) means admission is full and the run holds a queue slot; `stalled` means the heartbeat reaper ended a run whose task went silent. A client deciding what is still live should treat `queued`, `running` and `paused_hitl` as live.
+
+`step_type` values on a run's steps: `plan`, `route`, `skill`, `hitl`, `tool_call`, `aggregate`, **`format`** (the formatter's own call) and **`summary`** (the §7.5 history-summary call).
+
+`GET /runs` is **paged**: `limit` (1–500, default 50) and `offset`, with the total in the `X-Total-Count` response header (exposed through CORS), ordered newest-first with the id as the tiebreaker so no row lands on two pages. `routine_id` filters to a routine's own run history. The list returns a light projection — the heavy columns (`plan`, `snapshot`, `answer_ui`, and the steps) come from `GET /runs/{run_id}`.
+
+## Auth router — `backend/app/api/auth.py` (prefix `/auth`, §18.8 / §20)
+
+Dark unless `AUTH_ENABLED=true`: with auth off, `POST /auth/login` returns **409** and every other surface behaves as single-user. The active provider is chosen by `AUTH_PROVIDER` (`builtin` by default) — a fork's provider is selected by `AUTH_PROVIDER_MODULE` ([extending.md](../extending.md)).
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `POST /auth/login` | Exchange credentials for a bearer session. The bootstrap admin's one-time password is printed once at boot. Sessions live `AUTH_SESSION_TTL_H` hours and are sha256-hashed at rest. | 409 auth dark; 401 bad credentials |
+| `POST /auth/logout` | Invalidate this session (204). | — |
+| `GET /auth/me` | The current principal: `{user_id, username, role, prefs}`; `{authenticated: false}` when auth is dark. | — |
+| `PATCH /auth/me/prefs` | Update this principal's stored preferences. | 401 |
+| `GET /auth/users` | List identities (admin). | 401; 403 non-admin |
+| `POST /auth/users` | Create an identity (201, admin). | 401; 403 non-admin |
+
+`AuthMiddleware` covers everything under `/api/v1` with four exemptions: `/auth/login`, `/health`, `/metrics`, `/ready`, and `POST /routines/{id}/fire` when it carries a valid fire token (the token **is** the auth). `GET /chat/stream/{id}` and `GET /ambient/stream` additionally accept `?token=`, because `EventSource` cannot set headers.
+
+## Memories router — `backend/app/api/memories.py` (prefix `/memories`, §16)
+
+Inert while `memory_enabled` is off.
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `GET /memories` | List memories. Query: `scope`, `kind`, `status` (`active` / `quarantined` / `superseded` / `expired`), `source`, `conversation_id`, `q`, `limit` (≤ 500, default 100). | — |
+| `POST /memories` | Write a memory by hand (201) — the same admission gate every machine write passes. | 422 validation; 409 suppressed by a tombstone |
+| `GET /memories/status` | The layer's state: counts by kind and status, the active embedding model key, the backfill's outstanding rows. | — |
+| `GET /memories/recall` | Run the §16 hybrid recall for a query, as the injector would: `q` (required), `scope`, `kinds` (comma-separated), `conversation_id`, `k` (≤ 50, default 6), `floor` (0–1 absolute-similarity cut), `as_of` (bi-temporal "what did we believe on date X"). Inspection never bumps the rehearsal stats. | 422 |
+| `GET /memories/{memory_id}` | One memory with its supersession chain and provenance. | 404 |
+| `PATCH /memories/{memory_id}` | Edit text/kind/confidence, approve or reject a quarantined one, pin a profile fact. | 403 on a machine-owned field; 404 |
+| `DELETE /memories/{memory_id}` | **Two verbs** via `?mode=`: `forget` leaves a content-free tombstone that suppresses re-admission, `erase` (the default) is physical with no trace. 204. | 404 |
+| `GET /memories/tombstones` | The Forgotten list — **metadata only**, there is no text to show. | — |
+| `DELETE /memories/tombstones/{tombstone_id}` | Unforget: drop the tombstone, the fact becomes learnable again (204). | 404 |
+| `POST /memories/purge` | §8.7 data purge, memory half: clears the semantic store, its embeddings and the tombstones (204). Episodic tables cascade with the run purge. | — |
+
+## Routines and presence — `backend/app/api/routines.py` (§17)
+
+Writes return **409 while `ambient_enabled` is off**.
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `GET /routines` | List routines with trigger, allowlist, cadence state and quarantine reason. | — |
+| `POST /routines` | Create a routine (201). Triggers are typed at the boundary: `interval` ≥ 60 s, parseable `cron`, ISO `once.at`, webhook filters with known operators and compiling regexes; quiet-hours and digest-time strings are `HH:MM`-bounded. | 409 ambient dark; 422 trigger/model/allowlist validation |
+| `GET /routines/{routine_id}` | One routine. | 404 |
+| `PATCH /routines/{routine_id}` | Partial update, same validation; clearing `status_reason` un-quarantines. | 404; 409; 422 |
+| `DELETE /routines/{routine_id}` | Delete (204). | 404 |
+| `POST /routines/{routine_id}/token` | Issue or rotate the fire token — **shown once**, only its hash is stored. | 404 |
+| `DELETE /routines/{routine_id}/token` | Revoke the token (204). | 404 |
+| `POST /routines/{routine_id}/fire` | Fire the routine (202). Authenticated by the fire token alone (`Authorization: Bearer <token>`), which is why this path is exempt from `AuthMiddleware`. The event enters the decision plane and may be held rather than fired — the response says which. | 401 wrong/absent token; 404; 409 ambient dark |
+| `POST /presence/heartbeat` | Report this client's presence — the input to the idle detector and the pursuit oracle. | — |
+| `GET /presence` | The current presence snapshot. | — |
+
+## Ambient routers — `backend/app/api/ambient.py` (§17.5 / §17.6 / §8.9)
+
+Three routers: `/deliveries` (the outbox), `/watches` (standing intents) and `/ambient` (the ledger and the stream).
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `GET /deliveries` | The Inbox: rows with tier, urgency, `skey` lineage, `seen_at`, the per-channel send ledger and any salience verdict. Query: `status` (`all` — the default — / `pending` / `delivered`), `limit` (capped at 500). Returns `{items: [...]}`. | — |
+| `GET /deliveries/unread-count` | The nav badge: delivered-but-never-opened items. Pending rows are not yet news and do not count. | — |
+| `GET /deliveries/digest-preview` | What the next digest flush would contain, in flush order. | — |
+| `POST /deliveries/{delivery_id}/seen` | Stamp `seen_at` — what turns "was it attended to" from an inference into a fact. | 404 |
+| `POST /deliveries/{delivery_id}/feedback` | Capture `accepted` / `dismissed` and persist the blended §17.7 reward. | 404; 422 unknown verdict |
+| `POST /deliveries/{delivery_id}/salience/{action}` | Act on a §17.5 verdict: `apply`, `decline`, or `undo` one already applied (restores the pre-mutation snapshot; refuses honestly once a digest has spent the escalation). First-write-wins. | 404; 409 already decided |
+| `GET /watches` | Standing intents with their compiled rules and cadence state. | — |
+| `POST /watches/compile` | NL → typed rule through the **same** compiler `ambient.watch` uses; returns the rule for an explicit confirm. | 409 ambient dark; 422 uncompilable |
+| `POST /watches` | Create a typed event-filter watch directly from filter rows (201) — no compiler; still lands `proposed` for an explicit confirm. | 409; 422 |
+| `PATCH /watches/{intent_id}` | Confirm, pause, retire or re-scope a watch. | 404; 422 |
+| `GET /ambient/ledger` | The append-only fire/hold audit, newest first. Query: `limit` (default 100), `verdict` (`all` / `fire` / `hold`), `correlation_id` to pull one chain. | — |
+| `GET /ambient/precision` | Per-category intervention precision plus the active policy override. | — |
+| `GET /ambient/policies` | The append-only policy ledger, newest first (§17.6 audit + revert). | — |
+| `POST /ambient/policies/{policy_id}/approve` | Approve a queued learner proposal (`propose` mode). | 404; 409 not pending |
+| `POST /ambient/policies/{policy_id}/reject` | Reject one — captured, never applied. | 404; 409 |
+| `POST /ambient/policies/revert` | One-click revert: append a clearing row for the category. History stays; the override stops applying. | 422 unknown category |
+| `GET /ambient/stream` | Global delivery-event SSE (§18.4). **409 while ambient is dark**, and it closes itself if ambient goes dark under it. Accepts `?token=`. | 409 |
+
+## Remote agents router — `backend/app/api/remote_agents.py` (prefix `/remote-agents`, §19)
+
+Writes return **409 while `a2a_enabled` is off**; the projected `kind='a2a'` tools are inert.
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `GET /remote-agents` | List counterparties (common registry filters) with card summary and `auth_status`. | — |
+| `POST /remote-agents` | Register by Agent Card URL (201): the manager fetches `/.well-known/agent-card.json`, stores the card and projects each card skill as a tool. | 409 a2a dark; 422 card fetch/parse; egress refusal |
+| `GET /remote-agents/{agent_id}` | One agent with its card, skills and per-scheme `configured` flags. | 404 |
+| `PATCH /remote-agents/{agent_id}` | Edit the definition, credentials (**write-only**: `***` keeps, null removes, `env:VAR` resolves at connect time) or `status`. Deactivating takes its tools out of the catalog under `ingest_state='agentoff'`. | 403 static; 404; 422 |
+| `POST /remote-agents/{agent_id}/refresh-card` | Re-fetch and reconcile the card now. A refresh **never re-enables** an agent an operator disabled. | 404; 422 |
+| `GET /remote-agents/{agent_id}/tasks` | The task drawer: outbound tasks with state, park status and the last polled result. | 404 |
+| `POST /remote-agents/{agent_id}/tasks/{task_id}/reply` | Answer a remote `input-required` question. Terminal → an outbox delivery; still working → re-parked; another question → stays in the drawer. | 404; 409 wrong state |
+| `POST /remote-agents/{agent_id}/tasks/{task_id}/cancel` | Propagate `tasks/cancel` to the counterparty. | 404; 409 |
+| `DELETE /remote-agents/{agent_id}` | Soft-delete the agent and its projected tools (204). | 403 static; 409 if its tools are bound to skills |
+
+## Evals router — `backend/app/api/evals.py` (prefix `/evals`, §15)
+
+Inert while the §3.7.1 eval gate is off.
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `POST /evals/datasets` | Upload a dataset (201) as csv or xlsx in the predefined format. Bounded by content type, `MAX_UPLOAD_BYTES` and `MAX_EVAL_ROWS`. | 413 too large / too many rows; 422 bad format; 422 a case with a blank expectation |
+| `GET /evals/datasets` | List datasets with case counts. | — |
+| `GET /evals/datasets/{dataset_id}` | One dataset with its cases. | 404 |
+| `DELETE /evals/datasets/{dataset_id}` | Delete a dataset and its cases (204). | 404 |
+| `POST /evals/datasets/{dataset_id}/run` | Start a batch (201). Every case is an ordinary Run tagged `is_eval`, with HITL auto-approved; the batch is **fully isolated** — no memory, presence, wakeups or HITL queue — and gate auto-approval needs per-dataset opt-in. | 404; 409 gate off; 429 spend ceiling |
+| `GET /evals/runs` | List batches (optionally `?dataset_id=`). | — |
+| `GET /evals/runs/{eval_run_id}` | One batch with its config snapshot and **paged** results: per case the grade (`exact` / `contains` / `llm_judge`), the judge's structured verdict, and the underlying `run_id`. A judge failure grades the case `error`, never `pass`. | 404 |
+| `POST /evals/runs/{eval_run_id}/cancel` | Stop a batch. The per-case reaper ends a case that outlives its budget; the underlying run is left to its own wall clock. | 404; 409 already terminal |
+
+## Ops router — `backend/app/api/ops.py`
+
+| Method + path | Purpose | Errors |
+|---|---|---|
+| `GET /retention` | Per table: its gate, its window and how many rows a purge would delete **right now** — counted whether or not the gate is on, so the preview is honest before anything is enabled. | — |
+| `POST /retention/run` | Run every purge now. Each still answers to its own gate, enforced inside the purge. | — |
+| `GET /spend` | The UTC day's priced spend across every run kind, the ceiling and whether it is reached. A model with no known price is reported **unpriced**, never guessed. | — |
+| `GET /replicas` | The fleet as the database sees it (see **Fleet (M54)** below). | — |
 
 ## Cache router — `backend/app/api/cache.py` (prefix `/cache`)
 
@@ -163,8 +290,9 @@ Demo/testing only. Every endpoint returns **404** unless the `FAKE_LLM_ENABLED` 
 
 | Method + path | Purpose |
 |---|---|
-| `GET /health` | Liveness: `{"status": "ok"}`. |
-| `GET /metrics` | Prometheus metrics (runs/steps/tokens/errors counters and histograms, `backend/app/obs.py`), `text/plain; version=0.0.4`. |
+| `GET /health` | **Liveness only**: `{"status": "ok"}`. Never probes a dependency — a replica whose database is away must not be killed for it, only taken out of rotation. |
+| `GET /ready` | **Readiness** (M51/M53): 200 `{status: "ok", db: "ok", ...}` when this replica can serve; **503** `draining` while the SIGUSR1/SIGTERM drain is running, and 503 `degraded` when the database does not answer within the probe budget. This is the endpoint a balancer and `deploy.sh` poll. |
+| `GET /metrics` | Prometheus metrics — 45 series (runs/steps/tokens/errors, LLM latency and outcome by provider/model, pool saturation, in-flight runs, backlog depth, loop errors, MCP and listener state, spend, retention; `backend/app/obs.py`), `text/plain; version=0.0.4`. |
 
 
 ### Fleet (M54)

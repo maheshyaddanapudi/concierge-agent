@@ -2,7 +2,7 @@
 // keys, the schema drawer of a dynamic tool before its toggle, the expose
 // toggle flipped in the drawer, the DIRECT badge in the table, the cache
 // refresh button, search and the source filter.
-export default async function ({ page, nav, shot, get, log, closeDrawer }) {
+export default async function ({ page, nav, shot, get, log, closeDrawer, expect, expectEq }) {
   await nav(page, 'tools')
   const search = page.getByPlaceholder(/search/i).first()
   await search.fill('sitefiles')
@@ -21,7 +21,10 @@ export default async function ({ page, nav, shot, get, log, closeDrawer }) {
   const tools = (await get('/tools?limit=200')).json
   const echo = tools.find((t) => t.tool_key === 'sitefiles.echo')
   log(`sitefiles.echo direct_exposure=${echo?.direct_exposure}`)
-  if (!echo?.direct_exposure) throw new Error('expose toggle did not take')
+  // the ingest naming rule this stage is named for
+  expect(!!echo, 'the ingested tool is keyed {server}.{tool} — sitefiles.echo')
+  expectEq(echo?.source, 'dynamic', 'an ingested tool is a dynamic record')
+  expectEq(echo?.direct_exposure, true, 'the drawer switch wrote direct_exposure')
   await shot(page, '01-expose-toggle')
   await closeDrawer(page)
   await shot(page, '02-direct-badge')
@@ -40,6 +43,9 @@ export default async function ({ page, nav, shot, get, log, closeDrawer }) {
   await page.waitForTimeout(700)
   const shown = await page.locator('table tbody tr').count()
   log(`source=static rows shown: ${shown}`)
+  // the filter is the point of the frame: it must narrow to the static tools
+  expect(shown > 0, `the source=static filter shows the static tools (${shown} rows)`)
+  expect(shown < tools.length, `…and fewer than the unfiltered ${tools.length}`)
   await shot(page, '05-filter-source-static')
   await source.selectOption({ index: 0 })
 }

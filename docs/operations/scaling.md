@@ -7,7 +7,7 @@ Honesty first: this is a POC that has now been run at **three replicas** behind 
 - Three compose services: `db` (Postgres 16), `backend` (FastAPI, **one uvicorn process, no `--workers`** — `backend/Dockerfile` CMD), `frontend` (nginx). Optional fourth: `redis` behind the `redis` compose profile.
 - Runs execute as asyncio tasks **inside the single backend process** (`orchestrator/runner.py`, `RUNNING_TASKS` dict). No broker, no queue, no Celery — by design (spec §2, ADR `../adr/0001-no-broker-single-process.md`).
 - Postgres is the only required stateful infrastructure: registries, runs/steps, settings, and LangGraph checkpoints all live there.
-- Registry cache default is `bypass` (direct DB reads, ADR `../adr/0004-registry-cache-bypass-default.md`); `memory` is the single-node performance step.
+- Registry cache default is **`memory`** (in-process, event-invalidated, with `REGISTRY_CACHE_TTL_S` bounding a lost cross-replica NOTIFY); `bypass` (direct DB reads) remains the live-flippable rollback lever, and `redis` shares one cache across replicas. ADR `../adr/0004-registry-cache-bypass-default.md` records the original decision and the amendment that flipped the default.
 
 ### Connection budget (M50)
 
@@ -96,6 +96,8 @@ Three more things the million-row drill taught, each shipped:
 - `docker compose up --scale backend=3` binds each replica to a host port from `BACKEND_PORT_RANGE` (8000, 8001, 8002); the frontend's nginx resolves `backend` per request through Docker's DNS (`resolver 127.0.0.11`), so replicas join and leave without a restart and requests round-robin.
 - Prometheus discovers each replica as its own target (`dns_sd_configs` in `docs/observability/prometheus.yml`); a scrape through the frontend VIP would alternate replicas and show counter resets.
 - **Deploys at N>1**: compose recreates every replica of a service together — `deploy.sh` at N=3 is a brief full outage, not a rolling roll. A rolling deploy is an orchestrator's job: on Kubernetes map `/ready`, `/health`, `preStop: kill -USR1 1; sleep 5` and `terminationGracePeriodSeconds: 40` as the M53 section says and let the rollout strategy roll one pod at a time; every M54 property (ownership, intents, fan-out, clocks) holds across the roll because none of it lives in a process.
+- **A rolling deploy requires expand/contract migrations, and nothing enforces that for you.** Migrations run at boot under the boot advisory lock, so the *first* new replica migrates and the rest wait — which means that during the roll the **old** replicas are running against the **new** schema. A migration that drops or renames a column, or narrows a type, breaks every replica that has not rolled yet. Split such a change across two deploys: deploy 1 adds the new column and writes both, deploy 2 stops writing the old one and drops it. A single-shot `deploy.sh` at N=1 is a brief outage and does not have this constraint; at N>1 it is the constraint that decides whether the roll is actually rolling.
+- **`preStop` is main-thread only.** The `SIGUSR1` drain is installed as an asyncio signal handler in the main thread of a single-worker uvicorn. Running uvicorn with `--workers > 1` would leave the non-main workers without it; scale with replicas, not with worker processes.
 
 ### Cache promotion: memory → redis
 
@@ -105,7 +107,8 @@ The `redis` backend exists so multiple replicas can share one cache instead of N
 2. **Restart the backend** if `REDIS_URL` changed (env vars are read at process start).
 3. **Flip the setting**: Settings → Registry cache → `redis`, or `PATCH /settings {"registry_cache_mode": "redis"}`. The save is **ping-validated** (`settings_store._ping_redis`): unreachable Redis → 422, mode unchanged. Missing `REDIS_URL` → 422 before the ping.
 4. **Verify**: `GET /cache/status` reports `mode: redis`; reads are read-through blobs (`concierge:cache:<registry>` keys, each with the TTL), invalidation is delete-on-invalidate.
-5. **Rollback lever**: flip back to `bypass` at any time — instant escape hatch, byte-identical pre-cache semantics.
+5. **Rollback lever**: flip back to `memory` (the shipped default) or all the way to `bypass` at any time — both apply live, mid-process. `bypass` is byte-identical pre-cache semantics and the escape hatch to reach for while diagnosing; it is not fresher than `memory` (every write invalidates before returning), so it costs a Postgres round-trip per registry and settings read rather than buying anything.
+6. **At runtime, `redis` fails open**: a read Redis cannot serve falls through to Postgres, `concierge_cache_degraded_total{backend="redis"}` counts it, and `cache_backend_degraded` names the error. Nothing fails — see [runbooks/redis-outage.md](./runbooks/redis-outage.md).
 
 Note the redis backend still keeps per-process generation counters and pairs with the LISTEN/NOTIFY channel for dirty marking; Redis holds the data blobs, Postgres carries the invalidation signal.
 

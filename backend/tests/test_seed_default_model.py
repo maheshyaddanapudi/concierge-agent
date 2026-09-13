@@ -1,7 +1,8 @@
 """First-boot default-model resolution (spec §13): with no explicit setting
 stored and the code default's provider unconfigured, the seed pass picks the
 first configured provider's flagship — anthropic → gemini flash → gpt-5.6
-luna → fake. An explicit setting is never touched."""
+luna → openrouter qwen → the custom gateway's first model → fake. An
+explicit setting is never touched."""
 
 from collections.abc import Iterator
 
@@ -72,6 +73,58 @@ async def test_anthropic_configured_keeps_code_default(monkeypatch: pytest.Monke
         assert await resolve_first_boot_default_model(session) is None
         assert await get_setting(session, "default_model") == "anthropic:claude-sonnet-4-6"
         assert await session.get(AppSetting, "default_model") is None  # no row written
+
+
+async def test_openrouter_only_install_gets_a_usable_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """code_setting_ui_hardening: openrouter was missing from the preference
+    list, so an install keyed only with OPENROUTER_API_KEY — the provider
+    every acceptance frame in this repo was captured on — matched nothing,
+    kept the unconfigured anthropic code default, and could not run a chat
+    until a human opened Settings."""
+    monkeypatch.delenv("FAKE_LLM_ENABLED", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    get_config.cache_clear()
+    async with get_session_factory()() as session:
+        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max"
+
+
+async def test_openrouter_is_preferred_over_the_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    get_config.cache_clear()
+    async with get_session_factory()() as session:
+        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max"
+
+
+async def test_custom_gateway_resolves_to_its_first_declared_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway's model ids are deployment-specific, so the entry carries
+    no hardcoded ref — it asks the adapter."""
+    monkeypatch.delenv("FAKE_LLM_ENABLED", raising=False)
+    monkeypatch.setenv("CUSTOM_GATEWAY_BASE_URL", "https://gw.example.com/v1")
+    monkeypatch.setenv("CUSTOM_GATEWAY_API_KEY", "gw-test")
+    monkeypatch.setenv("CUSTOM_GATEWAY_MODELS", "house-large, house-small")
+    get_config.cache_clear()
+    async with get_session_factory()() as session:
+        assert await resolve_first_boot_default_model(session) == "custom:house-large"
+
+
+async def test_a_custom_gateway_with_no_model_list_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured but model-less: the adapter returns only its placeholder,
+    which `get_chat_model` would reject — so it must not become the default."""
+    monkeypatch.delenv("FAKE_LLM_ENABLED", raising=False)
+    monkeypatch.setenv("CUSTOM_GATEWAY_BASE_URL", "https://gw.example.com/v1")
+    monkeypatch.setenv("CUSTOM_GATEWAY_API_KEY", "gw-test")
+    monkeypatch.delenv("CUSTOM_GATEWAY_MODELS", raising=False)
+    get_config.cache_clear()
+    async with get_session_factory()() as session:
+        assert await resolve_first_boot_default_model(session) is None
 
 
 async def test_nothing_configured_leaves_code_default(monkeypatch: pytest.MonkeyPatch) -> None:

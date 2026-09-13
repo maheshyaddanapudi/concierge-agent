@@ -44,7 +44,7 @@ required Redis. The compose stack is exactly three services: `db`, `backend`,
 Positive:
 
 - One-command startup and a trivially reproducible acceptance environment;
-  the ten-step demo script (spec §14) runs on a fresh `docker compose up`.
+  the eleven-step demo script (spec §14) runs on a fresh `docker compose up`.
 - No serialization boundary between orchestrator and workers: interrupts,
   exceptions, and `usage_metadata` propagate as Python objects.
 - Cooperative cancellation is a task cancel at the next step boundary, not a

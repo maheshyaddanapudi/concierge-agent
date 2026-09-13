@@ -20,6 +20,7 @@ from app.api.deps import (
 from app.mcp.secrets import mask_map, merge_secret_map
 from app.models import McpServer, Skill, Tool, skill_tools
 from app.schemas.mcp_server import McpServerCreate, McpServerOut, McpServerPatch
+from app.toolschema import SERVER_INACTIVE
 
 router = APIRouter(prefix="/mcp-servers", tags=["mcp-servers"])
 
@@ -71,6 +72,16 @@ async def list_servers(session: SessionDep, filters: FiltersDep) -> list[McpServ
 async def create_server(body: McpServerCreate, session: SessionDep) -> McpServerOut:
     if body.transport == "http":
         _check_egress(body.url)
+    if body.transport == "stdio":
+        # registering a stdio server is registering a SUBPROCESS; refuse an
+        # unknown launcher here so the operator sees it as a 422 at the form
+        # rather than as a connection error minutes later
+        from app.mcp.manager import StdioLauncherRefused, _check_stdio_launcher
+
+        try:
+            _check_stdio_launcher(body.command or "")
+        except StdioLauncherRefused as exc:
+            raise HTTPException(422, str(exc)) from exc
     server = McpServer(
         **body.model_dump(),
         source="dynamic",
@@ -105,8 +116,25 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
     server = await fetch_or_404(session, McpServer, server_id)
     changes: dict[str, Any] = body.model_dump(exclude_unset=True)
     enforce_static_rules(server, set(changes))
+    was_active = server.status != "inactive"
     if "url" in changes and (changes["url"] or server.transport == "http"):
         _check_egress(changes["url"])
+    # the same subprocess guard as create: without it the allowlist was
+    # half-installed — register with `npx`, then PATCH the command to
+    # anything. The connect path checks again and so never actually spawned
+    # it, but the operator learned that from a connection error minutes
+    # later instead of from the form.
+    if (changes.get("command") is not None) or (
+        "transport" in changes and changes["transport"] == "stdio"
+    ):
+        transport = changes.get("transport", server.transport)
+        if transport == "stdio":
+            from app.mcp.manager import StdioLauncherRefused, _check_stdio_launcher
+
+            try:
+                _check_stdio_launcher(changes.get("command") or server.command or "")
+            except StdioLauncherRefused as exc:
+                raise HTTPException(422, str(exc)) from exc
     # M52: write-only secrets merge — `***` keeps, null removes, else replaces
     if "env" in changes:
         server.env = merge_secret_map(server.env, changes.pop("env"))
@@ -132,6 +160,41 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
     )
     config_changed = server.config_hash is None or new_hash != server.config_hash
     server.config_hash = new_hash
+    # §4: the status toggle is the operator's off switch, not a label. It used
+    # to change nothing at all — the subprocess stayed up, every tool stayed
+    # active and callable, and the next reconcile connected the server again.
+    # Off takes this server's active tools out of service under their own
+    # ingest_state; on brings back exactly those, never a tool the operator
+    # disabled on its own. (Same shape as the remote-agent cascade.)
+    tools_touched = False
+    if "status" in changes:
+        # the operator's intent, recorded separately from `status` because a
+        # freshly registered server is ALSO `inactive` until its first connect
+        server.disabled_at = datetime.now(UTC) if server.status == "inactive" else None
+    if was_active and server.status == "inactive":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.mcp_server_id == server.id,
+                Tool.deleted_at.is_(None),
+                Tool.status == "active",
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "inactive"
+            tool.ingest_state = SERVER_INACTIVE
+            tools_touched = True
+    elif not was_active and server.status != "inactive":
+        rows = await session.execute(
+            select(Tool).where(
+                Tool.mcp_server_id == server.id,
+                Tool.deleted_at.is_(None),
+                Tool.ingest_state == SERVER_INACTIVE,
+            )
+        )
+        for tool in rows.scalars():
+            tool.status = "active"
+            tool.ingest_state = "present"
+            tools_touched = True
     await session.commit()
     # onupdate columns (updated_at) are expired by the flush — reload before
     # serializing, or Pydantic's attribute access triggers lazy IO
@@ -150,9 +213,20 @@ async def patch_server(server_id: UUID, body: McpServerPatch, session: SessionDe
             ),
         )
         manager = get_manager()
-        if manager is not None and (server.status != "inactive" or server.config_hash is None):
+        if manager is not None and server.status != "inactive":
             await manager.connect_server(server.id)
             await session.refresh(server)
+    manager = get_manager()
+    if manager is not None:
+        if was_active and server.status == "inactive":
+            await manager.disconnect_server(server.id)  # Deactivate means stop
+        elif not was_active and server.status != "inactive":
+            await manager.connect_server(server.id)  # and Activate means start
+            await session.refresh(server)
+    if tools_touched:
+        from app.registry_cache import get_cache
+
+        await get_cache().invalidate("tools")
     counts = await _tool_counts(session, [server.id])
     return _to_out(server, counts.get(server.id, 0))
 

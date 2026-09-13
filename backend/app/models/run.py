@@ -12,6 +12,7 @@ from app.models.base import Base
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (Index("conversations_user_idx", "user_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
@@ -39,6 +40,8 @@ class Run(Base):
         Index("runs_conversation_idx", "conversation_id"),
         Index("runs_status_idx", "status"),
         Index("runs_started_at_idx", "started_at"),
+        # created by migration, never declared here (§18.8 tenancy)
+        Index("runs_user_idx", "user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -48,7 +51,8 @@ class Run(Base):
     chat_message: Mapped[str] = mapped_column(Text)
     plan: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(default=None)
-    # 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
+    # 'queued' (§3.7 admission — waiting on the execution semaphore)
+    # | 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
     # | 'stalled' (§17.4 — reaped ambient run whose heartbeat went silent)
     status: Mapped[str] = mapped_column(String(16), default="running")
     # 'graph' | 'agentic' | 'direct' (spec §7.5)
@@ -115,6 +119,7 @@ class RunStep(Base):
     sub_agent_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     node_id: Mapped[str | None] = mapped_column(String(255), default=None)
     # 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate'
+    # | 'format' (§7 — the formatter's own call) | 'summary' (§7.5 history)
     step_type: Mapped[str] = mapped_column(String(16))
     input: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     output: Mapped[dict[str, Any] | None] = mapped_column(default=None)

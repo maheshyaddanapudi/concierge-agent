@@ -48,7 +48,13 @@ async def process_run(run_id: UUID) -> None:
     from app.db import get_session_factory
     from app.memory.episodic import digest_run, update_rollup
     from app.models import Run
+    from app.registry_cache import get_cache
 
+    # §3.7.1: the master is read here, in the pipeline this docstring invites
+    # you to await directly, and again inside digest_run/update_rollup — not
+    # only in the `_post_run` wrapper the runner happens to call.
+    if not bool(await get_cache().setting("memory_enabled")):
+        return
     digest = await digest_run(run_id)
     if digest is not None:
         await update_rollup(digest.conversation_id)

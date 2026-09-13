@@ -62,16 +62,14 @@ interface ResultRow {
   answer: string
 }
 
+/** The upload goes through the shared client like every other call: a raw
+ * `fetch` carried no auth header (§18.8 — a 401 with auth on, and no login
+ * gate raised) and turned a refusal into a bare status line. */
 async function uploadDataset(file: File, name: string): Promise<DatasetRow> {
   const form = new FormData()
   form.append('file', file)
   if (name.trim()) form.append('name', name.trim())
-  const resp = await fetch('/api/v1/evals/datasets', { method: 'POST', body: form })
-  if (!resp.ok) {
-    const body = (await resp.json().catch(() => ({}))) as { detail?: unknown }
-    throw new Error(typeof body.detail === 'string' ? body.detail : resp.statusText)
-  }
-  return (await resp.json()) as DatasetRow
+  return api.upload<DatasetRow>('/evals/datasets', form)
 }
 
 function PassChip({ result }: { result: ResultRow }) {
@@ -130,7 +128,9 @@ function RunResults({ evalRunId }: { evalRunId: string }) {
             <div className="flex items-center gap-2">
               <PassChip result={r} />
               <Chip>{r.grader}</Chip>
-              <span className="font-mono text-[10px] text-slate-500">score {r.score.toFixed(2)}</span>
+              <span className="font-mono text-[10px] text-slate-500">
+                score {r.score.toFixed(2)}
+              </span>
               <span className="ml-auto truncate font-mono text-[10px] text-slate-600">
                 run {r.run_id?.slice(0, 8) ?? '—'}
               </span>
@@ -262,7 +262,8 @@ export function EvalsPage() {
       invalidate('eval-datasets')
       setSelected(dataset)
     } catch (e) {
-      setError(String(e))
+      // an ApiError's message IS the server's detail — never a bare status
+      setError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -272,7 +273,10 @@ export function EvalsPage() {
         title="Evals"
         subtitle="graded datasets run admin-direct against a skill or sub agent — every case is an ordinary run tagged eval=true"
       />
-      <div className="mb-4 rounded-lg border border-slate-800 bg-void-950/40 p-3" data-testid="eval-upload">
+      <div
+        className="mb-4 rounded-lg border border-slate-800 bg-void-950/40 p-3"
+        data-testid="eval-upload"
+      >
         <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-slate-500">
           upload dataset — csv/xlsx with level,target_id,input,expected[,judge_notes][,grader]
         </div>
@@ -320,7 +324,9 @@ export function EvalsPage() {
                 <td className="px-3 py-2">
                   <Chip>{d.level}</Chip>
                 </td>
-                <td className="px-3 py-2 text-slate-400">{d.target_name ?? d.target_id.slice(0, 8)}</td>
+                <td className="px-3 py-2 text-slate-400">
+                  {d.target_name ?? d.target_id.slice(0, 8)}
+                </td>
                 <td className="px-3 py-2 font-mono text-xs text-slate-400">{d.case_count}</td>
                 <td className="px-3 py-2 text-xs text-slate-500">{timeAgo(d.created_at)}</td>
               </tr>

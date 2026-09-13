@@ -216,8 +216,10 @@ async def test_fallback_mining_creates_inactive_proposal() -> None:
             tool_keys=["filesystem.read_file"],
             fallback=True,
         )
-    # the §4 judge reads every machine-authored proposal (hardening wave):
-    # the fake's unscripted default is a clean 0% verdict
+    # the §4 judge reads every machine-authored proposal (hardening wave) —
+    # scripted, because a 0% verdict is what lets the proposal through and a
+    # test that leaves it to a default is not testing the mining
+    fake_llm.push_overlap(0)
     proposals = await mine_fallback_skills()
     assert len(proposals) == 1
     async with get_session_factory()() as session:
@@ -230,7 +232,8 @@ async def test_fallback_mining_creates_inactive_proposal() -> None:
     assert skill.source == "dynamic"
     assert skill.description.startswith(PROPOSAL_PREFIX)
     assert tool_keys == {"filesystem.read_file"}
-    # idempotent: the same cluster does not propose twice
+    # idempotent: the same cluster does not propose twice (no second
+    # proposal, so no second verdict to script)
     assert await mine_fallback_skills() == []
 
 
@@ -367,6 +370,47 @@ async def test_contradiction_sweep_quarantines_duplicate_entity_keys() -> None:
     assert statuses == ["active", "quarantined"]
     newest = next(m for m in rows if m.status == "active")
     assert newest.text == "the deploy branch is release"
+
+
+async def test_contradiction_sweep_partitions_on_the_scope_instance() -> None:
+    """`scope` is the WORD 'conversation', not the conversation. Partitioning
+    on it made two threads' rows for one entity_key duplicates of each other
+    and quarantined the older thread's — the same for two projects' rows."""
+    from app.models import Conversation
+
+    await _set(memory_enabled=True, embedding_model="fake:scripted")
+    async with get_session_factory()() as session:
+        conv_a, conv_b = Conversation(), Conversation()
+        session.add_all([conv_a, conv_b])
+        await session.commit()
+        a_id, b_id = conv_a.id, conv_b.id
+    rows = [
+        await remember(
+            text=f"in this thread the codeword is {word}",
+            kind="fact",
+            scope="conversation",
+            conversation_id=cid,
+            source="user_stated",
+            entity_key="thread.codeword",
+        )
+        for cid, word in ((a_id, "falcon"), (b_id, "osprey"))
+    ]
+    projects = [
+        await remember(
+            text=f"the {key} deploy branch is main",
+            kind="fact",
+            scope="project",
+            project_key=key,
+            source="user_stated",
+            entity_key="deploy.branch",
+        )
+        for key in ("apollo", "zeus")
+    ]
+    assert await contradiction_sweep() == 0
+    async with get_session_factory()() as session:
+        for row in rows + projects:
+            fresh = await session.get(Memory, row.id)
+            assert fresh is not None and fresh.status == "active", fresh
 
 
 async def test_run_due_jobs_respects_master_switch_and_locks() -> None:

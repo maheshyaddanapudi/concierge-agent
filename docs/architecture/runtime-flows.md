@@ -6,7 +6,7 @@ All HTTP paths below are mounted under the `/api/v1` prefix (`backend/app/main.p
 
 The full SSE vocabulary, emitted by `RunRecorder.emit` (`backend/app/orchestrator/recorder.py`) and the runner (`backend/app/orchestrator/runner.py`), and subscribed to by name in `frontend/src/api/client.ts` (`streamRun`):
 
-`run_status`, `plan`, `route`, `dispatch_start`, `dispatch_end`, `activity`, `token`, `thinking`, `answer_ui`, `hitl_request`, `error`, `done` — plus a `ping` keepalive that `chat_stream` (`backend/app/api/chat.py`) emits after 120 s of queue silence.
+`run_status`, `plan`, `route`, `dispatch_start`, `dispatch_end`, `activity`, `token`, `thinking`, `answer_ui`, **`charts`** (the `render_chart` tool's specs, formatter-independent), `hitl_request`, `error`, `done`, plus two the client must also handle: a `ping` keepalive that `chat_stream` (`backend/app/api/chat.py`) emits after **15 s** of silence (`SSE_HEARTBEAT_S` — deliberately inside the tightest common balancer default; sse-starlette's own comment ping is set to 60 s as a backstop only), and **`reconnect`**, which a draining replica sends to close a stream it cannot serve so the client comes back with `Last-Event-ID`. Every event carries a monotonic `id:`, and `Last-Event-ID` resumes from it; a run whose events have left the process resolves from its row (M53). The authoritative payload-by-payload contract is [api/sse-events.md](../api/sse-events.md).
 
 ---
 
@@ -281,7 +281,7 @@ sequenceDiagram
 
 `_notify_peers` broadcasts `pg_notify('registry_cache_inv', f"{origin}:{registry}")` where `origin` is a per-process UUID hex minted at cache construction. Each replica's `start_listener` holds a dedicated asyncpg connection with `add_listener` on the same channel; `_on_notify` drops payloads whose origin matches its own (the sender already marked itself dirty) and otherwise schedules `_mark_dirty` — deliberately *not* `invalidate` — so a notification can never trigger another notification: loops are impossible by construction. Notify is best-effort; single-replica correctness never depends on it.
 
-Reload is lazy: the next read through `_ensure` sees the dirty flag (in `memory` mode) or the deleted blob (in `redis` mode) and reloads the registry wholesale from Postgres — registries are small, and a full reload can never leave a stale embedded relationship. In the default `bypass` mode every read is a direct Postgres query and invalidation only bumps generations.
+Reload is lazy: the next read through `_ensure` sees the dirty flag (in `memory` mode) or the deleted blob (in `redis` mode) and reloads the registry wholesale from Postgres — registries are small, and a full reload can never leave a stale embedded relationship. In `bypass` mode every read is a direct Postgres query and invalidation only bumps generations; `bypass` was the shipped default through M56 and is now the rollback lever, with `memory` shipped by default.
 
 The **manual refresh** path: the "⟳ Refresh cache" button (`frontend/src/components/CacheControls.tsx`, `useRefreshCache` in `frontend/src/api/hooks.ts`) posts `POST /cache/refresh/{registry}` — or `all` — handled in `backend/app/api/cache.py`, which calls `cache.refresh`: invalidate (including the peer notify) plus an **eager** `_ensure(force=True)` reload, returning `{records, generation, loaded_at, cached}` for the status line next to the button. `GET /cache/status` feeds the same UI.
 

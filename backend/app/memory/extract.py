@@ -135,7 +135,12 @@ async def reconcile_and_write(cand: Candidate, run_id: UUID) -> Memory | None:
     """
     from app.memory.store import check_suppressed
 
-    if await check_suppressed(cand.text, cand.scope, _candidate_owner()):
+    if await check_suppressed(
+        cand.text,
+        cand.scope,
+        _candidate_owner(),
+        conversation_id=cand.conversation_id,
+    ):
         return None  # M44 §16.2: the user forgot this — do not re-learn it
 
     if cand.kind == "instruction":

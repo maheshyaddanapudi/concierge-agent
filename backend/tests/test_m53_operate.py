@@ -28,7 +28,7 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import AsyncClient
 from prometheus_client import generate_latest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app import obs
 from app.db import get_session_factory
@@ -532,6 +532,10 @@ class TestRetention:
             "pattern_instances",
             "a2a_tasks",
             "auth_sessions",
+            # the run ledger joined on the same terms (R7.1)
+            "runs",
+            "run_steps",
+            "checkpoints",
         }
         for table in RETENTION_TABLES:
             gate, window = RETENTION_GATES[table], RETENTION_WINDOWS[table]
@@ -623,7 +627,12 @@ class TestRetention:
             )
 
     async def test_retention_runs_under_an_advisory_lock(self) -> None:
-        from app.retention import RETENTION_LOCK_CLASSID, RETENTION_LOCK_OBJID, run_retention
+        from app.retention import (
+            RETENTION_LOCK_CLASSID,
+            RETENTION_LOCK_OBJID,
+            RETENTION_TABLES,
+            run_retention,
+        )
 
         assert RETENTION_LOCK_CLASSID not in (42016, 427017)  # never collides with memory/leader
         async with get_session_factory()() as session:
@@ -642,14 +651,7 @@ class TestRetention:
                     {"c": RETENTION_LOCK_CLASSID, "o": RETENTION_LOCK_OBJID},
                 )
         result = await run_retention()
-        assert set(result) == {
-            "ambient_events",
-            "deliveries",
-            "ambient_policies",
-            "pattern_instances",
-            "a2a_tasks",
-            "auth_sessions",
-        }
+        assert set(result) == set(RETENTION_TABLES)
 
     def test_retention_ticks_from_the_periodic_loop(self) -> None:
         src = (REPO / "backend" / "app" / "memory" / "lifecycle.py").read_text()
@@ -690,6 +692,26 @@ class TestObservability:
             'concierge_llm_latency_seconds_count{model="scripted",provider="fake",status="ok"}'
             in text_out
         )
+
+    async def test_memory_recall_latency_is_actually_observed(self) -> None:
+        """code_setting_ui_hardening: `concierge_memory_recall_seconds` was
+        declared in obs.py and never observed anywhere, so the one latency
+        the memory layer is judged on scraped as an empty series."""
+        from app.memory.rank import recall
+
+        def _count() -> float:
+            for line in generate_latest().decode().splitlines():
+                if line.startswith("concierge_memory_recall_seconds_count"):
+                    return float(line.rsplit(" ", 1)[1])
+            return -1.0
+
+        before = _count()
+        assert before >= 0.0, "the series should exist even at zero"
+        await recall("something nobody has ever written down", k=3)
+        assert _count() == before + 1
+        # an empty query is not a recall and must not inflate the histogram
+        await recall("   ")
+        assert _count() == before + 1
 
     async def test_step_metrics_carry_the_section_10_labels(self) -> None:
         from app.orchestrator.recorder import RunRecorder
@@ -1196,3 +1218,371 @@ class TestCostModel:
         finally:
             await _set(model_prices={})
             invalidate_spend_cache()
+
+
+# ── F. observability, retention and payload hardening (R3/R7) ────────
+#
+# Five findings from the ops review, each one a signal that was collected
+# but never usable: spans that were all roots, spans that reported no
+# tokens and no error, logs inside a run with no run id, a duration series
+# that existed only for runs that succeeded, and a run ledger with no
+# retention at all behind a list endpoint that shipped every snapshot.
+
+
+def _series(body: str, name: str, **labels: str) -> float:
+    """One Prometheus sample by name and exact labels; 0.0 when absent."""
+    rendered = ",".join(f'{k}="{v}"' for k, v in labels.items())
+    prefix = f"{name}{{{rendered}}} "
+    for line in body.splitlines():
+        if line.startswith(prefix):
+            return float(line[len(prefix) :])
+    return 0.0
+
+
+class TestStepSpans:
+    """R3.2/R3.3: the recorder computes the step tree and the token counts,
+    and used to tell the tracer neither."""
+
+    async def test_child_step_spans_nest_under_their_parent(self) -> None:
+        from app.orchestrator.recorder import RunRecorder
+
+        run = await _run_row("running")
+        recorder = RunRecorder(run.id)
+        parent = await recorder.start_step("skill", tier="skill", entity_name="parent")
+        child = await recorder.start_step(
+            "tool_call", tier="tool", entity_name="child", parent_step_id=parent
+        )
+        grandchild = await recorder.start_step(
+            "tool_call", tier="tool", entity_name="grandchild", parent_step_id=child
+        )
+        parent_span = recorder._spans[parent]
+        child_span = recorder._spans[child]
+        grandchild_span = recorder._spans[grandchild]
+        assert parent_span.parent is None, "a top-level step is the root of its trace"
+        assert child_span.parent is not None, "child spans were all roots: the panel was flat"
+        assert child_span.parent.span_id == parent_span.get_span_context().span_id
+        assert grandchild_span.parent is not None
+        assert grandchild_span.parent.span_id == child_span.get_span_context().span_id
+        # one trace, not three
+        trace_ids = {
+            s.get_span_context().trace_id for s in (parent_span, child_span, grandchild_span)
+        }
+        assert len(trace_ids) == 1
+        for step_id in (grandchild, child, parent):
+            await recorder.finish_step(step_id)
+
+    async def test_finished_span_carries_its_real_token_counts(self) -> None:
+        from app.orchestrator.recorder import RunRecorder
+
+        run = await _run_row("running")
+        recorder = RunRecorder(run.id)
+        step = await recorder.start_step("skill", tier="skill", model="fake:scripted")
+        span = recorder._spans[step]
+        # the §10 label set is stamped at START, when both counts are 0
+        assert span.attributes["concierge.input_tokens"] == "0"
+        await recorder.finish_step(step, input_tokens=11, output_tokens=7)
+        assert span.attributes["concierge.input_tokens"] == 11
+        assert span.attributes["concierge.output_tokens"] == 7
+        assert span.attributes["concierge.status"] == "completed"
+
+    async def test_failed_step_span_records_the_error(self) -> None:
+        from opentelemetry.trace import StatusCode
+
+        from app.orchestrator.recorder import RunRecorder
+
+        run = await _run_row("running")
+        recorder = RunRecorder(run.id)
+        step = await recorder.start_step("tool_call", tier="tool")
+        span = recorder._spans[step]
+        await recorder.finish_step(step, status="failed", error="the tool exploded")
+        assert span.status.status_code is StatusCode.ERROR
+        assert "the tool exploded" in (span.status.description or "")
+        assert [event.name for event in span.events] == ["exception"], "no exception recorded"
+
+    async def test_a_healthy_step_span_stays_unset(self) -> None:
+        from opentelemetry.trace import StatusCode
+
+        from app.orchestrator.recorder import RunRecorder
+
+        run = await _run_row("running")
+        recorder = RunRecorder(run.id)
+        step = await recorder.start_step("skill", tier="skill")
+        span = recorder._spans[step]
+        await recorder.finish_step(step)
+        assert span.status.status_code is not StatusCode.ERROR
+        assert span.events == ()
+
+
+class TestRunLogScope:
+    """R3.4: `merge_contextvars` was wired in, but only `eval=True` was ever
+    bound — the ~200 events a run emits outside the recorder had no run id."""
+
+    async def test_run_context_binds_the_run_onto_every_event_and_unbinds(self) -> None:
+        import structlog
+
+        run_id = uuid4()
+        assert "run_id" not in structlog.contextvars.get_contextvars()
+        with obs.run_context(run_id, "agentic"):
+            bound = structlog.contextvars.get_contextvars()
+            assert bound["run_id"] == str(run_id)
+            assert bound["mode"] == "agentic"
+            # the processor the pipeline actually runs, on an arbitrary event
+            event = structlog.contextvars.merge_contextvars(None, "info", {"event": "whatever"})
+            assert event["run_id"] == str(run_id) and event["mode"] == "agentic"
+        after = structlog.contextvars.get_contextvars()
+        assert "run_id" not in after and "mode" not in after
+
+    async def test_run_scope_wraps_an_awaitable_and_unbinds_on_failure(self) -> None:
+        import structlog
+
+        run_id = uuid4()
+
+        async def work() -> str:
+            return str(structlog.contextvars.get_contextvars().get("run_id"))
+
+        assert await obs.run_scope(run_id, "graph", work()) == str(run_id)
+        assert "run_id" not in structlog.contextvars.get_contextvars()
+
+        async def boom() -> None:
+            raise RuntimeError("nope")
+
+        with pytest.raises(RuntimeError):
+            await obs.run_scope(run_id, "graph", boom())
+        assert "run_id" not in structlog.contextvars.get_contextvars()
+        obs.forget_run_timer(run_id)
+
+
+class TestRunDuration:
+    """R3.5: RUN_DURATION was observed on the completed path only, so failed,
+    cancelled and wall-clocked runs had no timing series at all."""
+
+    async def test_failed_run_is_timed_with_the_mode_it_ran_under(self) -> None:
+        from app.orchestrator.context import RunContext, set_run_context
+        from app.orchestrator.recorder import RunRecorder
+
+        before = _series(
+            generate_latest().decode(),
+            "concierge_run_duration_seconds_count",
+            mode="agentic",
+            status="failed",
+        )
+        run = await _run_row("running", orchestrator_mode="agentic")
+        # exactly the shape of the runner's failure path: the run's recorder
+        # starts the clock, a SECOND recorder built in the finalizer emits
+        # the terminal status
+        recorder = RunRecorder(run.id)
+        set_run_context(RunContext(run_id=run.id, mode="agentic", recorder=recorder))
+        try:
+            step = await recorder.start_step("plan", tier="orchestrator")
+            await recorder.finish_step(step)
+            RunRecorder(run.id).emit("run_status", {"status": "failed"})
+        finally:
+            set_run_context(None)  # type: ignore[arg-type]
+        after = _series(
+            generate_latest().decode(),
+            "concierge_run_duration_seconds_count",
+            mode="agentic",
+            status="failed",
+        )
+        assert after == before + 1
+
+    async def test_cancelled_run_is_timed_once_only(self) -> None:
+        from app.orchestrator.recorder import RunRecorder
+
+        def count() -> float:
+            return _series(
+                generate_latest().decode(),
+                "concierge_run_duration_seconds_count",
+                mode="graph",
+                status="cancelled",
+            )
+
+        before = count()
+        run = await _run_row("running")
+        with obs.run_context(run.id, "graph"):
+            RunRecorder(run.id).emit("run_status", {"status": "cancelled"})
+        assert count() == before + 1
+        # a second terminal emit (a retried finalizer, a peer's intent) must
+        # not double-count the same run
+        RunRecorder(run.id).emit("run_status", {"status": "cancelled"})
+        assert count() == before + 1
+
+    async def test_completed_is_left_to_the_runner_so_it_is_not_counted_twice(self) -> None:
+        """The completed path observes RUN_DURATION inline where the run
+        record is written; timing it in the recorder too would double every
+        successful run."""
+        assert "completed" not in obs.RECORDER_TIMED_STATUSES
+        assert obs.RECORDER_TIMED_STATUSES <= obs.TERMINAL_RUN_STATUSES
+
+
+class TestRunLedgerRetention:
+    """R7.1: runs, run_steps and the LangGraph checkpoint tables grow with
+    every turn and only the all-or-nothing §8.7 purge could trim them."""
+
+    @pytest.mark.parametrize("table", ["runs", "run_steps", "checkpoints"])
+    def test_gate_and_window_exist_and_are_born_dark(self, table: str) -> None:
+        from app.retention import RETENTION_GATES, RETENTION_WINDOWS
+
+        assert DEFAULTS[RETENTION_GATES[table]] is False
+        assert isinstance(DEFAULTS[RETENTION_WINDOWS[table]], int)
+        assert DEFAULTS[RETENTION_WINDOWS[table]] >= 1
+
+    async def test_gate_holds_and_live_runs_survive(self, client: AsyncClient) -> None:
+        from app.retention import purge_table
+
+        old = datetime.now(UTC) - timedelta(days=400)
+        doomed = await _run_row("failed", finished_at=old, error="old failure")
+        paused = await _run_row("paused_hitl", finished_at=old)  # waiting on a human
+        queued = await _run_row("queued")
+        young = await _run_row("completed", finished_at=datetime.now(UTC))
+        try:
+            assert await purge_table("runs") == 0, "gate is off: nothing may be deleted"
+            assert await _present("runs", doomed.id)
+            await _set(retention_runs_enabled=True, retention_runs_days=30)
+            assert await purge_table("runs") == 1
+            assert not await _present("runs", doomed.id)
+            for survivor in (paused, queued, young):
+                assert await _present("runs", survivor.id), "a live or young run was trimmed"
+            assert await purge_table("runs") == 0  # idempotent
+        finally:
+            await _set(retention_runs_enabled=False, retention_runs_days=90)
+
+    async def test_steps_can_be_trimmed_while_the_run_survives(self, client: AsyncClient) -> None:
+        from app.orchestrator.recorder import RunRecorder
+        from app.retention import purge_table
+
+        old = datetime.now(UTC) - timedelta(days=400)
+        run = await _run_row("completed", finished_at=old)
+        recorder = RunRecorder(run.id)
+        parent = await recorder.start_step("skill", tier="skill")
+        # a child step: the self-FK is why steps purge by run, not by step id
+        child = await recorder.start_step("tool_call", tier="tool", parent_step_id=parent)
+        await recorder.finish_step(child)
+        await recorder.finish_step(parent)
+        try:
+            assert await purge_table("run_steps") == 0  # born dark
+            await _set(retention_run_steps_enabled=True, retention_run_steps_days=30)
+            assert await purge_table("run_steps") == 2
+            assert await _present("runs", run.id), "the summary row must outlive its trace"
+            async with get_session_factory()() as session:
+                left = (
+                    await session.execute(select(RunStep).where(RunStep.run_id == run.id))
+                ).scalars()
+                assert list(left) == []
+        finally:
+            await _set(retention_run_steps_enabled=False, retention_run_steps_days=30)
+
+    async def test_checkpoints_follow_their_run_and_spare_the_paused(self) -> None:
+        from app.db import get_checkpointer
+        from app.retention import purge_table
+
+        await get_checkpointer()
+        old = datetime.now(UTC) - timedelta(days=400)
+        done = await _run_row("completed", finished_at=old)
+        paused = await _run_row("paused_hitl", finished_at=old)
+        async with get_session_factory()() as session:
+            for thread in (str(done.id), f"{done.id}:n1", str(paused.id)):
+                await session.execute(
+                    text(
+                        "INSERT INTO checkpoints "
+                        "(thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata) "
+                        "VALUES (:t, '', :cid, '{}'::jsonb, '{}'::jsonb)"
+                    ),
+                    {"t": thread, "cid": uuid4().hex},
+                )
+            await session.commit()
+        try:
+            assert await purge_table("checkpoints") == 0  # born dark
+            await _set(retention_checkpoints_enabled=True, retention_checkpoints_days=30)
+            assert await purge_table("checkpoints") == 2  # both threads of the finished run
+            async with get_session_factory()() as session:
+                rows = await session.execute(text("SELECT DISTINCT thread_id FROM checkpoints"))
+                threads = {r[0] for r in rows}
+            mine = threads & {str(done.id), f"{done.id}:n1", str(paused.id)}
+            assert mine == {str(paused.id)}, "a paused run's checkpoints are its resume path"
+        finally:
+            await _set(retention_checkpoints_enabled=False, retention_checkpoints_days=7)
+            async with get_session_factory()() as session:
+                await session.execute(text("DELETE FROM checkpoints"))
+                await session.commit()
+
+    async def test_preview_counts_the_run_ledger_while_dark(self, client: AsyncClient) -> None:
+        old = datetime.now(UTC) - timedelta(days=400)
+        run = await _run_row("failed", finished_at=old)
+        recorder_step_run = run  # the eligible row the preview must count
+        preview = (await client.get(f"{API}/retention")).json()
+        by_table = {row["table"]: row for row in preview["tables"]}
+        assert by_table["runs"]["enabled"] is False
+        assert by_table["runs"]["eligible"] == 1
+        assert by_table["run_steps"]["eligible"] == 0
+        assert await _present("runs", recorder_step_run.id), "a preview never deletes"
+
+    async def test_purging_a_run_leaves_no_checkpoint_residue(self) -> None:
+        """§8.7: the run purge removes the checkpoints of the runs it deletes
+        whatever the checkpoint gate says — that gate governs trimming
+        checkpoints out from under runs that STAY."""
+        from app.db import get_checkpointer
+        from app.retention import purge_table
+
+        await get_checkpointer()
+        old = datetime.now(UTC) - timedelta(days=400)
+        run = await _run_row("completed", finished_at=old)
+        async with get_session_factory()() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO checkpoints "
+                    "(thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata) "
+                    "VALUES (:t, '', :cid, '{}'::jsonb, '{}'::jsonb)"
+                ),
+                {"t": str(run.id), "cid": uuid4().hex},
+            )
+            await session.commit()
+        await _set(retention_runs_enabled=True, retention_runs_days=30)
+        try:
+            assert await purge_table("runs") == 1
+            async with get_session_factory()() as session:
+                rows = await session.execute(
+                    text("SELECT count(*) FROM checkpoints WHERE thread_id = :t"),
+                    {"t": str(run.id)},
+                )
+                assert rows.scalar_one() == 0
+        finally:
+            await _set(retention_runs_enabled=False, retention_runs_days=90)
+
+
+class TestRunListProjection:
+    """R3.1/R7.2: the Runs page polls GET /runs every few seconds; the list
+    shipped every row's frozen registry catalog and price table with it."""
+
+    async def test_list_omits_the_snapshots_and_detail_still_carries_them(
+        self, client: AsyncClient
+    ) -> None:
+        run = await _run_row(
+            "completed",
+            snapshot={"catalog": {"skills": ["a"] * 50}},
+            price_snapshot={"prices": {"fake:scripted": {"input_per_m": 1.0}}},
+        )
+        listed = (await client.get(f"{API}/runs")).json()
+        row = next(r for r in listed if r["id"] == str(run.id))
+        assert "snapshot" not in row, "the LIST projection must not carry the snapshot"
+        assert "price_snapshot" not in row
+        # everything the list view actually renders is still there
+        for field in ("status", "cost_usd", "cost_priced", "total_input_tokens", "chat_message"):
+            assert field in row
+        detail = (await client.get(f"{API}/runs/{run.id}")).json()
+        assert detail["snapshot"] == {"catalog": {"skills": ["a"] * 50}}
+        assert detail["price_snapshot"]["prices"]["fake:scripted"]["input_per_m"] == 1.0
+
+    async def test_paging_is_stable_when_started_at_collides(self, client: AsyncClient) -> None:
+        same = datetime.now(UTC)
+        made = [await _run_row("completed") for _ in range(5)]
+        async with get_session_factory()() as session:
+            await session.execute(
+                update(Run).where(Run.id.in_([r.id for r in made])).values(started_at=same)
+            )
+            await session.commit()
+        seen: list[str] = []
+        for offset in range(0, 5):
+            page = (await client.get(f"{API}/runs?limit=1&offset={offset}")).json()
+            seen.append(page[0]["id"])
+        assert len(set(seen)) == 5, "a tie in started_at repeated or skipped rows across pages"

@@ -60,6 +60,59 @@ class Resolution:
         }
 
 
+# which allowlist kind each ladder rung answers to (spec §17.4)
+_ALLOWLIST_KIND = {
+    "direct_tool": "tools",
+    "direct_skill": "skills",
+    "sub_agent": "sub_agents",
+    "dynamic_worker": "skills",
+}
+
+
+async def _refuse_outside_ambient_allowlist(capability: dict[str, Any]) -> None:
+    """§17.4: a routine's allowlist is a ceiling on what its run may REACH,
+    not merely on what it is shown.
+
+    Narrowing the catalog tells the model what to plan with; this refuses the
+    resolution if it plans with something else anyway — a hallucinated id, an
+    id carried in a checkpoint from before the allowlist was narrowed, or a
+    tool named in the routine's own prompt. Announcement plus enforcement,
+    the rule §7.1 already applies to exposure."""
+    from app.orchestrator.context import get_run_context
+
+    ctx = get_run_context()
+    if ctx is None or ctx.ambient_allowlist is None:
+        return
+    kind = _ALLOWLIST_KIND.get(str(capability.get("type")))
+    if kind is None:
+        return
+    allowed = ctx.ambient_allowlist.get(kind)
+    if allowed is None:
+        return  # a kind the allowlist does not mention is unconstrained
+    from app.registry_cache import get_cache
+
+    allowed_set = {str(a) for a in allowed}
+    cache = get_cache()
+    lookup = {
+        "tools": cache.tool_by_id,
+        "skills": cache.skill_by_id,
+        "sub_agents": cache.sub_agent_by_id,
+    }[kind]
+    ids = [str(capability["id"])] if capability.get("id") else []
+    ids += [str(s) for s in (capability.get("skill_ids") or [])]
+    for entity_id in ids:
+        record = await lookup(entity_id)
+        # the allowlist names entries by id, name OR tool_key — the same three
+        # the catalog projection matches on, so the two agree by construction
+        names = {entity_id}
+        if record is not None:
+            names |= {str(record.get("id")), str(record.get("name")), str(record.get("tool_key"))}
+        if not (names & allowed_set):
+            raise ResolutionError(
+                f"{kind[:-1].replace('_', ' ')} {entity_id} is outside this routine's allowlist"
+            )
+
+
 async def resolve_capability(capability: dict[str, Any]) -> Resolution:
     """Deterministic ladder (spec §7.1) over the registry cache (§7.3).
     `capability` is a plan-entry capability dict: {type, id?, skill_ids?}."""
@@ -67,6 +120,7 @@ async def resolve_capability(capability: dict[str, Any]) -> Resolution:
 
     cache = get_cache()
     ctx_type = capability.get("type")
+    await _refuse_outside_ambient_allowlist(capability)
     if ctx_type == "direct_tool":
         tool = await cache.tool_by_id(str(capability["id"]))
         if tool is None or tool["status"] != "active":
@@ -396,12 +450,26 @@ async def run_direct_tool(
         ai = await model.ainvoke(prompt, config={"callbacks": ctx.callbacks})
         usage = getattr(ai, "usage_metadata", None) or {}
         if not getattr(ai, "tool_calls", None):
-            text = text_from_content(ai.content)
-            output = {"status": "ok", "output": text}
-        else:
-            call = ai.tool_calls[0]
-            result = await tool.ainvoke(call["args"])
-            output = {"status": "ok", "output": text_from_content(result)}
+            # rung 1 exists to CALL the tool. A prose reply means the model
+            # declined or could not, and recording that as `ok` made the
+            # model's guess the step result — the ladder then had no reason
+            # to fall through, and the answer carried an unbacked claim.
+            text = text_from_content(ai.content).strip()
+            msg = f"{tool.name} was not called — the model answered in prose instead" + (
+                f": {text[:500]}" if text else ""
+            )
+            await ctx.recorder.finish_step(
+                step_id,
+                status="failed",
+                error=msg,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                emit_dispatch=True,
+            )
+            return {"status": "error", "error": msg}
+        call = ai.tool_calls[0]
+        result = await tool.ainvoke(call["args"])
+        output = {"status": "ok", "output": text_from_content(result)}
         await ctx.recorder.finish_step(
             step_id,
             output=output,
@@ -613,12 +681,20 @@ def worker_result(outputs: dict[str, Any]) -> dict[str, Any]:
     return {"status": "denied", "output": text, "denied": denials, "error": verdicts}
 
 
-async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
+async def find_running_dispatch(
+    run_id: UUID, node_id: str, legacy_node_id: str | None = None
+) -> UUID | None:
     """An existing dispatch step for this entry marks a HITL replay — running
     (paused mid-flight) or completed (a parallel sibling kept the superstep
-    open). Adopt it instead of recording a duplicate."""
+    open). Adopt it instead of recording a duplicate.
+
+    `legacy_node_id` is the upgrade shim: agentic dispatch steps are now keyed
+    on the tool call, and a run that paused on a gate BEFORE that change
+    stored the older un-keyed form. Accepting both for one release means such
+    a run resumes normally instead of executing its gated node a second time."""
     from app.models import RunStep
 
+    wanted = [node_id] + ([legacy_node_id] if legacy_node_id else [])
     async with get_session_factory()() as session:
         row = (
             (
@@ -626,7 +702,7 @@ async def find_running_dispatch(run_id: UUID, node_id: str) -> UUID | None:
                     select(RunStep)
                     .where(
                         RunStep.run_id == run_id,
-                        RunStep.node_id == node_id,
+                        RunStep.node_id.in_(wanted),
                         RunStep.step_type == "skill",
                     )
                     .order_by(RunStep.started_at.desc())

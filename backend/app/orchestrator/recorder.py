@@ -11,6 +11,8 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import update
 
 from app import obs
@@ -20,6 +22,12 @@ from app.orchestrator.context import EVENT_BUS
 from app.sanitize import sanitize_error
 
 logger = structlog.get_logger("run")
+
+
+class StepFailed(Exception):
+    """The exception a failed step records on its span. Steps fail with a
+    sanitized message, not an exception object, so the OTel
+    `record_exception` path needs something to carry it."""
 
 
 def sse_event(event_type: str, run_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
@@ -38,8 +46,22 @@ class RunRecorder:
         self._labels: dict[UUID, dict[str, Any]] = {}
         self._tracer = obs.get_tracer()
         self._spans: dict[UUID, Any] = {}
+        # the run's clock starts with its first recorder; the failure path
+        # builds a SECOND recorder for the same run and must not reset it
+        obs.mark_run_started(run_id)
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "run_status":
+            status = str(payload.get("status") or "")
+            # every terminal path emits this — completed, failed, cancelled,
+            # the wall clock and a peer's cancel intent alike. `completed` is
+            # already timed inline where the run record is written; the rest
+            # had no RUN_DURATION series at all, which is exactly the half an
+            # incident needs.
+            if status in obs.RECORDER_TIMED_STATUSES:
+                obs.observe_run_duration(self.run_id, status)
+            elif status in obs.TERMINAL_RUN_STATUSES:
+                obs.forget_run_timer(self.run_id)  # timed elsewhere; drop the record
         EVENT_BUS.emit(self.run_id, sse_event(event_type, self.run_id, payload))
 
     async def start_step(
@@ -86,13 +108,17 @@ class RunRecorder:
             await session.commit()
             step_id = step.id
         self._starts[step_id] = time.monotonic()
-        if entity_id:
-            # retrieval pin (spec §7.4): entities used in this run stay
-            # visible in ranked catalogs for the rest of the run
-            from app.orchestrator.context import get_run_context
+        from app.orchestrator.context import get_run_context
 
-            ctx = get_run_context()
-            if ctx is not None:
+        ctx = get_run_context()
+        if ctx is not None:
+            # the mode the run executes under, onto its timing record: the
+            # terminal paths the runner does not time itself label their
+            # RUN_DURATION sample from it
+            obs.mark_run_started(self.run_id, ctx.mode)
+            if entity_id:
+                # retrieval pin (spec §7.4): entities used in this run stay
+                # visible in ranked catalogs for the rest of the run
                 ctx.pinned_ids.add(str(entity_id))
         labels = obs.label_set(
             run_id=str(self.run_id),
@@ -108,7 +134,18 @@ class RunRecorder:
         )
         self._labels[step_id] = labels
         logger.info("step_start", step_type=step_type, **labels)
-        span = self._tracer.start_span(f"{step_type}:{entity_name or node_id or tier}")
+        # the recorder already computes the step tree (`parent_step_id`); the
+        # tracer never saw it, so every span was a ROOT span and the trace
+        # panel was flat. Start the child inside the parent's context — when
+        # the parent span is still open on this recorder — so the nesting the
+        # row records is the nesting the trace shows.
+        parent_span = self._spans.get(parent_step_id) if parent_step_id else None
+        span = self._tracer.start_span(
+            f"{step_type}:{entity_name or node_id or tier}",
+            context=(
+                otel_trace.set_span_in_context(parent_span) if parent_span is not None else None
+            ),
+        )
         for key, value in labels.items():
             if value is not None:
                 span.set_attribute(f"concierge.{key}", str(value))
@@ -213,6 +250,17 @@ class RunRecorder:
         if span is not None:
             span.set_attribute("concierge.status", status)
             span.set_attribute("concierge.duration_ms", duration_ms)
+            # the §10 label set is stamped at START, when the counts are
+            # necessarily 0 — without this every span reported a step that
+            # spent no tokens, whatever it actually spent
+            span.set_attribute("concierge.input_tokens", int(input_tokens))
+            span.set_attribute("concierge.output_tokens", int(output_tokens))
+            if status == "failed":
+                # a failed step used to end its span UNSET, so a trace backend
+                # showed no error and carried no message to read
+                message = sanitize_error(error) or "step failed"
+                span.set_status(Status(StatusCode.ERROR, message))
+                span.record_exception(StepFailed(message))
             span.end()
         self.emit("activity", {"step_id": str(step_id), "status": status})
         if emit_dispatch:

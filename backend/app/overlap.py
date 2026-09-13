@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app import untrusted
+from app.cost import enforce_job_ceiling, job_spend
 from app.db import get_session_factory
 from app.llm import get_model
 from app.models import Skill, SubAgent, Tool
@@ -153,7 +154,8 @@ async def _judge(draft_type: str, draft: str, candidates: list[str]) -> OverlapV
         model_ref, params = await _judge_model()
         model = get_model(model_ref, params)
         structured = model.with_structured_output(OverlapVerdict)
-        verdict = await structured.ainvoke(prompt)
+        async with job_spend("overlap_judge", model_ref) as cb:
+            verdict = await structured.ainvoke(prompt, config={"callbacks": cb})
         if not isinstance(verdict, OverlapVerdict):
             raise TypeError(f"expected OverlapVerdict, got {type(verdict).__name__}")
         return verdict
@@ -211,6 +213,8 @@ async def audit_registry_overlap() -> int:
     from app.registry_cache import get_cache
 
     if not await get_cache().setting("registry_overlap_audit_enabled"):
+        return 0
+    if not await enforce_job_ceiling("overlap_judge"):
         return 0
     judged = 0
     async with get_session_factory()() as session:

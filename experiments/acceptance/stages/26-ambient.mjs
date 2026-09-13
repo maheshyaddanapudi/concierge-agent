@@ -11,7 +11,7 @@ function hhmm(offsetMin) {
   return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
 }
 
-export default async function ({ page, nav, shot, settings, get, post, api, log, closeDrawer, waitRun, steps, MODEL }) {
+export default async function ({ page, nav, shot, settings, get, post, api, log, closeDrawer, waitRun, steps, MODEL, expect, expectEq, expectHttp, expectStatus }) {
   const initial = (await get('/settings')).json
   await settings({ orchestrator_mode: 'graph', default_model_params: null })
 
@@ -40,7 +40,11 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   await page.getByText('Ambient (§17)', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
   await shot(page, '00-settings-ambient-section')
-  log(`nav shows Ambient: ${await page.getByRole('link', { name: /Ambient/ }).count()}`)
+  const navCount = await page.getByRole('link', { name: /Ambient/ }).count()
+  log(`nav shows Ambient: ${navCount}`)
+  // the master switch is what makes the whole section — and the nav item — real
+  expectEq(s.ambient_enabled, true, 'the Ambient master switch is on')
+  expect(navCount > 0, 'the Ambient nav item appeared with it')
 
   await nav(page, 'ambient')
   await shot(page, '01-ambient-inbox-landing')
@@ -69,7 +73,11 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   await page.waitForTimeout(1200)
   const routine = (await get('/routines')).json.find((r) => r.name === 'ops-alert-triage')
   log(`routine ${routine?.id} status=${routine?.status} triggers=${JSON.stringify(routine?.triggers).slice(0, 200)}`)
-  if (!routine) throw new Error('routine not created')
+  expect(!!routine, 'the typed trigger builder created the routine')
+  expect(
+    JSON.stringify(routine.triggers || []).includes('webhook'),
+    'with the webhook trigger it was built with',
+  )
   await closeDrawer(page)
 
   // the fire token, issued and revealed in the drawer
@@ -89,10 +97,17 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   const fire = (body) => api('POST', `/routines/${routine.id}/fire`, body, { authorization: `Bearer ${token}` })
   const held = await fire({ text: 'cache warm completed on web-03 in 41s', payload: { sev: 'low', host: 'web-03' } })
   log(`fire (sev=low, filter says hold) → HTTP ${held.status} ${JSON.stringify(held.json)}`)
+  // the filter is the point of the low fire: accepted at the door, held by
+  // the rule rather than run
+  expectHttp(held, [200, 202], 'the low-severity fire was accepted')
+  expect(!held.json?.run_id, '…and held by the filter rather than started as a run')
   const fired = await fire({ text: 'db-01 replication lag 45s and rising; primary CPU 92%', payload: { sev: 'high', host: 'db-01', service: 'postgres' } })
   log(`fire (sev=high) → HTTP ${fired.status} ${JSON.stringify(fired.json)}`)
+  expectHttp(fired, [200, 202], 'the high-severity fire was accepted')
   const unauth = await api('POST', `/routines/${routine.id}/fire`, { text: 'x', payload: {} }, { authorization: 'Bearer amb_wrong' })
   log(`fire with a wrong token → HTTP ${unauth.status}`)
+  // the fire token is a credential: a wrong one must be REFUSED
+  expectHttp(unauth, [401, 403], 'a fire with the wrong token was refused')
   let run = null
   for (let i = 0; i < 90; i++) {
     const runs = (await get(`/runs?routine_id=${routine.id}`)).json
@@ -100,13 +115,13 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
     if (run) break
     await page.waitForTimeout(2000)
   }
-  if (run) {
-    const done = await waitRun(run.id, ['completed', 'failed', 'cancelled'], 300)
-    log(`routine run ${run.id} → ${done.status}; trigger=${JSON.stringify(done.trigger)}; steps: ${steps(done)}`)
-    log(`proposal: ${(done.final_answer || '').replace(/\s+/g, ' ').slice(0, 200)}`)
-  } else {
-    log('no run appeared for the fire within 3 minutes (recorded as-is)')
-  }
+  // the whole stage turns on this: a real external HTTP fire started a run
+  expect(!!run, 'the external fire started a routine run')
+  const done = await waitRun(run.id, ['completed', 'failed', 'cancelled'], 300)
+  log(`routine run ${run.id} → ${done.status}; trigger=${JSON.stringify(done.trigger)}; steps: ${steps(done)}`)
+  log(`proposal: ${(done.final_answer || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+  expectStatus(done, 'completed', 'the routine run from the live fire')
+  expect(!!done.trigger, 'the run records what triggered it')
   await page.getByRole('button', { name: `open routine ${routine.name}` }).click()
   await page.waitForTimeout(1500)
   await page.getByTestId('routine-run-history').scrollIntoViewIfNeeded()
@@ -119,6 +134,10 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   const ledger = (await get('/ambient/ledger')).json
   const items = Array.isArray(ledger) ? ledger : ledger.items || []
   log(`ledger: ${items.slice(0, 6).map((e) => `${e.kind}/${e.verdict}: ${String(e.reason || '').slice(0, 50)}`).join(' | ')}`)
+  // the audit must show BOTH decisions — a ledger that only records fires is
+  // not an audit
+  expect(items.some((e) => e.verdict === 'fire'), 'the ledger records the fire')
+  expect(items.some((e) => e.verdict === 'hold'), '…and the hold')
   const expand = page.getByRole('button', { name: /expand .* event/ }).first()
   if (await expand.count()) {
     await expand.click()
@@ -142,6 +161,8 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   await page.waitForTimeout(1200)
   const watches = (await get('/watches')).json.items || []
   log(`watches: ${watches.map((w) => `${w.status}/${w.condition_type}: ${String(w.text || '').slice(0, 50)}`).join(' | ')}`)
+  // natural language went in, a confirmed ACTIVE watch came out
+  expect(watches.some((w) => w.status === 'active'), 'the compiled watch was confirmed active')
   await shot(page, '08-watch-confirmed-active')
   await page.getByRole('button', { name: 'typed filters' }).click()
   await page.getByPlaceholder('what this watch is about (shown in the list)').fill('deploys of the payments repo')
@@ -169,6 +190,7 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
     await page.waitForTimeout(3000)
   }
   log(`deliveries: ${delivered.length} delivered — ${delivered.slice(0, 3).map((x) => `${x.tier}/${x.category}/${x.channel}: ${String(x.title || '').slice(0, 50)}`).join(' | ') || 'none within 6 minutes'}`)
+  expect(delivered.length > 0, 'the digest flushed into the Inbox')
   await page.waitForTimeout(1500)
   await shot(page, '10-inbox-digest-and-delivered')
   const card = page.getByTestId(/delivery-(unseen|seen)/).first()
@@ -180,6 +202,7 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
     const fb = (await get('/deliveries?limit=100')).json
     const first = (Array.isArray(fb) ? fb : fb.items || []).find((x) => x.feedback)
     log(`feedback recorded: ${first?.feedback} reward=${first?.reward}`)
+    expectEq(first?.feedback, 'accepted', 'the Inbox recorded the feedback')
   }
   await shot(page, '11-inbox-feedback-recorded')
 

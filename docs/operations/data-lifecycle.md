@@ -25,7 +25,13 @@ Losses that are in-memory even without decom: the SSE event history (`RunEventBu
 On every backend startup (`backend/app/main.py` lifespan), in order:
 
 1. `alembic upgrade head` — creates or migrates the schema. First start on an empty volume builds it from scratch; no manual step.
-2. `seed_all(session)` — idempotent static seed (spec §9, `backend/app/seed/loader.py`): upserts match on `(source='static', name)` (or `tool_key` for tools), so **ids stay stable across reloads**. Seeds: the `fetch` (`uvx --with 'mcp<2' mcp-server-fetch`) and `filesystem` (`npx -y @modelcontextprotocol/server-filesystem /workspace`) stdio MCP servers, the native skills from `backend/app/native/skills/*.skill.md` (`web-research`, `file-ops`), the native tools (including `summarize-and-structure` and `render_chart`), and the `research-concierge` sub agent.
+2. `seed_all(session)` — idempotent static seed (spec §9, `backend/app/seed/loader.py`): upserts match on `(source='static', name)` (or `tool_key` for tools), so **ids stay stable across reloads**. Seeds:
+   - the `fetch` (`uvx --with 'mcp<2' mcp-server-fetch`) and `filesystem` (`npx -y @modelcontextprotocol/server-filesystem /workspace`) stdio MCP servers, both registered **`inactive`** — the manager connects them in the background;
+   - **five** native skills from `backend/app/native/skills/*.skill.md`: `web-research`, `file-ops`, `memory-keeper`, `workspace-auditor`, `workspace-curator`;
+   - **ten** native tools from the `@native_tool` scan: `summarize-and-structure`, `render_chart`, `memory.remember` / `.recall` / `.forget`, and `ambient.wakeup` / `.cancel_wakeup` / `.watch` / `.confirm_watch` / `.unwatch`;
+   - **three** sub agents: the seeded `research-concierge`, the declarative `workspace-reporter` (`backend/app/native/sub_agents/workspace-reporter.agent.md`, §3.4) and the code-defined native `workspace-warden` (`@native_sub_agent`).
+
+   A malformed `.skill.md` or `.agent.md` never aborts boot — it lands as `status='error'` with the reason — and `python -m app.doclint` catches it earlier still, in the Docker build.
 3. `AsyncPostgresSaver.setup()` — creates the LangGraph checkpoint tables if absent.
 4. Registry cache startup (mode read + warm load if stateful), MCP manager connect-all, embeddings backfill — the last two as background tasks that don't block readiness.
 
@@ -33,7 +39,7 @@ Re-seeding on demand: `POST /api/v1/seed/reload` (Settings → Data → seed-rel
 
 ## Run / trace / event growth
 
-Every chat message creates one `runs` row and, per executed step, a `run_steps` row carrying input/output payloads, tokens, and timings — this is the always-on trace store, and it grows without bound: there is no retention job, no TTL, no automatic pruning.
+Every chat message creates one `runs` row and, per executed step, a `run_steps` row carrying input/output payloads, tokens, and timings — this is the always-on trace store. Until M53 it grew without bound and the only way to trim it was the all-or-nothing purge below; the run ledger now has a **retention gate of its own** (`retention_runs_enabled` / `_days`, with `run_steps` and `checkpoints` as separate gated targets), born **off** because deleting is irreversible. See **Retention** below for the full set and how the windows interact.
 
 Purging (the real, existing surfaces — nothing else):
 
@@ -44,9 +50,9 @@ Purging (the real, existing surfaces — nothing else):
 
 Conversations are not deleted by the purge (the rows in `conversations` remain; there is no conversation-delete endpoint). SSE event history is memory-only and additionally disappears on backend restart regardless of purging.
 
-## Retention for the six unbounded tables (M53)
+## Retention for the nine gated tables (M53, extended in the hardening wave)
 
-Six tables had no retention, no TTL and no purge surface at all (architecture review M6): `ambient_events` and `deliveries` — the highest-frequency ambient ledgers, scanned every tick — plus `ambient_policies`, `pattern_instances`, `a2a_tasks` and `auth_sessions`. Each now has one purge (`backend/app/retention.py`) with its own window and **its own gate, enforced inside the purge** (the §3.7.1 discipline): with the gate off the purge returns 0 whoever calls it — the hourly job, `POST /retention/run`, a test.
+Six tables had no retention, no TTL and no purge surface at all (architecture review M6): `ambient_events` and `deliveries` — the highest-frequency ambient ledgers, scanned every tick — plus `ambient_policies`, `pattern_instances`, `a2a_tasks` and `auth_sessions`. The hardening wave added the **run ledger** as three more gated targets — `checkpoints`, `run_steps` and `runs` — all born dark. Each now has one purge (`backend/app/retention.py`) with its own window and **its own gate, enforced inside the purge** (the §3.7.1 discipline): with the gate off the purge returns 0 whoever calls it — the hourly job, `POST /retention/run`, a test.
 
 | Table | Eligible when | Never touched | Gate default | Window default |
 |---|---|---|---|---|
@@ -56,10 +62,15 @@ Six tables had no retention, no TTL and no purge surface at all (architecture re
 | `pattern_instances` | matched or expired, older than the window | armed timers | off | 7 d |
 | `a2a_tasks` | terminal state, `updated_at` older than the window | open and parked tasks | off | 90 d |
 | `auth_sessions` | `expires_at` older than the window | unexpired sessions | **on** | 7 d |
+| `checkpoints` | belonging to a trimmable run (below) | checkpoints of a live or paused run | off | 7 d |
+| `run_steps` | belonging to a trimmable run | steps of a live or paused run | off | 30 d |
+| `runs` | **terminal** status with `finished_at` older than the window | `queued`, `running` and `paused_hitl` runs **at any age** — a paused run is still waiting on a human | off | 90 d |
 
-Five gates are born off because deleting is irreversible; the expired-session sweep is on because the login path already did it opportunistically. The job runs hourly from the periodic loop on one replica (advisory lock `427018`), deletes in batches of 5000, and counts what it removed in `concierge_retention_deleted_total{table}`. Settings → Retention shows each gate, each window, and **how many rows a purge would delete right now** (counted whether the gate is on or off), with a run-now button; `GET /retention` and `POST /retention/run` are the same surface over the API.
+The three run-ledger tables are purged **narrowest-first** (checkpoints → steps → runs) so a step or a checkpoint is never orphaned by its run disappearing under a different window; deleting a run takes its steps and checkpoints with it whatever the narrower gates say (§8.7 — a purge leaves no run residue), and those gates govern trimming detail out from under runs that *stay*. The practical consequence of the default windows: with all three on, a run's step trace is trimmed at 30 days while the run's summary row survives to 90.
 
-`runs` / `run_steps` keep their explicit purge above; `memory_embeddings` rows under a superseded model key are retained by design (spec §16.1).
+Eight gates are born off because deleting is irreversible; the expired-session sweep is on because the login path already did it opportunistically. The job runs hourly from the periodic loop on one replica (advisory lock `427018`), deletes in batches of 5000, and counts what it removed in `concierge_retention_deleted_total{table}`. Settings → Retention shows each gate, each window, and **how many rows a purge would delete right now** (counted whether the gate is on or off), with a run-now button; `GET /retention` and `POST /retention/run` are the same surface over the API.
+
+The explicit purge above (`DELETE /runs`, `DELETE /runs/{id}`) is unchanged and is still the all-or-nothing lever; retention is the gradual one. `memory_embeddings` rows under a superseded model key are retained by design (spec §16.1) — they are what recall serves from while a new key backfills.
 
 ## Checkpoints (LangGraph)
 

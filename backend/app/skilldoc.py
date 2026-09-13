@@ -80,12 +80,25 @@ def validate_mentions(instructions: str, bound_tool_keys: list[str]) -> list[str
 
 
 def scan_skill_files(directory: Path) -> list[SkillDoc]:
-    """Parse every *.skill.md in a directory (native skill startup scan)."""
+    """Parse every *.skill.md in a directory (native skill startup scan).
+
+    A malformed or unreadable file is LOGGED AND SKIPPED, never raised: this
+    runs inside the boot lock, so one bad document used to mean the
+    application did not start at all — and the recovery needed the API that
+    was down. `python -m app.doclint` is the gate that keeps bad documents
+    out of the image; this is what happens if one gets past it anyway."""
+    import structlog
+
+    log = structlog.get_logger("skilldoc")
     docs: list[SkillDoc] = []
     for path in sorted(directory.glob("*.skill.md")):
-        doc = parse_skill_document(path.read_text(encoding="utf-8"))
-        errors = validate_mentions(doc.instructions, doc.tools)
-        if errors:
-            raise SkillDocError(f"{path.name}: {'; '.join(errors)}")
+        try:
+            doc = parse_skill_document(path.read_text(encoding="utf-8"))
+            errors = validate_mentions(doc.instructions, doc.tools)
+            if errors:
+                raise SkillDocError(f"{path.name}: {'; '.join(errors)}")
+        except (SkillDocError, OSError, UnicodeDecodeError) as exc:
+            log.error("skill_document_skipped", file=path.name, error=str(exc)[:300])
+            continue
         docs.append(doc)
     return docs

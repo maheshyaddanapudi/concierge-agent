@@ -196,18 +196,42 @@ function IntSetting({
 }) {
   const { data: settings } = useSettings()
   const patch = usePatchSettings()
+  // a typed value below the floor used to revert on blur with no word said,
+  // which reads as "the field ignored me" — say what happened instead
+  const [discarded, setDiscarded] = useState<string | null>(null)
   if (!settings) return null
   return (
-    <Field label={label} hint={hint} after={<ErrorNote error={patch.error} />}>
+    <Field
+      label={label}
+      hint={hint}
+      after={
+        <>
+          {discarded && (
+            <p role="status" className="text-[11px] text-amber-300">
+              {discarded} is below the minimum of {min} — kept {String(settings[k])}.
+            </p>
+          )}
+          <ErrorNote error={patch.error} />
+        </>
+      }
+    >
       <TextInput
         type="number"
+        min={min}
         defaultValue={Number(settings[k])}
         className="max-w-28"
         onBlur={(e) => {
-          const v = Number(e.target.value)
+          const raw = e.target.value
+          const v = Number(raw)
           // only nonsense is blocked here — spec-range checks stay server-side
           // so an out-of-range write surfaces its 422 inline (§14e-42)
-          if (v >= min && v !== Number(settings[k])) patch.mutate({ [k]: v })
+          if (raw !== '' && Number.isFinite(v) && v >= min) {
+            setDiscarded(null)
+            if (v !== Number(settings[k])) patch.mutate({ [k]: v })
+            return
+          }
+          setDiscarded(raw === '' ? 'An empty value' : raw)
+          e.target.value = String(settings[k])
         }}
       />
     </Field>
@@ -219,6 +243,24 @@ function IntSetting({
 // the keys are spelled out (not templated) so the §3.7.1 coverage test can
 // see every one of them on this page
 const RETENTION_ROWS = [
+  {
+    table: 'checkpoints',
+    gate: 'retention_checkpoints_enabled',
+    days: 'retention_checkpoints_days',
+    hint: 'LangGraph checkpoint rows of finished runs; a paused run keeps its resume path',
+  },
+  {
+    table: 'run_steps',
+    gate: 'retention_run_steps_enabled',
+    days: 'retention_run_steps_days',
+    hint: 'the step trace of finished runs; the run summary row survives',
+  },
+  {
+    table: 'runs',
+    gate: 'retention_runs_enabled',
+    days: 'retention_runs_days',
+    hint: 'finished runs, with their steps and checkpoints; queued, running and paused runs survive',
+  },
   {
     table: 'ambient_events',
     gate: 'retention_ambient_events_enabled',
@@ -264,7 +306,7 @@ function RetentionSection() {
   return (
     <Section title="Retention">
       <p className="text-xs text-slate-500">
-        The six tables nothing else ever trims. Each purge answers to its own switch, enforced
+        The nine tables nothing else ever trims. Each purge answers to its own switch, enforced
         inside the job — off means nothing is deleted, whoever calls it. Deleting is irreversible,
         so every gate but the expired-session sweep is born off. The job runs hourly on one replica.
       </p>
@@ -348,7 +390,7 @@ function CostSection() {
       <BoolSetting
         label="Spend ceiling"
         k="spend_ceiling_enabled"
-        hint="one number for the whole deployment — interactive, ambient and eval runs alike; past it a message is refused with 429, an ambient fire is held on the ledger, an eval batch stops. Off is the pre-M53 admission, unchanged."
+        hint="one number for the whole deployment — every run kind AND the background model calls (judges, digests, reflection, community summaries, extraction), which now ledger their spend instead of billing invisibly. Past it a message is refused with 429, an ambient fire is held on the ledger, an eval batch stops, and a background job declines until the day rolls over. Off is the pre-M53 admission, unchanged."
       />
       <Field label="Ceiling (USD per day)" after={<ErrorNote error={patch.error} />}>
         <TextInput
@@ -845,9 +887,12 @@ export function SettingsPage() {
             k="memory_digest_compact_days"
             hint="run digests older than this fold into a period digest"
           />
+          {/* 0 is the documented "off" value, so 0 must be typeable — the
+              default floor of 1 made the off switch unreachable */}
           <IntSetting
             label="Community budget (tokens)"
             k="memory_community_budget_tokens"
+            min={0}
             hint="budget for the injected community-summary block; 0 turns communities off entirely — no injection and no rebuild"
           />
           <BoolSetting
@@ -944,6 +989,15 @@ export function SettingsPage() {
           k="ambient_enabled"
           hint="master switch — the Ambient page appears in the nav while on; off is byte-identical"
         />
+        {/* M48 §3.7.1: the only feature that starts a conversation on its
+            own, so silence is a setting rather than only an outcome — and it
+            renders OUTSIDE the master gate, so it can be turned off BEFORE
+            ambient is turned on rather than only after it has already run */}
+        <BoolSetting
+          label="Anticipation briefings"
+          k="ambient_anticipation_enabled"
+          hint="composes a short briefing of likely next asks when you have been idle. The only feature that contacts you without being asked — off means it never runs, regardless of how useful it has been. Settable while ambient is off, so it never fires once before you can reach it"
+        />
         {Boolean(settings.ambient_enabled) && (
           <>
             <div className="grid grid-cols-3 gap-4">
@@ -972,13 +1026,6 @@ export function SettingsPage() {
                 label="Interrupt threshold"
                 k="ambient_interrupt_threshold"
                 hint="urgency at or above this may break quiet hours"
-              />
-              {/* M48 §3.7.1: the only feature that starts a conversation on
-                  its own, so silence is a setting rather than only an outcome */}
-              <BoolSetting
-                label="Anticipation briefings"
-                k="ambient_anticipation_enabled"
-                hint="composes a short briefing of likely next asks when you have been idle. The only feature that contacts you without being asked — off means it never runs, regardless of how useful it has been"
               />
               <Field
                 label="Learning mode"

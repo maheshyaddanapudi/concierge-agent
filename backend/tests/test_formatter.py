@@ -387,6 +387,9 @@ class TestFormatterPayload:
             await update_settings(
                 session, {"formatter_enabled": False, "default_model": "fake:scripted"}
             )
+        # the subject is the formatter toggle, but the run still plans: say
+        # what the planner answers instead of letting the fake invent it
+        fake_llm.push_plan(direct_answer="hello back")
         resp = await client.post("/api/v1/chat", json={"message": "hello"})
         assert resp.status_code == 201
         run_id = resp.json()["run_id"]
@@ -398,6 +401,7 @@ class TestFormatterPayload:
             if run["status"] in {"completed", "failed"}:
                 break
         assert run["status"] == "completed"
+        assert run["final_answer"] == "hello back"  # the scripted plan's answer, unformatted
         assert run["answer_ui"] is None  # no artifact — no toggle, ever
 
 
@@ -474,6 +478,215 @@ class TestToolCharts:
             )
             await session.commit()
             assert await _collect_tool_charts(run.id) == []
+
+
+class TestChartValidationBoundary:
+    """Hardening: the renderer has ONE contract (`_ChartSpec`) and every
+    chart reaching it — formatter-produced, tool-produced, replayed from a
+    run step — goes through it (spec §3.6/§7.1)."""
+
+    @staticmethod
+    def _chart(**kwargs: Any) -> UiComponent:
+        return UiComponent(type="chart", **kwargs)
+
+    def test_formatter_charts_are_validated_like_tool_charts(self) -> None:
+        """Item 1: misaligned labels/values and a gauge without its
+        [value, max] pair used to sail through the formatter path."""
+        from app.orchestrator.answer_ui import extract_charts
+
+        ui = _ui(
+            self._chart(
+                chart_kind="bar",
+                title="misaligned",
+                labels=["a", "b", "c"],
+                series=[{"name": "s", "values": [1.0, 2.0]}],  # type: ignore[list-item]
+            ),
+            self._chart(
+                chart_kind="gauge",
+                title="no max",
+                labels=["CPU"],
+                series=[{"name": "", "values": [42.0]}],  # type: ignore[list-item]
+            ),
+            self._chart(
+                chart_kind="bar",
+                title="good",
+                labels=["a", "b"],
+                series=[{"name": "s", "values": [1.0, 2.0]}],  # type: ignore[list-item]
+            ),
+        )
+        charts = extract_charts(ui)
+        assert [c["title"] for c in charts] == ["good"]
+
+    async def test_nonfinite_chart_values_never_reach_the_artifact(self) -> None:
+        """Item 2 (formatter path): NaN in a series would be written to the
+        run's JSONB column and fail the commit — the chart is dropped, the
+        document (prose included) survives."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        args = {
+            "components": [
+                {"type": "text", "markdown": "Uptime was 99.5%."},
+                {
+                    "type": "chart",
+                    "chart_kind": "bar",
+                    "title": "broken",
+                    "labels": ["a", "b"],
+                    "series": [{"name": "s", "values": [float("nan"), 2.0]}],
+                },
+            ]
+        }
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": args, "id": "nf1"}])
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "t", "99.5% uptime", [])
+        assert payload is not None
+        assert not payload.get("charts")
+        assert "99.5%" in json.dumps(payload["a2ui"])
+
+    async def test_nonfinite_tool_chart_is_a_repairable_error_not_a_raise(self) -> None:
+        """Item 2 (tool path): render_chart answers with a repair instruction
+        instead of raising, so the loop can fix the numbers."""
+        from app.native.provider import native_tools, scan_native
+
+        scan_native()
+        entry = native_tools().get("render_chart")
+        assert entry is not None
+        result = json.loads(
+            await entry.fn(
+                kind="bar",
+                labels=["a", "b"],
+                series=[{"name": "s", "values": [1.0, float("inf")]}],
+            )
+        )
+        assert "rejected" in result["status"]
+        assert "non-finite" in result["error"]
+        assert "series.0.values.1" in result["error"]
+        assert "spec" not in result
+
+    async def test_numeric_table_cell_keeps_the_document(self) -> None:
+        """Item 3: a cell (or label) typed as a number used to fail schema
+        validation and discard the ENTIRE artifact, prose included."""
+        from langchain_core.messages import AIMessage
+
+        from app.orchestrator.answer_ui import generate_answer_ui
+
+        args = {
+            "components": [
+                {"type": "text", "markdown": "Line 3 leads on units."},
+                {"type": "table", "columns": ["Line", "Units"], "rows": [[3, 120], ["4", 80.5]]},
+                {
+                    "type": "chart",
+                    "chart_kind": "bar",
+                    "title": "numeric labels",
+                    "labels": [2024, 2025],
+                    "series": [{"name": "units", "values": [120.0, 80.0]}],
+                },
+            ]
+        }
+        fake_llm.push_message(
+            AIMessage(content="", tool_calls=[{"name": "AnswerUi", "args": args, "id": "nc1"}])
+        )
+        payload, _usage = await generate_answer_ui("fake:scripted", "t", "120 and 80.5 units", [])
+        assert payload is not None, "one numeric cell must not discard the document"
+        assert "Line 3 leads on units." in json.dumps(payload["a2ui"]), "the prose survives"
+        table = next(b["table"] for b in payload["blocks"] if "table" in b)
+        assert table["rows"] == [["3", "120"], ["4", "80.5"]]
+        assert payload["charts"][0]["labels"] == ["2024", "2025"]
+
+    def test_chart_nested_in_a_card_still_renders(self) -> None:
+        """Item 4: charts leave the a2ui stream, so a chart inside a card
+        was silently dropped. It is hoisted to top level, right after its
+        card, and renders there."""
+        from app.orchestrator.answer_ui import build_blocks, extract_charts
+
+        ui = _ui(
+            UiComponent(
+                type="card",
+                title="Q3",
+                children=[
+                    UiComponent(type="text", markdown="Units by line."),
+                    self._chart(
+                        chart_kind="bar",
+                        title="nested",
+                        labels=["a", "b"],
+                        series=[{"name": "s", "values": [1.0, 2.0]}],  # type: ignore[list-item]
+                    ),
+                ],
+            ),
+            UiComponent(type="text", markdown="After the card."),
+        )
+        assert [c["title"] for c in extract_charts(ui)] == ["nested"]
+        blocks = build_blocks(ui, 0)
+        kinds = [next(k for k in ("a2ui", "chart", "table") if k in b) for b in blocks]
+        assert kinds == ["a2ui", "chart", "a2ui"], "the chart lands right after its card"
+        assert "Units by line." in json.dumps(blocks[0]["a2ui"]), "the card's text is kept"
+
+    def test_label_free_kinds_survive_validation(self) -> None:
+        """Item 5: `[]` labels are a value, not a missing field — sparkline,
+        scatter and bubble carry none (the renderer declares them
+        label-optional)."""
+        from app.native.tools import validate_chart_spec
+        from app.orchestrator.answer_ui import extract_charts
+
+        for spec in (
+            {"kind": "sparkline", "title": "", "labels": [], "series": [{"values": [1.0, 3.0]}]},
+            {
+                "kind": "scatter",
+                "title": "",
+                "labels": [],
+                "series": [{"points": [[1, 2], [3, 4]]}],
+            },
+            {
+                "kind": "bubble",
+                "title": "",
+                "labels": [],
+                "series": [{"points": [[1, 2, 3], [4, 5, 6]]}],
+            },
+        ):
+            assert validate_chart_spec(spec, source="test") is not None, spec["kind"]
+        ui = _ui(
+            self._chart(
+                chart_kind="sparkline",
+                title="tiny",
+                labels=[],
+                series=[{"name": "", "values": [1.0, 3.0, 2.0]}],  # type: ignore[list-item]
+            )
+        )
+        assert [c["title"] for c in extract_charts(ui)] == ["tiny"]
+
+    def test_tool_chart_specs_are_validated_on_the_way_in(self) -> None:
+        """Item 6: a chart collected from tool output is a third party's
+        data — it goes through the same contract before it can be put in
+        front of the user."""
+        from app.native.tools import validate_chart_spec
+
+        good = {
+            "kind": "bar",
+            "title": "T",
+            "labels": ["a", "b"],
+            "series": [{"name": "s", "values": [1.0, 2.0]}],
+        }
+        assert validate_chart_spec(good, source="tool") == good
+        for bad in (
+            {"kind": "chart-js-radar", "labels": ["a"], "series": [{"values": [1]}]},
+            {"kind": "bar", "labels": ["a", "b"], "series": [{"values": [1]}]},
+            {"kind": "gauge", "labels": ["CPU"], "series": [{"values": [1, 2, 3]}]},
+            {"kind": "bar", "labels": ["a"], "series": [{"values": [float("nan")]}]},
+            "not a chart at all",
+        ):
+            assert validate_chart_spec(bad, source="tool") is None, bad
+        # the shapes the collector must keep passing through after the fix
+        assert validate_chart_spec(
+            {"kind": "bar", "title": "T", "labels": ["a", "b"], "series": [{"values": [1.0, 2.0]}]},
+            source="tool",
+        ) == {
+            "kind": "bar",
+            "title": "T",
+            "labels": ["a", "b"],
+            "series": [{"name": "", "values": [1.0, 2.0]}],
+        }
 
 
 class TestSettingsValidation:

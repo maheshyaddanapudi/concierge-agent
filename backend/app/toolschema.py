@@ -34,6 +34,10 @@ QUARANTINED = "changed"
 # (review round 3): brought back by the agent's re-enable, never by a
 # card refresh — `ingest_state` is 8 characters wide
 AGENT_INACTIVE = "agentoff"
+# the same rule for an MCP server an operator switched off: the toggle used to
+# be a label — the session stayed up, the tools stayed callable, and the next
+# reconcile connected it again. `ingest_state` is 8 characters wide.
+SERVER_INACTIVE = "srvroff"
 
 
 def schema_fingerprint(schema: dict[str, Any] | None) -> str | None:

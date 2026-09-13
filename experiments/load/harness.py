@@ -63,7 +63,22 @@ TOUCHED_SETTINGS = (
     "ambient_enabled",
     "ambient_routine_events_per_hour",
     "ambient_runs_per_day",
+    # the inbound limiter is UNCONDITIONAL since code_setting_ui_hardening —
+    # it used to live behind auth, which ships dark, so a load run never met
+    # it. At the defaults (burst 120, 10/s, keyed on the caller's address)
+    # every request this harness makes shares one bucket, so `--api-requests
+    # 100` at concurrency 10 would measure the token bucket rather than the
+    # system. Raised for the run and restored afterwards, like every other
+    # setting here; `--respect-rate-limit` leaves it alone for a run whose
+    # subject IS the limiter.
+    "rate_limit_burst",
+    "rate_limit_per_s",
 )
+
+# what the harness raises the limiter to for its own run: far above any
+# concurrency it drives, so the measurement is of the system
+LOADGEN_RATE_BURST = 100000
+LOADGEN_RATE_PER_S = 10000
 
 
 def log(msg: str) -> None:
@@ -175,6 +190,15 @@ class Harness:
         )
         settings = await self.get_settings()
         self.settings_before = {k: settings.get(k) for k in TOUCHED_SETTINGS}
+        if not getattr(self.args, "respect_rate_limit", False):
+            log(
+                f"raising the inbound rate limit for this run "
+                f"({settings.get('rate_limit_burst')}/{settings.get('rate_limit_per_s')}/s → "
+                f"{LOADGEN_RATE_BURST}/{LOADGEN_RATE_PER_S}/s); restored at the end"
+            )
+            await self.patch_settings(
+                rate_limit_burst=LOADGEN_RATE_BURST, rate_limit_per_s=LOADGEN_RATE_PER_S
+            )
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -939,6 +963,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ambient-events", type=int, default=40)
     p.add_argument("--ambient-deadline", type=float, default=300.0)
     p.add_argument("--keep-data", action="store_true")
+    p.add_argument(
+        "--respect-rate-limit",
+        action="store_true",
+        help=(
+            "leave the inbound rate limit at its configured value instead of raising it "
+            "for the run. Use when the limiter itself is the subject; otherwise the "
+            "numbers measure the token bucket, not the system."
+        ),
+    )
     return p.parse_args(argv)
 
 

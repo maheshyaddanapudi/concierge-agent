@@ -138,6 +138,11 @@ async def _superseded(wakeup: AmbientWakeup, now: datetime) -> bool:
 async def fire_due_wakeups(now: datetime | None = None) -> int:
     """Tick evaluator: due pending wakeups become routine-addressed events
     (source='wakeup'); superseded ones expire. Returns events emitted."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     from app.ambient.store import ChainGuardError, emit_event
 
     now = now or datetime.now(UTC)

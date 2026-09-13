@@ -102,8 +102,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await get_cache().startup()  # registry cache (spec §7.3): mode + warm load
     manager = McpManager()
     set_manager(manager)
-    # connect persisted servers without blocking app readiness
-    startup_task = asyncio.create_task(manager.start())
+    # connect persisted servers without blocking app readiness, then RE-BIND
+    # the native skills once their tools exist. On a fresh volume the seed runs
+    # before any MCP server has connected, so `file-ops`, `web-research` and
+    # the two workspace skills were seeded with an empty tool list and stayed
+    # toolless until someone restarted or ran POST /seed/reload by hand — on
+    # exactly the fresh `docker compose up` the acceptance ceremony uses.
+    startup_task = asyncio.create_task(_connect_then_rebind(manager))
     # A2A manager (spec §19.2) — card refresh loop no-ops while a2a is dark
     from app.a2a.manager import A2AManager
     from app.a2a.manager import set_manager as set_a2a_manager
@@ -140,6 +145,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     ambient_stop = asyncio.Event()
     ambient_loop_task = asyncio.create_task(run_ambient_loop(ambient_stop))
+    # §17.4: the routine allowlist is a real ceiling in both modes now. A
+    # routine whose allowlist was written while it was decorative would not
+    # fail here — it would fail inside its next autonomous fire, unwatched.
+    # Name those routines once, at boot, before they wake up. Advisory and
+    # off the boot path: it never delays readiness and never fails startup.
+    from app.ambient.allowlist_audit import log_narrow_allowlists
+
+    allowlist_audit_task = asyncio.create_task(log_narrow_allowlists())
     from app.orchestrator import admission
 
     admission.set_accepting(True)
@@ -171,12 +184,67 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     backfill_task.cancel()
     await get_cache().stop_listener()
     startup_task.cancel()
+    allowlist_audit_task.cancel()  # read-only and advisory; nothing to drain
     await manager.stop()
     set_manager(None)
     a2a_startup_task.cancel()
     await a2a_manager.stop()
     set_a2a_manager(None)
     await close_checkpointer()
+
+
+async def _connect_then_rebind(manager: Any) -> None:
+    """Connect the MCP fleet, then re-run the native-skill binding pass so a
+    first boot ends with the workspace skills actually holding their tools.
+
+    Idempotent by construction: `seed_native_skills` rewrites definition
+    fields and bindings only, never `status` or `direct_exposure`, so an
+    operator's toggles survive it. A failure here is logged, never fatal —
+    the connection work has already happened by then."""
+    log = structlog.get_logger("boot")
+    await manager.start()
+    try:
+        from app.registry_cache import get_cache
+        from app.seed.loader import seed_native_skills
+
+        async with get_session_factory()() as session:
+            await seed_native_skills(session)
+        await get_cache().invalidate("skills")
+        await get_cache().invalidate("sub_agents")
+        log.info("native_skills_rebound_after_ingest")
+    except Exception as exc:  # noqa: BLE001 — a rebind failure never fails boot
+        log.warning("native_skill_rebind_failed", error=str(exc)[:300])
+
+
+def _install_error_handlers(app: FastAPI) -> None:
+    """Strip the echoed request body out of validation errors.
+
+    FastAPI's default validation error repeats the whole submitted body back
+    under `input`. `POST /mcp-servers` takes `env` and `headers` — real API
+    keys, typed into the form — so an operator who forgot a required field
+    got their secret printed in the error banner, because the client renders
+    `detail` verbatim. Spec §8.1 says those values are masked in the UI; they
+    must not arrive in an error either. The message and the field location
+    stay; the value never does.
+    """
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+    from starlette.requests import Request as StarletteRequest
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(
+        _request: StarletteRequest, exc: RequestValidationError
+    ) -> JSONResponse:
+        cleaned: list[dict[str, Any]] = []
+        for err in exc.errors():
+            item = {k: v for k, v in err.items() if k not in ("input", "ctx", "url")}
+            loc = item.get("loc")
+            if isinstance(loc, tuple | list):
+                item["loc"] = [str(part) for part in loc]
+            cleaned.append(item)
+        return JSONResponse({"detail": cleaned}, status_code=422)
+
+    return None
 
 
 def create_app(with_lifespan: bool = True) -> FastAPI:
@@ -198,10 +266,17 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
         allow_origins=origins,
         allow_methods=["*"],
         allow_headers=["*"],
+        # §4 puts the page total in this header; without exposing it a browser
+        # client reads the body and cannot read the count.
+        expose_headers=["X-Total-Count"],
     )
     from app.auth import AuthMiddleware
 
     app.add_middleware(AuthMiddleware)
+    from app.limits import LimitsMiddleware
+
+    app.add_middleware(LimitsMiddleware)  # outermost: caps before any handler
+    _install_error_handlers(app)
     app.include_router(api_router, prefix="/api/v1")
 
     @app.get("/health")

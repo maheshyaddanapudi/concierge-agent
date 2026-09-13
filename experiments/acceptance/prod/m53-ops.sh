@@ -123,10 +123,10 @@ echo "before: $(srv fetch)"; kill_proc mcp-server-fetch
 for i in $(seq 1 9); do sleep 5; echo "t+$((i*5))s: $(srv fetch)"; done
 docker logs --since 1m "$ACC_BACKEND_CONTAINER" 2>&1 | grep -a -oE '"event": "mcp_(ping_failed|reconnect_scheduled|tools_ingested|reconnected)".{0,50}' | head -4
 m '^concierge_mcp_servers|^concierge_mcp_reconnects_total'
-say "PATCH /settings mcp_reconnect_max_attempts=2; POST /mcp-servers stdio command=/bin/false → the breaker opens after two attempts; POST …/reconnect resets it"
+say "PATCH /settings mcp_reconnect_max_attempts=2; POST /mcp-servers stdio python with a script that is not there → the breaker opens after two attempts; POST …/reconnect resets it"
 curl -s -X PATCH $API/settings -H "$H" -d '{"mcp_reconnect_max_attempts":2}' -o /dev/null
 for id in $(curl -s $API/mcp-servers | py 'print(" ".join(s["id"] for s in d if s["name"] in ("m53-broken","m53-stub")))'); do curl -s -X DELETE $API/mcp-servers/$id -o /dev/null; done
-BAD=$(curl -s -X POST $API/mcp-servers -H "$H" -d '{"name":"m53-broken","description":"cannot start","transport":"stdio","command":"/bin/false"}' | py 'print(d["id"])'); echo "server $BAD"
+BAD=$(curl -s -X POST $API/mcp-servers -H "$H" -d '{"name":"m53-broken","description":"cannot start","transport":"stdio","command":"python","args":["/app/tests/no_such_server.py"]}' | py 'print(d["id"])'); echo "server $BAD"
 for i in $(seq 1 9); do sleep 5; echo "t+$((i*5))s: $(curl -s $API/mcp-servers/$BAD | py 'print(d["status"], "|", (d.get("last_error") or "")[:110])')"; done
 m '^concierge_mcp_servers|^concierge_mcp_reconnects_total'; docker logs --since 1m "$ACC_BACKEND_CONTAINER" 2>&1 | grep -a mcp_circuit_open | tail -1 | cut -c1-160
 curl -s -X POST $API/mcp-servers/$BAD/reconnect | py 'print("reconnect →", d["status"], "|", (d.get("last_error") or "")[:80], "(attempts restart from 0)")'; m '^concierge_mcp_servers'

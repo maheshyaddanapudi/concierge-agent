@@ -24,7 +24,7 @@ function hhmm(offsetMin) {
   return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
 }
 
-export default async function ({ page, nav, shot, settings, get, log }) {
+export default async function ({ page, nav, shot, settings, get, log, expect }) {
   const initial = (await get('/settings')).json
   const out = ['# §14f-45..47 — ambient pursuit against live SMTP + SMS-gateway sinks', `# ${new Date().toISOString()} · quiet hours for the non-quiet scenarios: [${hhmm(120)}, ${hhmm(150)}]`, '']
   const say = (l) => {
@@ -50,7 +50,14 @@ export default async function ({ page, nav, shot, settings, get, log }) {
     alive = JSON.parse(psql(`select json_build_object('d', delivered_at is not null) from deliveries where id='${probe}'`)).d
   }
   say(`# preflight: tier-0 probe ${alive ? 'flushed by the tick' : 'NOT flushed within 60s — the ambient tick is stalled; the matrix below cannot be read'}`)
-  if (!alive) throw new Error('ambient tick stalled (preflight probe never delivered)')
+  expect(alive, 'preflight: the ambient tick is flushing, so the matrix below can be read')
+
+  // every scenario line below is a claim, so it fails the stage when it is
+  // FAIL — a matrix that only prints its own verdict proves nothing
+  const verdict = (ok, code, claim) => {
+    say(`${ok ? 'PASS' : 'FAIL'}  ${code}  ${claim}`)
+    expect(ok, `${code} ${claim}`)
+  }
 
   const seed = (title) => psql(`with ins as (insert into deliveries (id, category, tier, urgency, title, body, created_at) values (gen_random_uuid(), 'ops', 0, 5, '${title.replace(/'/g, "''")}', 'pursuit matrix', now()) returning id) select id from ins`)
   const row = (id) => JSON.parse(psql(`select json_build_object('tier', tier, 'delivered_at', delivered_at, 'channel', channel, 'external', external) from deliveries where id='${id}'`))
@@ -73,6 +80,8 @@ export default async function ({ page, nav, shot, settings, get, log }) {
     const before = sinkCounts()
     const id = seed(`PURSUIT ${code}: ${name}`)
     let toast = false
+    // a probe, not a swallow: whether the toast fires IS the variable under
+    // test in scenarios 45 and 47c, and the caller asserts on it
     if (watching) toast = await page.getByTestId('ambient-toaster').waitFor({ timeout: 60000 }).then(() => true).catch(() => false)
     if (watching && code === '45') await shot(page, '01-away-watching-toast-no-external')
     const r = await settle(id)
@@ -92,11 +101,11 @@ export default async function ({ page, nav, shot, settings, get, log }) {
   await shot(page, '00-settings-pursuit-away')
 
   let x = await scenario({ code: '45', name: 'away + watching', pursuit: 'away', watching: true })
-  say(`${x.toast && x.smtp === 0 && x.hook === 0 ? 'PASS' : 'FAIL'}  §14f-45  away + watching → toast fires, external channels HELD`)
+  verdict(x.toast && x.smtp === 0 && x.hook === 0, '§14f-45 ', 'away + watching → toast fires, external channels HELD')
   say(`      toast: ${x.toast ? 'shown' : 'not shown'} | smtp +${x.smtp} | webhook +${x.hook} | ledger: ${x.ext}`)
 
   x = await scenario({ code: '46', name: 'away + nobody watching', pursuit: 'away', watching: false })
-  say(`${x.smtp === 1 && x.hook === 1 ? 'PASS' : 'FAIL'}  §14f-46  away + nobody watching → both external channels PURSUE`)
+  verdict(x.smtp === 1 && x.hook === 1, '§14f-46 ', 'away + nobody watching → both external channels PURSUE')
   say(`      smtp +${x.smtp} | webhook +${x.hook} | ledger: ${x.ext}`)
   const mail = x.after.lines.filter((l) => l.kind === 'smtp').pop()
   const hook = x.after.lines.filter((l) => l.kind === 'webhook').pop()
@@ -104,15 +113,15 @@ export default async function ({ page, nav, shot, settings, get, log }) {
   if (hook) say(`  --- the SMS-gateway-shaped webhook sink actually received ---\n  POST ${hook.path}  ${JSON.stringify(hook.body).slice(0, 260)}`)
 
   x = await scenario({ code: '47a', name: 'quiet hours beat pursuit', pursuit: 'away', watching: false, quiet: true })
-  say(`${x.smtp === 0 && x.hook === 0 && !x.r.delivered_at ? 'PASS' : 'FAIL'}  §14f-47a quiet hours over now beat pursuit → demoted, NOTHING sent`)
+  verdict(x.smtp === 0 && x.hook === 0 && !x.r.delivered_at, '§14f-47a', 'quiet hours over now beat pursuit → demoted, NOTHING sent')
   say(`      tier ${x.r.tier} (seeded at 0) | delivered_at ${x.r.delivered_at || 'null'} | smtp +${x.smtp} | webhook +${x.hook}`)
 
   x = await scenario({ code: '47b', name: "pursuit 'off' + nobody watching", pursuit: 'off', watching: false })
-  say(`${x.r.delivered_at && x.smtp === 0 && x.hook === 0 ? 'PASS' : 'FAIL'}  §14f-47b pursuit 'off' + nobody watching → in-app only, nothing external`)
+  verdict(!!x.r.delivered_at && x.smtp === 0 && x.hook === 0, '§14f-47b', "pursuit 'off' + nobody watching → in-app only, nothing external")
   say(`      delivered in-app: ${x.r.delivered_at ? 'yes' : 'no'} | smtp +${x.smtp} | webhook +${x.hook} | ledger: ${x.ext}`)
 
   x = await scenario({ code: '47c', name: "pursuit 'always' + watching", pursuit: 'always', watching: true })
-  say(`${x.smtp === 1 && x.hook === 1 ? 'PASS' : 'FAIL'}  §14f-47c pursuit 'always' + watching → external fires anyway (pre-M41 default)`)
+  verdict(x.smtp === 1 && x.hook === 1, '§14f-47c', "pursuit 'always' + watching → external fires anyway (pre-M41 default)")
   say(`      smtp +${x.smtp} | webhook +${x.hook} | ledger: ${x.ext}`)
 
   await nav(page, 'ambient')

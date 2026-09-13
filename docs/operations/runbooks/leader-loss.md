@@ -26,10 +26,15 @@ database; two stacks pointed at different databases).
 ## First checks
 
 ```bash
-# M54: the fleet as the database sees it — which replicas are live
-curl -s http://localhost:8000/api/v1/replicas | python3 -m json.tool
-for h in backend-1 backend-2; do docker compose exec $h python -c \
-  "import urllib.request;print('$h', urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode().split('concierge_ambient_leader ')[1][:3])"; done
+# M54: the fleet as the database sees it — which replicas are live.
+# The published host port comes from BACKEND_PORT_RANGE, one per replica —
+# ask compose rather than assuming 8000.
+PORT=$(docker compose port backend 8000 | head -1 | sed 's/.*://')
+curl -s "http://localhost:${PORT}/api/v1/replicas" | python3 -m json.tool
+# `backend-1` is a CONTAINER name; `docker compose exec` takes a SERVICE.
+# Address a scaled replica with --index=N (1-based, in compose's own order).
+for i in 1 2; do docker compose exec --index=$i backend python -c \
+  "import urllib.request;print('replica $i', urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode().split('concierge_ambient_leader ')[1][:3])"; done
 docker compose exec db psql -U concierge -d concierge -c \
   "select pid, granted, now()-backend_start as age from pg_locks l join pg_stat_activity a using(pid) where locktype='advisory' and classid=427017;"
 docker compose logs --since 5m backend | grep ambient_leader

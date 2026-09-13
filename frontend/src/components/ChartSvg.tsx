@@ -39,6 +39,71 @@ const SERIES_VARS = [
   'var(--color-accent-600)',
 ]
 
+// hard ceilings: a spec arrives from a model (formatter or a third-party
+// tool), so the scaling maths must never see an unbounded series — a spread
+// over 100k numbers blows the stack long before the SVG gets drawn
+const MAX_POINTS = 500
+const MAX_SERIES = 16
+
+const KINDS = new Set<ChartSpec['kind']>([
+  'bar', 'hbar', 'stacked_bar', 'stacked_bar_100', 'line', 'area', 'stacked_area',
+  'pie', 'donut', 'histogram', 'funnel', 'waterfall', 'lollipop', 'gauge',
+  'sparkline', 'scatter', 'bubble', 'candlestick', 'boxplot', 'gantt', 'combo',
+])
+
+/** Shape guard for specs that did not come from our own formatter (tool
+ * charts are produced by third-party tools and must not blank the page). */
+export function isChartSpec(value: unknown): value is ChartSpec {
+  if (!value || typeof value !== 'object') return false
+  const s = value as Partial<ChartSpec>
+  return (
+    typeof s.kind === 'string' &&
+    KINDS.has(s.kind as ChartSpec['kind']) &&
+    Array.isArray(s.labels) &&
+    Array.isArray(s.series)
+  )
+}
+
+function finite(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+/** Every number the drawing maths touches is finite and bounded. */
+function sanitize(spec: ChartSpec): ChartSpec {
+  const nums = (xs: unknown): number[] =>
+    (Array.isArray(xs) ? xs : []).slice(0, MAX_POINTS).map(finite)
+  return {
+    ...spec,
+    title: typeof spec.title === 'string' ? spec.title : '',
+    labels: (Array.isArray(spec.labels) ? spec.labels : [])
+      .slice(0, MAX_POINTS)
+      .map((l) => String(l ?? '')),
+    series: (Array.isArray(spec.series) ? spec.series : []).slice(0, MAX_SERIES).map((s) => ({
+      name: typeof s?.name === 'string' ? s.name : '',
+      render: s?.render,
+      values: nums(s?.values),
+      points: Array.isArray(s?.points)
+        ? s.points.slice(0, MAX_POINTS).map((p) => nums(p))
+        : undefined,
+    })),
+    ranges: Array.isArray(spec.ranges)
+      ? spec.ranges.slice(0, MAX_POINTS).map((r) => (Array.isArray(r) ? r.map(String) : []))
+      : undefined,
+  }
+}
+
+/** min/max without spreading the array into the call stack. */
+function extent(values: number[]): [number, number] {
+  let lo = Infinity
+  let hi = -Infinity
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue
+    if (v < lo) lo = v
+    if (v > hi) hi = v
+  }
+  return Number.isFinite(lo) ? [lo, hi] : [0, 0]
+}
+
 function niceMax(v: number): number {
   if (v <= 0) return 1
   const mag = 10 ** Math.floor(Math.log10(v))
@@ -46,23 +111,46 @@ function niceMax(v: number): number {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag
 }
 
-function Axes({ max }: { max: number }) {
+/** Plot scale for the kinds drawn against a zero baseline. A negative value
+ * is a real value, not an error: the domain reaches down to a nice minimum
+ * and the baseline sits where zero actually falls, so bars/areas draw on
+ * both sides of it instead of collapsing to nothing. */
+function scaleOf(values: number[]): {
+  lo: number
+  hi: number
+  y: (v: number) => number
+  zeroY: number
+  y0: number
+} {
+  const [rawLo, rawHi] = extent(values)
+  const hi0 = rawHi > 0 ? niceMax(rawHi) : 0
+  const lo = rawLo < 0 ? -niceMax(-rawLo) : 0
+  const hi = hi0 === lo ? lo + 1 : hi0
   const y0 = H - PAD.bottom
-  const ticks = [0, 0.5, 1]
+  const plot = y0 - PAD.top
+  const y = (v: number) => y0 - ((finite(v) - lo) / (hi - lo)) * plot
+  return { lo, hi, y, zeroY: y(0), y0 }
+}
+
+function Axes({ lo, hi }: { lo: number; hi: number }) {
+  const y0 = H - PAD.bottom
+  const plot = y0 - PAD.top
+  const y = (v: number) => y0 - ((v - lo) / (hi - lo || 1)) * plot
+  const zeroY = y(Math.min(Math.max(0, lo), hi))
   return (
     <g className="text-slate-600">
-      <line x1={PAD.left} y1={y0} x2={W - PAD.right} y2={y0} stroke="currentColor" />
+      <line x1={PAD.left} y1={zeroY} x2={W - PAD.right} y2={zeroY} stroke="currentColor" />
       <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={y0} stroke="currentColor" />
-      {ticks.map((t) => (
+      {[lo, (lo + hi) / 2, hi].map((v, i) => (
         <text
-          key={t}
+          key={i}
           x={PAD.left - 5}
-          y={y0 - t * (y0 - PAD.top) + 3}
+          y={y(v) + 3}
           textAnchor="end"
           fontSize="9"
           fill="var(--color-slate-500)"
         >
-          {Math.round(max * t * 100) / 100}
+          {Math.round(v * 100) / 100}
         </text>
       ))}
     </g>
@@ -94,7 +182,7 @@ function XLabels({ labels }: { labels: string[] }) {
       {displayLabels(labels).map(({ text, index }) => (
         <text
           key={index}
-          x={PAD.left + span * ((index + 0.5) / labels.length)}
+          x={PAD.left + span * ((index + 0.5) / Math.max(1, labels.length))}
           y={y0 + 13}
           textAnchor="middle"
           fontSize="9"
@@ -109,18 +197,18 @@ function XLabels({ labels }: { labels: string[] }) {
 
 function BarChart({ spec, gapless = false }: { spec: ChartSpec; gapless?: boolean }) {
   const series = gapless ? spec.series.slice(0, 1) : spec.series
-  const max = niceMax(Math.max(...series.flatMap((s) => s.values)))
-  const y0 = H - PAD.bottom
+  const sc = scaleOf(series.flatMap((s) => s.values))
   const span = W - PAD.left - PAD.right
-  const slot = span / spec.labels.length
-  const barW = gapless ? slot : Math.min(34, (slot * 0.7) / series.length)
+  const slot = span / Math.max(1, spec.labels.length)
+  const barW = gapless ? slot : Math.min(34, (slot * 0.7) / Math.max(1, series.length))
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {series.map((s, si) =>
         s.values.map((v, i) => {
-          const h = ((y0 - PAD.top) * v) / max
+          // bars grow from the zero line, up or down
+          const yv = sc.y(v)
           const x = gapless
             ? PAD.left + slot * i
             : PAD.left + slot * i + slot / 2 - (barW * series.length) / 2 + si * barW
@@ -128,9 +216,9 @@ function BarChart({ spec, gapless = false }: { spec: ChartSpec; gapless?: boolea
             <rect
               key={`${si}-${i}`}
               x={x}
-              y={y0 - h}
-              width={gapless ? barW - 1 : barW - 2}
-              height={h}
+              y={Math.min(yv, sc.zeroY)}
+              width={Math.max(1, gapless ? barW - 1 : barW - 2)}
+              height={Math.abs(yv - sc.zeroY)}
               rx={gapless ? 0 : 2}
               fill={SERIES_VARS[si % SERIES_VARS.length]}
               opacity={0.9}
@@ -143,32 +231,37 @@ function BarChart({ spec, gapless = false }: { spec: ChartSpec; gapless?: boolea
 }
 
 function StackedBarChart({ spec }: { spec: ChartSpec }) {
-  const totals = spec.labels.map((_, i) =>
-    spec.series.reduce((a, s) => a + (s.values[i] ?? 0), 0),
-  )
-  const max = niceMax(Math.max(...totals))
-  const y0 = H - PAD.bottom
+  // positives stack up from zero, negatives stack down from it
+  const stack = (pick: (v: number) => number) =>
+    spec.labels.map((_, i) => spec.series.reduce((a, s) => a + pick(s.values[i] ?? 0), 0))
+  const sc = scaleOf([
+    ...stack((v) => Math.max(0, v)),
+    ...stack((v) => Math.min(0, v)),
+  ])
   const span = W - PAD.left - PAD.right
-  const slot = span / spec.labels.length
+  const slot = span / Math.max(1, spec.labels.length)
   const barW = Math.min(40, slot * 0.6)
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {spec.labels.map((_, i) => {
-        let acc = 0
+        let up = 0
+        let down = 0
         return spec.series.map((s, si) => {
           const v = s.values[i] ?? 0
-          const h = ((y0 - PAD.top) * v) / max
-          const y = y0 - ((y0 - PAD.top) * acc) / max - h
-          acc += v
+          const from = v >= 0 ? up : down
+          const to = from + v
+          if (v >= 0) up = to
+          else down = to
+          const yTop = Math.min(sc.y(from), sc.y(to))
           return (
             <rect
               key={`${si}-${i}`}
               x={PAD.left + slot * i + (slot - barW) / 2}
-              y={y}
+              y={yTop}
               width={barW}
-              height={h}
+              height={Math.abs(sc.y(to) - sc.y(from))}
               fill={SERIES_VARS[si % SERIES_VARS.length]}
               opacity={0.9}
             />
@@ -181,23 +274,28 @@ function StackedBarChart({ spec }: { spec: ChartSpec }) {
 
 function HBarChart({ spec }: { spec: ChartSpec }) {
   const values = spec.series[0]?.values ?? []
-  const max = niceMax(Math.max(...values))
+  const [rawLo, rawHi] = extent(values)
+  const hi0 = rawHi > 0 ? niceMax(rawHi) : 0
+  const lo = rawLo < 0 ? -niceMax(-rawLo) : 0
+  const hi = hi0 === lo ? lo + 1 : hi0
   const left = 110
   const span = W - left - PAD.right
-  const slot = (H - PAD.top - 10) / spec.labels.length
+  const xFor = (v: number) => left + span * ((finite(v) - lo) / (hi - lo))
+  const zeroX = xFor(Math.min(Math.max(0, lo), hi))
+  const slot = (H - PAD.top - 10) / Math.max(1, spec.labels.length)
   const barH = Math.min(20, slot * 0.65)
   return (
     <>
       <line
-        x1={left}
+        x1={zeroX}
         y1={PAD.top}
-        x2={left}
+        x2={zeroX}
         y2={H - 10}
         stroke="currentColor"
         className="text-slate-600"
       />
       {spec.labels.map((l, i) => {
-        const w = (span * (values[i] ?? 0)) / max
+        const x = xFor(values[i] ?? 0)
         const y = PAD.top + slot * i + (slot - barH) / 2
         return (
           <g key={i}>
@@ -210,8 +308,21 @@ function HBarChart({ spec }: { spec: ChartSpec }) {
             >
               {l.length > 16 ? l.slice(0, 15) + '…' : l}
             </text>
-            <rect x={left} y={y} width={w} height={barH} rx={2} fill={SERIES_VARS[0]} opacity={0.9} />
-            <text x={left + w + 5} y={y + barH / 2 + 3} fontSize="9" fill="var(--color-slate-500)">
+            <rect
+              x={Math.min(x, zeroX)}
+              y={y}
+              width={Math.abs(x - zeroX)}
+              height={barH}
+              rx={2}
+              fill={SERIES_VARS[0]}
+              opacity={0.9}
+            />
+            <text
+              x={Math.max(x, zeroX) + 5}
+              y={y + barH / 2 + 3}
+              fontSize="9"
+              fill="var(--color-slate-500)"
+            >
               {values[i]}
             </text>
           </g>
@@ -222,25 +333,25 @@ function HBarChart({ spec }: { spec: ChartSpec }) {
 }
 
 function LineChart({ spec, filled = false }: { spec: ChartSpec; filled?: boolean }) {
-  const max = niceMax(Math.max(...spec.series.flatMap((s) => s.values)))
-  const y0 = H - PAD.bottom
+  const sc = scaleOf(spec.series.flatMap((s) => s.values))
   const span = W - PAD.left - PAD.right
-  const px = (i: number) => PAD.left + span * ((i + 0.5) / spec.labels.length)
-  const py = (v: number) => y0 - ((y0 - PAD.top) * v) / max
+  const px = (i: number) => PAD.left + span * ((i + 0.5) / Math.max(1, spec.labels.length))
+  const py = (v: number) => sc.y(v)
   const pt = (i: number, v: number) => `${px(i)},${py(v)}`
   const dense = spec.labels.length > 20
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {spec.series.map((s, si) => (
         <g key={si}>
           {filled && s.values.length > 1 && (
             <polygon
+              // the fill closes on the zero line, not on the frame's bottom
               points={[
-                `${px(0)},${y0}`,
+                `${px(0)},${sc.zeroY}`,
                 ...s.values.map((v, i) => pt(i, v)),
-                `${px(s.values.length - 1)},${y0}`,
+                `${px(s.values.length - 1)},${sc.zeroY}`,
               ].join(' ')}
               fill={SERIES_VARS[si % SERIES_VARS.length]}
               opacity={0.18}
@@ -269,7 +380,9 @@ function LineChart({ spec, filled = false }: { spec: ChartSpec; filled?: boolean
 }
 
 function PieChart({ spec, innerRatio = 0 }: { spec: ChartSpec; innerRatio?: number }) {
-  const values = spec.series[0]?.values ?? []
+  // a share of a whole has no sign: magnitudes draw, so one negative entry
+  // cannot invert the total and swallow the circle
+  const values = (spec.series[0]?.values ?? []).map((v) => Math.abs(v))
   const total = values.reduce((a, b) => a + b, 0) || 1
   const cx = W / 2 - 80
   const cy = H / 2
@@ -326,7 +439,9 @@ function StackedBar100({ spec }: { spec: ChartSpec }) {
     series: spec.series.map((s) => ({
       ...s,
       values: s.values.map((v, i) => {
-        const total = spec.series.reduce((a, x) => a + (x.values[i] ?? 0), 0) || 1
+        // shares of the magnitude at this label: a mixed-sign column keeps
+        // its signs but cannot divide by a total that cancelled itself out
+        const total = spec.series.reduce((a, x) => a + Math.abs(x.values[i] ?? 0), 0) || 1
         return (100 * v) / total
       }),
     })),
@@ -335,22 +450,19 @@ function StackedBar100({ spec }: { spec: ChartSpec }) {
 }
 
 function StackedAreaChart({ spec }: { spec: ChartSpec }) {
-  const max = niceMax(
-    Math.max(...spec.labels.map((_, i) => spec.series.reduce((a, s) => a + (s.values[i] ?? 0), 0))),
-  )
-  const y0 = H - PAD.bottom
-  const span = W - PAD.left - PAD.right
-  const px = (i: number) => PAD.left + span * ((i + 0.5) / spec.labels.length)
-  const py = (v: number) => y0 - ((y0 - PAD.top) * v) / max
   const cum: number[][] = []
   let prev = spec.labels.map(() => 0)
   for (const s of spec.series) {
     prev = prev.map((v, i) => v + (s.values[i] ?? 0))
     cum.push([...prev])
   }
+  const sc = scaleOf(cum.flat())
+  const span = W - PAD.left - PAD.right
+  const px = (i: number) => PAD.left + span * ((i + 0.5) / Math.max(1, spec.labels.length))
+  const py = (v: number) => sc.y(v)
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {spec.series.map((_, si) => {
         const top = cum[si]
@@ -376,20 +488,27 @@ function StackedAreaChart({ spec }: { spec: ChartSpec }) {
 
 function LollipopChart({ spec }: { spec: ChartSpec }) {
   const values = spec.series[0]?.values ?? []
-  const max = niceMax(Math.max(...values))
-  const y0 = H - PAD.bottom
+  const sc = scaleOf(values)
   const span = W - PAD.left - PAD.right
-  const slot = span / spec.labels.length
+  const slot = span / Math.max(1, spec.labels.length)
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {values.map((v, i) => {
         const x = PAD.left + slot * i + slot / 2
-        const y = y0 - ((y0 - PAD.top) * v) / max
+        const y = sc.y(v)
         return (
           <g key={i}>
-            <line x1={x} y1={y0} x2={x} y2={y} stroke={SERIES_VARS[0]} strokeWidth={2} opacity={0.6} />
+            <line
+              x1={x}
+              y1={sc.zeroY}
+              x2={x}
+              y2={y}
+              stroke={SERIES_VARS[0]}
+              strokeWidth={2}
+              opacity={0.6}
+            />
             <circle cx={x} cy={y} r={5} fill={SERIES_VARS[0]} />
           </g>
         )
@@ -400,14 +519,15 @@ function LollipopChart({ spec }: { spec: ChartSpec }) {
 
 function FunnelChart({ spec }: { spec: ChartSpec }) {
   const values = spec.series[0]?.values ?? []
-  const first = values[0] || 1
+  if (!values.length) return null
+  const first = Math.abs(values[0]) || 1
   const rowH = Math.min(26, (H - 20) / values.length)
   const cx = W / 2 - 40
   const maxW = 260
   return (
     <>
       {values.map((v, i) => {
-        const w = Math.max(6, (maxW * v) / first)
+        const w = Math.max(6, (maxW * Math.abs(v)) / first)
         const y = 12 + i * (rowH + 4)
         return (
           <g key={i}>
@@ -432,10 +552,12 @@ function FunnelChart({ spec }: { spec: ChartSpec }) {
 
 function WaterfallChart({ spec }: { spec: ChartSpec }) {
   const deltas = spec.series[0]?.values ?? []
+  if (!deltas.length) return null
   const cums = [0]
   for (const d of deltas) cums.push(cums[cums.length - 1] + d)
-  const lo = Math.min(0, ...cums)
-  const hi = Math.max(...cums, 1)
+  const [cumLo, cumHi] = extent(cums)
+  const lo = Math.min(0, cumLo)
+  const hi = Math.max(cumHi, lo + 1)
   const max = niceMax(hi - lo)
   const y0 = H - PAD.bottom
   const scale = (y0 - PAD.top) / max
@@ -511,8 +633,8 @@ function GaugeChart({ spec }: { spec: ChartSpec }) {
 function SparklineChart({ spec }: { spec: ChartSpec }) {
   const SH = 90
   const values = spec.series[0]?.values ?? []
-  const lo = Math.min(...values)
-  const hi = Math.max(...values)
+  if (!values.length) return null
+  const [lo, hi] = extent(values)
   const range = hi - lo || 1
   const px = (i: number) => 8 + (W - 60) * (i / Math.max(1, values.length - 1))
   const py = (v: number) => SH - 18 - (SH - 36) * ((v - lo) / range)
@@ -535,19 +657,16 @@ function SparklineChart({ spec }: { spec: ChartSpec }) {
 function ScatterChart({ spec, sized = false }: { spec: ChartSpec; sized?: boolean }) {
   const pts = spec.series.flatMap((s) => s.points ?? [])
   if (!pts.length) return null
-  const xs = pts.map((p) => p[0])
-  const ys = pts.map((p) => p[1])
-  const xLo = Math.min(...xs)
-  const xHi = Math.max(...xs)
-  const yHi = niceMax(Math.max(...ys))
+  const [xLo, xHi] = extent(pts.map((p) => p[0]))
+  const sc = scaleOf(pts.map((p) => p[1]))
   const y0 = H - PAD.bottom
   const span = W - PAD.left - PAD.right
-  const px = (x: number) => PAD.left + span * ((x - xLo) / (xHi - xLo || 1))
-  const py = (y: number) => y0 - (y0 - PAD.top) * (y / yHi)
-  const maxSize = sized ? Math.max(...pts.map((p) => p[2] ?? 1)) : 1
+  const px = (x: number) => PAD.left + span * ((finite(x) - xLo) / (xHi - xLo || 1))
+  const py = (y: number) => sc.y(y)
+  const maxSize = sized ? Math.max(1e-9, extent(pts.map((p) => p[2] ?? 1))[1]) : 1
   return (
     <>
-      <Axes max={yHi} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <text x={PAD.left} y={y0 + 13} fontSize="9" fill="var(--color-slate-400)">
         {xLo}
       </text>
@@ -560,7 +679,7 @@ function ScatterChart({ spec, sized = false }: { spec: ChartSpec; sized?: boolea
             key={`${si}-${i}`}
             cx={px(p[0])}
             cy={py(p[1])}
-            r={sized ? 4 + 10 * Math.sqrt((p[2] ?? 1) / maxSize) : 4}
+            r={sized ? 4 + 10 * Math.sqrt(Math.abs(p[2] ?? 1) / maxSize) : 4}
             fill={SERIES_VARS[si % SERIES_VARS.length]}
             opacity={sized ? 0.55 : 0.8}
           />
@@ -578,8 +697,8 @@ function CandlestickChart({ spec }: { spec: ChartSpec }) {
   const close = by('close')
   // price charts scale to the actual range (with padding), not to zero —
   // niceMax would squash a 229–241 week into the bottom of a 0–500 axis
-  const rawHi = Math.max(...high)
-  const rawLo = Math.min(...low)
+  const rawHi = extent(high)[1]
+  const rawLo = extent(low)[0]
   const pad = (rawHi - rawLo) * 0.08 || 1
   const hi = rawHi + pad
   const lo = rawLo - pad
@@ -619,8 +738,12 @@ function BoxplotChart({ spec }: { spec: ChartSpec }) {
   const med = by('median')
   const q3 = by('q3')
   const maxs = by('max')
-  const hi = niceMax(Math.max(...maxs))
-  const lo = Math.min(...mins)
+  // real range with padding (negatives included), not a zero-anchored one
+  const rawHi = extent(maxs)[1]
+  const rawLo = extent(mins)[0]
+  const pad = (rawHi - rawLo) * 0.08 || 1
+  const hi = rawHi + pad
+  const lo = rawLo - pad
   const y0 = H - PAD.bottom
   const scale = (y0 - PAD.top) / (hi - lo || 1)
   const yFor = (v: number) => y0 - (v - lo) * scale
@@ -698,25 +821,24 @@ function GanttChart({ spec }: { spec: ChartSpec }) {
 function ComboChart({ spec }: { spec: ChartSpec }) {
   const bars = spec.series.filter((s) => (s.render ?? 'bar') === 'bar')
   const lines = spec.series.filter((s) => s.render === 'line')
-  const max = niceMax(Math.max(...spec.series.flatMap((s) => s.values)))
-  const y0 = H - PAD.bottom
+  const sc = scaleOf(spec.series.flatMap((s) => s.values))
   const span = W - PAD.left - PAD.right
-  const slot = span / spec.labels.length
+  const slot = span / Math.max(1, spec.labels.length)
   const barW = Math.min(30, (slot * 0.65) / Math.max(1, bars.length))
-  const px = (i: number) => PAD.left + span * ((i + 0.5) / spec.labels.length)
-  const py = (v: number) => y0 - ((y0 - PAD.top) * v) / max
+  const px = (i: number) => PAD.left + span * ((i + 0.5) / Math.max(1, spec.labels.length))
+  const py = (v: number) => sc.y(v)
   return (
     <>
-      <Axes max={max} />
+      <Axes lo={sc.lo} hi={sc.hi} />
       <XLabels labels={spec.labels} />
       {bars.map((s, si) =>
         s.values.map((v, i) => (
           <rect
             key={`b${si}-${i}`}
             x={PAD.left + slot * i + slot / 2 - (barW * bars.length) / 2 + si * barW}
-            y={py(v)}
-            width={barW - 2}
-            height={y0 - py(v)}
+            y={Math.min(py(v), sc.zeroY)}
+            width={Math.max(1, barW - 2)}
+            height={Math.abs(sc.zeroY - py(v))}
             rx={2}
             fill={SERIES_VARS[si % SERIES_VARS.length]}
             opacity={0.85}
@@ -741,7 +863,12 @@ const ROUND_KINDS = new Set(['pie', 'donut', 'gauge', 'funnel', 'sparkline', 'ga
 
 const NO_LABEL_KINDS = new Set(['scatter', 'bubble', 'sparkline'])
 
-export function ChartSvg({ spec }: { spec: ChartSpec }) {
+export function ChartSvg({ spec: raw }: { spec: ChartSpec }) {
+  // the spec crosses a process boundary (formatter document, tool output,
+  // a stored run), so it is treated as untrusted input here too: unknown
+  // kinds, NaN/Infinity and unbounded series never reach the scaling maths
+  if (!isChartSpec(raw)) return null
+  const spec = sanitize(raw)
   if (!spec.labels.length && !NO_LABEL_KINDS.has(spec.kind)) return null
   if (!spec.series.length && spec.kind !== 'gantt') return null
   return (

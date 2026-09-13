@@ -77,10 +77,13 @@ kill_stub; sleep 1
 R8=$(curl -s -X POST $API/chat -H "$H" -d '{"message":"Ask the site-reporter sub agent to summarize this: 2 and 3 make five; publish it."}' | py 'print(d["run_id"])')
 echo "run $R8 → $(approve_when_paused $R8 120)"; steps $R8
 curl -s $API/mcp-servers/$STUB | py 'print("server after the kill (a stdio server respawns on next use):", d["status"], "|", (d.get("last_error") or "")[:80])'
-echo "(the visible error state: point the server at a binary that does not exist, reconnect, then restore — the same lifecycle the UI drives)"
-curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"command":"/nonexistent-mcp-binary"}' -o /dev/null
+echo "(the visible error state: point the server at a script that does not exist, reconnect, then restore — the same lifecycle the UI drives)"
+# an allowed launcher with a missing script, not an arbitrary binary: the
+# stdio allowlist refuses the latter at the edit path, so it would 422 here
+# rather than reaching the connection breaker this drill is about
+curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"args":["/app/tests/no_such_server.py"]}' -o /dev/null
 curl -s -X POST $API/mcp-servers/$STUB/reconnect | py 'print("reconnect with a broken command →", d["status"], "|", (d.get("last_error") or "")[:90])'
-curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"command":"python"}' -o /dev/null
+curl -s -X PATCH $API/mcp-servers/$STUB -H "$H" -d '{"args":["/app/tests/stub_mcp_server.py"]}' -o /dev/null
 curl -s -X POST $API/mcp-servers/$STUB/reconnect | py 'print("reconnect restored →", d["status"], "tools", d["tool_count"])'
 shot 08-server-reconnected mcp-servers
 

@@ -13,12 +13,14 @@ async function setSwitch(page, name, on) {
   await page.waitForTimeout(500)
 }
 
-export default async function ({ page, nav, shot, settings, get, post, log, closeDrawer, newConversation, askAndSettle }) {
+export default async function ({ page, nav, shot, settings, get, post, log, closeDrawer, newConversation, askAndSettle, expect, expectEq, expectMatch, expectStatus }) {
   await settings({ orchestrator_mode: 'graph', default_model_params: null, memory_forget_enabled: false })
   await nav(page, 'settings')
   for (const name of ['Memory enabled', 'Extraction (L2 writes)', 'Reflection (L4)', 'Procedural learning (L3)']) await setSwitch(page, name, true)
   const s = (await get('/settings')).json
   log(`layers: memory=${s.memory_enabled} extraction=${s.memory_extraction_enabled} procedural=${s.procedural_learning_enabled} reflection=${s.memory_reflection_enabled} forget=${s.memory_forget_enabled}`)
+  expectEq(s.memory_enabled, true, 'the Settings switches turned memory on')
+  expectEq(s.memory_extraction_enabled, true, '…with L2 extraction')
   await page.getByText('Memory (§16 — the experiment layers)', { exact: true }).first().scrollIntoViewIfNeeded()
   await page.waitForTimeout(400)
   await shot(page, '00-settings-memory-layers')
@@ -36,6 +38,9 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   await page.waitForTimeout(1200)
   const manual = (await get('/memories')).json
   log(`after + Remember: ${manual.length} rows — ${manual.map((m) => `${m.kind}/${m.status}/${m.source}`).join(', ')}`)
+  expectEq(manual.length, 1, '+ Remember wrote exactly one row into the empty store')
+  expectEq(manual[0].source, 'manual', '…marked manual')
+  expectMatch(manual[0].text, /aurora-2/, '…with the text the operator typed')
   await shot(page, '02-remember-quick-add')
 
   // a chat that teaches a preference and an instruction
@@ -50,13 +55,18 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   }
   const extracted = rows.filter((m) => m.run_id === done.id)
   log(`extracted from the run: ${extracted.map((m) => `${m.kind}/${m.status}: ${m.text.slice(0, 50)}`).join(' | ') || 'nothing yet'}`)
+  // §16: the chat taught two things, and L2 extraction must have written them
+  expectStatus(done, 'completed', 'the teaching run')
+  expect(extracted.length >= 2, `extraction wrote the preference and the instruction (${extracted.length} rows)`)
+  expect(extracted.some((m) => m.status === 'active'), 'the preference landed active')
+  expect(extracted.some((m) => m.status === 'quarantined'), 'and the instruction landed in review (the admission gate)')
   await shot(page, '03-chat-teaches-fact-and-instruction')
   await nav(page, 'memory')
   await shot(page, '04-store-post-extraction')
 
   // the drawer with provenance (the preference, active)
   const pref = extracted.find((m) => m.kind === 'preference') || extracted[0]
-  if (!pref) throw new Error('no extracted memory to open')
+  expect(!!pref, 'there is an extracted preference to open')
   await page.locator('tr').filter({ hasText: pref.text.slice(0, 40) }).first().click()
   await page.waitForTimeout(800)
   await shot(page, '05-memory-detail-provenance')
@@ -75,6 +85,8 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
     await page.waitForTimeout(1200)
     const after = (await get(`/memories/${instr.id}`)).json
     log(`review approve → ${after.status}; note: ${after.review_note}`)
+    expectEq(after.status, 'active', 'the review-queue approval activated the instruction')
+    expectMatch(after.review_note, /standing formatting preference/, "…and recorded the reviewer's note")
   } else {
     log('no quarantined instruction from this run — the review leg has nothing to approve (recorded as-is)')
   }
@@ -90,6 +102,10 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   await page.waitForTimeout(1500)
   const versions = (await get('/memories')).json.filter((m) => /teal/i.test(m.text))
   log(`after the edit: ${versions.map((m) => `${m.status}${m.supersedes ? ' supersedes ' + m.supersedes.slice(0, 8) : ''}: ${m.text.slice(0, 40)}`).join(' | ')}`)
+  // edit-as-supersede: a NEW row that points at the old one, not an in-place
+  // rewrite that loses the history
+  expect(versions.some((m) => m.supersedes), 'the edit created a superseding version')
+  expect(versions.some((m) => /deep teal/i.test(m.text)), '…carrying the edited text')
   await page.locator('select').nth(1).selectOption('')
   await page.waitForTimeout(800)
   await shot(page, '08-edit-as-supersede')
@@ -100,7 +116,7 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   await page.waitForTimeout(800)
   await page.getByRole('button', { name: 'Pin (always injected)' }).click()
   await page.waitForTimeout(1200)
-  log(`pinned: ${(await get(`/memories/${current.id}`)).json.pinned}`)
+  expectEq((await get(`/memories/${current.id}`)).json.pinned, true, 'the memory is pinned (always injected)')
   await shot(page, '09-pinned-memory')
 
   // recall in a brand-new conversation
@@ -108,6 +124,9 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   await newConversation(page)
   const recall = await askAndSettle(page, 'What is my favorite color? One sentence.')
   log(`recall mentions teal: ${/teal/i.test(recall.final_answer || '')}; include_memories=${recall.include_memories}`)
+  // genuine recall: a brand-new conversation, nothing in its history
+  expectStatus(recall, 'completed', 'the recall run')
+  expectMatch(recall.final_answer, /teal/i, 'a brand-new conversation recalled the stored preference')
   await shot(page, '10-recall-in-new-chat')
 
   // hard delete of the manual fact
@@ -120,6 +139,8 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   })
   await page.getByRole('button', { name: /Delete permanently|Erase completely/ }).click()
   await page.waitForTimeout(1200)
-  log(`after the delete: ${(await get('/memories')).json.length} rows; status ${JSON.stringify((await get('/memories/status')).json.counts)}`)
+  const left = (await get('/memories')).json
+  log(`after the delete: ${left.length} rows; status ${JSON.stringify((await get('/memories/status')).json.counts)}`)
+  expect(!left.some((m) => /aurora-2/.test(m.text)), 'the hard delete erased the manual fact completely')
   await shot(page, '11-hard-delete')
 }

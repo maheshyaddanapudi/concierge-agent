@@ -6,19 +6,19 @@
 // versions the change, and the Tools page, the drawer, the trace and Settings
 // each show their side of it. Then the same change under the quarantine
 // policy, acknowledged from the drawer.
-export default async function ({ page, nav, shot, get, post, patch, log, settings, closeDrawer, newConversation, askAndSettle, waitRun }) {
+export default async function ({ page, nav, shot, get, post, patch, log, settings, closeDrawer, newConversation, askAndSettle, waitRun, expect, expectEq }) {
   await settings({ orchestrator_mode: 'graph', mcp_schema_change_policy: 'warn', overlap_judge_model: null, overlap_judge_model_params: null })
 
   // ── the stub server, reconnected so the image's stub (with mutate_schema) is the one running ──
   const servers = (await get('/mcp-servers')).json
   const stub = servers.find((s) => s.name === 'demo-stub')
-  if (!stub) throw new Error('demo-stub MCP server not registered (the M56 ceremony registers it)')
+  expect(!!stub, 'the demo-stub MCP server is registered')
   await post(`/mcp-servers/${stub.id}/reconnect`)
   await new Promise((r) => setTimeout(r, 3000))
   const tools = async () => (await get('/tools?limit=300')).json.filter((t) => t.tool_key.startsWith('demo-stub.'))
   const echoTool = async () => (await tools()).find((t) => t.tool_key === 'demo-stub.echo')
   const mutator = (await tools()).find((t) => t.tool_key === 'demo-stub.mutate_schema')
-  if (!mutator) throw new Error('demo-stub.mutate_schema not ingested — is the image built from this commit?')
+  expect(!!mutator, 'demo-stub.mutate_schema was ingested — is the image built from this commit?')
   let echo = await echoTool()
   log(`demo-stub.echo before: schema v${echo.schema_version} hash=${(echo.schema_hash || '').slice(0, 12)} params=${Object.keys(echo.input_schema?.properties || {})} changed_at=${echo.schema_changed_at}`)
   for (const t of [mutator, echo]) if (!t.direct_exposure) await patch(`/tools/${t.id}`, { direct_exposure: true })
@@ -43,8 +43,16 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   const before = await askAndSettle(page, `Use the demo-stub echo tool to echo the word drift, passing it as the ${paramBefore} argument.`, { approve: false, timeoutS: 240 })
   const call = (before.steps || []).find((s) => s.step_type === 'tool_call' && /echo/.test(s.node_id || s.entity_name || ''))
   log(`tool_call step before the change: entity_version=${call?.entity_version} entity_hash=${(call?.entity_hash || '').slice(0, 12)}`)
+  // §3.6: the run pins the registry version it actually ran against
+  expect(!!call, 'the run called demo-stub.echo')
+  expectEq(call?.entity_version, versionBefore, 'and the trace pins the schema version it ran against')
   const s1 = before.snapshot?.s1
   log(`run snapshot s1 payload: schema_version=${s1?.payload?.schema_version} schema_hash=${(s1?.payload?.schema_hash || '').slice(0, 12)} input_schema params=${Object.keys(s1?.payload?.input_schema?.properties || {})}`)
+  expectEq(s1?.payload?.schema_version, versionBefore, "the run's snapshot carries that same version")
+  expect(
+    Object.keys(s1?.payload?.input_schema?.properties || {}).includes(paramBefore),
+    `…and the parameter name as it was (${paramBefore})`,
+  )
   await nav(page, 'runs')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(1200)
@@ -63,7 +71,7 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
       log(`mutate attempt ${attempt}: routed to ${routed.join(',') || '(nothing)'}`)
       if (routed.some((n) => /mutate_schema/.test(n))) return r
     }
-    throw new Error('the planner never routed to demo-stub.mutate_schema')
+    expect(false, 'the planner routed to demo-stub.mutate_schema')
   }
 
   // ── the server renames the parameter (a live run invokes mutate_schema) ──
@@ -74,7 +82,7 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
     const t = await echoTool()
     if (t.schema_version > versionBefore) changed = t
   }
-  if (!changed) throw new Error('echo schema did not change after mutate_schema')
+  expect(!!changed, "the server's listChanged re-ingest versioned the schema change")
   log(`demo-stub.echo after: schema v${changed.schema_version} hash=${(changed.schema_hash || '').slice(0, 12)} params=${Object.keys(changed.input_schema?.properties || {})} status=${changed.status} ingest_state=${changed.ingest_state} changed_at=${changed.schema_changed_at}`)
 
   // ── the badge, the banner, the acknowledgement ──
@@ -89,6 +97,9 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   await page.waitForTimeout(1200)
   const acked = await echoTool()
   log(`acknowledged: changed_at=${acked.schema_changed_at} version=${acked.schema_version} (the version stays)`)
+  // acknowledging clears the BANNER, not the version history
+  expect(!acked.schema_changed_at, 'the acknowledgement cleared the drift banner')
+  expectEq(acked.schema_version, changed.schema_version, '…and the version it was acknowledged at stays')
   await shot(page, '05-drawer-acknowledged')
   await closeDrawer(page)
 
@@ -99,7 +110,7 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   await shot(page, '06-settings-schema-change-policy-warn')
   await group.getByRole('button', { name: 'quarantine' }).click()
   await page.waitForTimeout(900)
-  log(`mcp_schema_change_policy via API: ${(await get('/settings')).json.mcp_schema_change_policy}`)
+  expectEq((await get('/settings')).json.mcp_schema_change_policy, 'quarantine', 'the Settings control switched the policy to quarantine')
   await shot(page, '07-settings-policy-quarantine')
   const judge = page.getByRole('combobox', { name: 'Overlap judge model' })
   await judge.scrollIntoViewIfNeeded()
@@ -108,7 +119,7 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   if (other) {
     await judge.selectOption({ label: other })
     await page.waitForTimeout(900)
-    log(`overlap_judge_model via API: ${(await get('/settings')).json.overlap_judge_model}`)
+    expectEq((await get('/settings')).json.overlap_judge_model, other, "the overlap judge's own model role was set from Settings")
   }
   await shot(page, '08-settings-overlap-judge-model')
   // the judge runs under its own role: a near-duplicate of an existing skill
@@ -117,6 +128,8 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
     const target = skills[0]
     const verdict = (await post('/skills/check-overlap', { name: `${target.name} copy`, description: target.description, instructions: target.instructions || target.description, tool_ids: [] })).json
     log(`check-overlap of a copy of '${target.name}' under the judge role (${(await get('/settings')).json.overlap_judge_model}): ${JSON.stringify(verdict).slice(0, 220)}`)
+    // a copy of an existing skill IS an overlap — the judge ran and said so
+    expect((verdict?.overlap_percent ?? 0) > 0, `the judge flagged a copy of '${target.name}' as overlapping`)
   }
 
   // ── quarantine: the same change again (the stub flips the parameter back) ──
@@ -127,12 +140,15 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
     const t = await echoTool()
     if (t.schema_version > changed.schema_version) quarantined = t
   }
-  if (!quarantined) throw new Error('echo schema did not change on the second mutation')
+  expect(!!quarantined, 'the second mutation versioned the schema again')
+  expectEq(quarantined.ingest_state, 'quarantined', 'and under the quarantine policy the tool was quarantined')
   log(`quarantined: schema v${quarantined.schema_version} status=${quarantined.status} ingest_state=${quarantined.ingest_state} params=${Object.keys(quarantined.input_schema?.properties || {})}`)
   await post(`/mcp-servers/${stub.id}/refresh-tools`)
   await new Promise((r) => setTimeout(r, 2000))
   const still = await echoTool()
   log(`after a re-ingest: status=${still.status} ingest_state=${still.ingest_state} (a re-ingest never puts it back — only the acknowledgement does)`)
+  // the rule this leg exists for: a re-ingest must NOT silently un-quarantine
+  expectEq(still.ingest_state, 'quarantined', 'a re-ingest left it quarantined — only the acknowledgement re-enables it')
   await nav(page, 'tools')
   await search.fill('demo-stub.echo')
   await page.waitForTimeout(700)
@@ -144,6 +160,7 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   await page.waitForTimeout(1200)
   const back = await echoTool()
   log(`re-enabled: status=${back.status} ingest_state=${back.ingest_state} version=${back.schema_version} changed_at=${back.schema_changed_at}`)
+  expect(back.ingest_state !== 'quarantined', '"Acknowledge & re-enable" brought the tool back')
   await shot(page, '11-drawer-re-enabled')
   await closeDrawer(page)
 
@@ -154,6 +171,10 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
   const after = await askAndSettle(page, `Use the demo-stub echo tool to echo the word drift, passing it as the ${paramNow} argument.`, { approve: false, timeoutS: 240 })
   const call2 = (after.steps || []).find((s) => s.step_type === 'tool_call' && /echo/.test(s.node_id || ''))
   log(`tool_call step after the changes: entity_version=${call2?.entity_version} entity_hash=${(call2?.entity_hash || '').slice(0, 12)}`)
+  // the later run pins the LATER version — the pin tracks the registry
+  expect(!!call2, 'the run after the drift called echo again')
+  expectEq(call2?.entity_version, back.schema_version, 'and its trace pins the new schema version')
+  expect(call2?.entity_version > versionBefore, 'which is later than the version the first run pinned')
   await nav(page, 'runs')
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(1200)

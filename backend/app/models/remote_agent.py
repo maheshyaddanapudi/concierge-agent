@@ -43,11 +43,23 @@ class RemoteAgent(RegistryRecord):
     # moving its endpoint, schemes or skills is never adopted silently)
     card_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     card_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # §19.2: when the OPERATOR switched this agent off. `status='inactive'` is
+    # overloaded — an agent is born inactive and its first good card makes it
+    # active — so the status alone cannot tell "not fetched yet" from "a human
+    # said stop". That ambiguity is why a failed fetch could write `error` over
+    # a disable and the next success then read `error` and set `active`: the
+    # toggle undid itself. This column is the intent, and it survives a restart.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class A2ATask(Base):
     __tablename__ = "a2a_tasks"
-    __table_args__ = (Index("ix_a2a_tasks_agent_state", "remote_agent_id", "state"),)
+    __table_args__ = (
+        Index("ix_a2a_tasks_agent_state", "remote_agent_id", "state"),
+        # R7.3: unindexed FK — "this run's remote tasks" and the SET NULL
+        # cascade behind every run delete both scanned the ledger
+        Index("a2a_tasks_run_idx", "run_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     remote_agent_id: Mapped[uuid.UUID] = mapped_column(

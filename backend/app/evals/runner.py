@@ -1,11 +1,16 @@
 """The eval batch runner (spec §15): admin-direct, sequential, on the
-EXISTING run machinery — every case becomes an ordinary Run (is_eval=true)
-whose HITL pauses are auto-approved, then the case grades against the
-run's final answer. Config snapshots make every eval run reproducible."""
+EXISTING run machinery — every case becomes an ordinary Run (is_eval=true),
+then the case grades against the run's final answer. Config snapshots make
+every eval run reproducible.
+
+An eval run is ISOLATED from the rest of the platform: it writes nothing to
+the memory layer, does not appear in the human approval queue, and resolves
+any gate it reaches under the DATASET's own policy — refusing by default,
+and recording the decision on the run as machine-cleared either way."""
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -37,9 +42,43 @@ async def _target_snapshot(dataset: EvalDataset) -> dict[str, Any]:
     return dict(await cache.sub_agent_by_id(str(dataset.target_id)) or {})
 
 
-async def _await_run(run_id: UUID) -> Run:
-    """Wait for the child run, auto-approving HITL gates (spec §15: eval
-    mode auto-approves) until it reaches a terminal state."""
+async def _record_machine_gate(run_id: UUID, decision: str, note: str) -> None:
+    """Write the harness's gate decision onto the run as a `hitl` step marked
+    `decision_source='eval'`, so the trace shows plainly that a machine
+    cleared it. Best-effort: a recording failure never fails the case."""
+    from app.models import RunStep
+
+    try:
+        async with get_session_factory()() as session:
+            session.add(
+                RunStep(
+                    run_id=run_id,
+                    step_type="hitl",
+                    status="completed",
+                    input={"gate": "eval harness"},
+                    output={
+                        "decision": decision,
+                        "note": note,
+                        "decision_source": "eval",
+                    },
+                    finished_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 — the trace note never fails a case
+        logger.warning("eval_gate_record_failed", run_id=str(run_id), error=str(exc)[:200])
+
+
+async def _await_run(run_id: UUID, *, allow_autoapprove: bool = False) -> Run:
+    """Wait for the child run, resolving HITL gates under the DATASET's policy
+    until it reaches a terminal state.
+
+    §15: the harness no longer approves by default. It used to auto-approve
+    every gate, so a one-case dataset pointing at a sub agent whose workflow
+    gates a destructive node ran that node to completion with no human
+    decision recorded anywhere but a log line. Now a gate is DENIED unless the
+    dataset was uploaded with `allow_hitl_autoapprove`, and either way the
+    decision is recorded on the run as a machine-cleared one."""
     from app.orchestrator.runner import RUNNING_TASKS, resume_run
 
     deadline = asyncio.get_event_loop().time() + CASE_TIMEOUT_S
@@ -54,8 +93,21 @@ async def _await_run(run_id: UUID) -> Run:
                 raise RuntimeError("run vanished mid-operation")
             status = run.status
         if status == "paused_hitl":
-            logger.info("eval_hitl_auto_approve", tier="evals", kind="hitl", run_id=str(run_id))
-            await resume_run(run_id, "approve", "eval mode auto-approve", None)
+            decision = "approve" if allow_autoapprove else "deny"
+            note = (
+                "eval harness: auto-approved (dataset allows it) — no human decided"
+                if allow_autoapprove
+                else "eval harness: refused (dataset does not allow auto-approval)"
+            )
+            await _record_machine_gate(run_id, decision, note)
+            logger.info(
+                "eval_hitl_machine_decision",
+                tier="evals",
+                kind="hitl",
+                run_id=str(run_id),
+                decision=decision,
+            )
+            await resume_run(run_id, decision, note, None)
             await asyncio.sleep(_POLL_S)
             continue
         if status not in {"running", "queued"}:
@@ -67,6 +119,36 @@ async def _await_run(run_id: UUID) -> Run:
         if asyncio.get_event_loop().time() > deadline:
             raise TimeoutError(f"eval case run {run_id} exceeded {CASE_TIMEOUT_S}s")
         await asyncio.sleep(_POLL_S)
+
+
+async def reap_stalled_eval_runs(stale_after_s: float = 2 * CASE_TIMEOUT_S) -> int:
+    """Fail eval runs left `running` by a process that is no longer running
+    them. A restart mid-batch used to leave a row at `running` forever, with
+    no reaper and (until now) no cancel, so the page polled a batch that
+    could never finish. Returns rows reaped."""
+    from app.api.evals import _RUN_TASKS
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_s)
+    reaped = 0
+    async with get_session_factory()() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(EvalRun).where(EvalRun.status == "running", EvalRun.started_at < cutoff)
+                )
+            ).scalars()
+        )
+        for row in rows:
+            task = _RUN_TASKS.get(row.id)
+            if task is not None and not task.done():
+                continue  # this process is still working on it
+            row.status = "failed"
+            row.finished_at = datetime.now(UTC)
+            reaped += 1
+        if reaped:
+            await session.commit()
+            logger.warning("eval_runs_reaped", tier="evals", kind="run", count=reaped)
+    return reaped
 
 
 async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) -> EvalRun:
@@ -136,8 +218,23 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
         run_row_id = eval_run.id
 
     passed = failed = errored = 0
+    allow_autoapprove = bool(getattr(dataset, "allow_hitl_autoapprove", False))
     try:
         for case in cases:
+            # a cancel (the new endpoint, or an operator flipping the row)
+            # stops the batch at the case boundary instead of grinding through
+            # every remaining case against an expensive model
+            async with get_session_factory()() as session:
+                current = await session.get(EvalRun, run_row_id)
+                if current is not None and current.status != "running":
+                    logger.info(
+                        "eval_run_stopped",
+                        tier="evals",
+                        kind="run",
+                        status=current.status,
+                        remaining=len(cases) - (passed + failed + errored),
+                    )
+                    return current
             run = await create_run(
                 None,
                 case.input,
@@ -148,7 +245,7 @@ async def execute_eval_run(dataset_id: UUID, eval_run_id: UUID | None = None) ->
             )
             start_run_task(run.id)
             try:
-                finished = await _await_run(run.id)
+                finished = await _await_run(run.id, allow_autoapprove=allow_autoapprove)
                 answer = finished.final_answer or ""
                 if finished.status != "completed":
                     verdict = {

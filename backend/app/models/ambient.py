@@ -50,6 +50,19 @@ class AmbientEvent(Base):
     __table_args__ = (
         Index("ambient_events_pending_idx", "received_at", postgresql_where="verdict IS NULL"),
         Index("ambient_events_dedupe_idx", "dedupe_key"),
+        # R7.3: three unindexed FK/lookup columns on the biggest ambient
+        # ledger — every SET NULL cascade and every provenance walk was a
+        # sequential scan over the table that grows fastest
+        Index("ambient_events_routine_idx", "routine_id"),
+        Index("ambient_events_intent_idx", "intent_id"),
+        Index("ambient_events_correlation_idx", "correlation_id"),
+        # the §17.4 per-hour cap counts one routine's recent events
+        Index(
+            "ambient_events_routine_recent_idx",
+            "routine_id",
+            "received_at",
+            postgresql_where="routine_id IS NOT NULL",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -84,6 +97,10 @@ class Routine(Base):
     """A stored, trusted ambient work definition (spec §17.4)."""
 
     __tablename__ = "routines"
+    # declared so the model matches the database: the §18.8 tenancy indexes
+    # were created by migration and never mirrored here, which made every
+    # metadata comparison read as drift
+    __table_args__ = (Index("routines_user_idx", "user_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
@@ -119,6 +136,7 @@ class StandingIntent(Base):
     semantic predicates and composes messages."""
 
     __tablename__ = "standing_intents"
+    __table_args__ = (Index("standing_intents_user_idx", "user_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime
@@ -151,6 +169,10 @@ class AmbientWakeup(Base):
     __tablename__ = "ambient_wakeups"
     __table_args__ = (
         Index("ambient_wakeups_due_idx", "due_at", postgresql_where="status = 'pending'"),
+        # R7.3: both FKs cascade (routine CASCADE, run SET NULL) and neither
+        # was indexed
+        Index("ambient_wakeups_routine_idx", "routine_id"),
+        Index("ambient_wakeups_run_idx", "run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -203,6 +225,20 @@ class Delivery(Base):
         Index(
             "deliveries_pending_idx", "tier", "created_at", postgresql_where="delivered_at IS NULL"
         ),
+        # R7.3: unindexed FKs — "what did this run deliver" and both SET NULL
+        # cascades scanned the outbox
+        Index("deliveries_run_idx", "run_id"),
+        Index("deliveries_intent_idx", "intent_id"),
+        # created by migration, never declared here — the unseen-inbox read
+        # and the supersede lookup, plus §18.8 tenancy
+        Index(
+            "ix_deliveries_unseen",
+            "seen_at",
+            "tier",
+            postgresql_where="seen_at IS NULL AND superseded_by IS NULL",
+        ),
+        Index("deliveries_skey_idx", "skey"),
+        Index("deliveries_user_idx", "user_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -248,6 +284,7 @@ class UserPresence(Base):
     one row keyed by a fixed id; the schema leaves room for more."""
 
     __tablename__ = "user_presence"
+    __table_args__ = (Index("user_presence_user_idx", "user_id"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default="default")
     # §18.8: per-user rows keyed "user:{uuid}" carry the owner; "default"
@@ -271,7 +308,10 @@ class AmbientPolicy(Base):
     per category wins; history is the audit trail and the revert path."""
 
     __tablename__ = "ambient_policies"
-    __table_args__ = (Index("ambient_policies_cat_idx", "category", "created_at"),)
+    __table_args__ = (
+        Index("ambient_policies_cat_idx", "category", "created_at"),
+        Index("ambient_policies_user_idx", "user_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # §18.8 tenancy: owner when auth is on; NULL in the single-user regime

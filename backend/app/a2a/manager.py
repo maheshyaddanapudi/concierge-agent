@@ -25,6 +25,9 @@ import structlog
 from a2a.client import A2ACardResolver, Client, ClientConfig, ClientFactory
 from a2a.types import AgentCard
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from app import egress, obs
 from app.a2a.auth import AgentCredentialService, ConciergeAuthInterceptor, scheme_supported
@@ -122,7 +125,12 @@ class A2AManager:
                 agent_ids = list(
                     (
                         await db.execute(
-                            select(RemoteAgent.id).where(RemoteAgent.deleted_at.is_(None))
+                            # §19.2: a disabled agent is not fetched at boot
+                            # either — the toggle survives a restart.
+                            select(RemoteAgent.id).where(
+                                RemoteAgent.deleted_at.is_(None),
+                                RemoteAgent.disabled_at.is_(None),
+                            )
                         )
                     ).scalars()
                 )
@@ -160,6 +168,16 @@ class A2AManager:
         async with get_session_factory()() as db:
             agent = await db.get(RemoteAgent, agent_id)
             if agent is None or agent.deleted_at is not None:
+                return
+            if agent.disabled_at is not None and not activate:
+                # §19.2: an agent the OPERATOR disabled is not fetched at all.
+                # The refresh loop and the Refresh-card button both used to go
+                # out to the network anyway, and a FAILED fetch then wrote
+                # `error` over the disable — after which the next successful
+                # fetch read that `error` and set `active`. The toggle undid
+                # itself in two ticks. Note this reads `disabled_at`, not
+                # `status`: an agent registered a moment ago is ALSO inactive,
+                # and that one we do fetch.
                 return
             card_url = agent.card_url
             secrets = _credential_strings(agent.credentials)
@@ -251,21 +269,45 @@ class A2AManager:
                         key = f"{key}-{uuid4().hex[:6]}"  # collision-safe (spec §3.2)
                     taken_keys.add(key)
                     taken_names.add(sanitize_tool_name(key))
-                    db.add(
-                        Tool(
-                            name=skill.name,
-                            description=skill_description(skill),
-                            kind="a2a",
-                            source=agent.source,  # inherited (spec §19.4)
-                            status="active",
-                            remote_agent_id=agent_id,
-                            tool_name=skill.id,
-                            tool_key=key,
-                            input_schema=A2A_TOOL_INPUT_SCHEMA,
-                            schema_hash=schema_fingerprint(A2A_TOOL_INPUT_SCHEMA),
-                            schema_version=1,
-                            description_hash=text_fingerprint(skill_description(skill)),
-                            ingest_state="present",
+                    # upsert on (remote_agent_id, tool_name), exactly as the
+                    # MCP ingest does: two overlapping card refreshes both
+                    # read an empty `existing`, and the loser must update the
+                    # winner's row instead of inserting a duplicate
+                    stmt = pg_insert(Tool).values(
+                        id=uuid4(),
+                        name=skill.name,
+                        description=skill_description(skill),
+                        description_hash=text_fingerprint(skill_description(skill)),
+                        kind="a2a",
+                        source=agent.source,  # inherited (spec §19.4)
+                        # §19.2: a skill that arrives on the card of an
+                        # agent the operator disabled is born out of
+                        # service under the same ingest_state the disable
+                        # cascade uses, so the agent's re-enable brings it
+                        # in with the rest. It used to be born `active`
+                        # and callable under a disabled parent.
+                        status="inactive" if agent.disabled_at is not None else "active",
+                        remote_agent_id=agent_id,
+                        tool_name=skill.id,
+                        tool_key=key,
+                        direct_exposure=False,
+                        input_schema=A2A_TOOL_INPUT_SCHEMA,
+                        schema_hash=schema_fingerprint(A2A_TOOL_INPUT_SCHEMA),
+                        schema_version=1,
+                        ingest_state=(
+                            AGENT_INACTIVE if agent.disabled_at is not None else "present"
+                        ),
+                    )
+                    await db.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=["remote_agent_id", "tool_name"],
+                            index_where=sql_text("remote_agent_id IS NOT NULL"),
+                            set_={
+                                "description": stmt.excluded.description,
+                                "description_hash": stmt.excluded.description_hash,
+                                "input_schema": stmt.excluded.input_schema,
+                                "schema_hash": stmt.excluded.schema_hash,
+                            },
                         )
                     )
                 else:
@@ -287,7 +329,16 @@ class A2AManager:
                         row.ingest_state = "missing"
                     elif row.ingest_state == "present":
                         row.ingest_state = None
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # the agent was deleted while this ingest was in flight (it
+                # waited on the per-agent lock, or the fetch was slow). Its
+                # tool rows have gone with it; projecting them again would
+                # violate the foreign key. Nothing to do, and nothing wrong.
+                await db.rollback()
+                logger.info("a2a_ingest_agent_vanished", tier="a2a", agent_id=str(agent_id))
+                return
         from app.retrieval import schedule_embedding
 
         for tool_id in changed_ids:
@@ -363,6 +414,12 @@ class A2AManager:
         async with get_session_factory()() as db:
             agent = await db.get(RemoteAgent, agent_id)
             if agent is None:
+                return
+            if agent.disabled_at is not None and status != "inactive":
+                # §19.2: an operator's disable is theirs to undo. The error
+                # text is still worth recording; the status is not ours.
+                agent.last_error = error
+                await db.commit()
                 return
             agent.status = status
             agent.last_error = error

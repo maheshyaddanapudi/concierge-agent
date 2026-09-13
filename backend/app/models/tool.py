@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import RegistryRecord
@@ -23,6 +23,18 @@ class Tool(RegistryRecord):
             "tool_name",
             unique=True,
             postgresql_where=text("mcp_server_id IS NOT NULL"),
+        ),
+        # the same database fact for the A2A projection: two card refreshes
+        # for one agent overlapping (a manual refresh landing on the periodic
+        # one) both read an empty `existing` and both inserted the skill, so
+        # the agent ended up with duplicate tools and no way to tell them
+        # apart. One row per (agent, skill id), upserted.
+        Index(
+            "tools_agent_skill_uq",
+            "remote_agent_id",
+            "tool_name",
+            unique=True,
+            postgresql_where=text("remote_agent_id IS NOT NULL"),
         ),
     )
 
@@ -60,4 +72,6 @@ class Tool(RegistryRecord):
     )
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
-    embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # Text, not String(64): the migration created it as TEXT and skills
+    # already declare it that way — the model is what drifted
+    embedding_hash: Mapped[str | None] = mapped_column(Text, default=None)

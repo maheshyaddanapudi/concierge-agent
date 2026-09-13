@@ -2,9 +2,10 @@
 clock and the distributed rate limiter's buckets. Three small tables that
 turn per-process state into cluster state — no broker, Postgres only."""
 
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -46,3 +47,35 @@ class RateBucket(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     tokens: Mapped[float] = mapped_column(Float)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class JobUsage(Base):
+    """Model usage by work that is NOT a run (spec §3.7 cost model).
+
+    The spend ceiling counted runs only, so every autonomous model call sat
+    outside it: the overlap judge, the significance and salience judges,
+    anticipation, run digests, reflection, community summaries, extraction
+    and every embedding. The Settings hint said the ceiling was "one number
+    for the whole deployment", and the dashboard reported $0 for all of it —
+    so an operator at their ceiling watched chat refused while the
+    background jobs kept billing, with nowhere to see where the money went.
+
+    One row per out-of-run model call, priced at the moment it happened
+    exactly as a run is: `spend_today` sums these alongside the runs.
+    """
+
+    __tablename__ = "job_usage"
+    __table_args__ = (Index("job_usage_at_idx", "at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # the job class that spent it: overlap_audit, significance, salience,
+    # anticipation, digest, reflection, community, extraction, eval_judge,
+    # embedding, watch_compile, …
+    kind: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(255), default=None)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    # false when the model has no price anywhere — reported, never guessed
+    cost_priced: Mapped[bool] = mapped_column(Boolean, default=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -7,19 +7,33 @@ async function drawerFacts(page) {
   const inputs = drawer.locator('input, textarea, select')
   const n = await inputs.count()
   let disabled = 0
+  // a switch is an <input> in this UI and must stay LIVE, so count the
+  // definition fields separately from the toggles
+  const switches = await drawer.getByRole('switch').count()
   for (let i = 0; i < n; i++) if (await inputs.nth(i).isDisabled()) disabled++
   const del = await drawer.getByRole('button', { name: /^Delete$/ }).count()
-  const switches = await drawer.getByRole('switch').count()
-  return `fields ${disabled}/${n} disabled, Delete buttons: ${del}, live switches: ${switches}`
+  return { n, disabled, del, switches, toString: () => `fields ${disabled}/${n} disabled, Delete buttons: ${del}, live switches: ${switches}` }
 }
 
-export default async function ({ page, nav, shot, get, log, closeDrawer }) {
+/** §4: a static record's definition is read-only, it cannot be deleted, and
+ * its status / direct-exposure toggles still work. */
+function expectStaticGuards(facts, what, { expect, expectEq }) {
+  expect(facts.n > 0, `${what}: the drawer rendered its definition fields (${facts.n})`)
+  expect(facts.disabled > 0, `${what}: the definition fields are disabled (${facts.disabled}/${facts.n})`)
+  expectEq(facts.del, 0, `${what}: no Delete button`)
+  expect(facts.switches > 0, `${what}: the status / exposure toggles are still there`)
+}
+
+export default async function ({ page, nav, shot, get, log, closeDrawer, expect, expectEq }) {
   const skills = (await get('/skills')).json
   const staticSkill = skills.find((s) => s.source === 'static')
+  expect(!!staticSkill, 'the seed ships a static skill')
   await nav(page, 'skills')
   await page.getByText(staticSkill.name, { exact: true }).first().click()
   await page.waitForTimeout(900)
-  log(`static skill ${staticSkill.name}: ${await drawerFacts(page)}`)
+  const skillFacts = await drawerFacts(page)
+  log(`static skill ${staticSkill.name}: ${skillFacts}`)
+  expectStaticGuards(skillFacts, `static skill ${staticSkill.name}`, { expect, expectEq })
   await shot(page, '00-static-skill-drawer')
   await closeDrawer(page)
 
@@ -29,7 +43,9 @@ export default async function ({ page, nav, shot, get, log, closeDrawer }) {
     await nav(page, 'mcp-servers')
     await page.getByText(staticServer.name, { exact: true }).first().click()
     await page.waitForTimeout(900)
-    log(`static server ${staticServer.name}: ${await drawerFacts(page)}`)
+    const serverFacts = await drawerFacts(page)
+    log(`static server ${staticServer.name}: ${serverFacts}`)
+    expectStaticGuards(serverFacts, `static server ${staticServer.name}`, { expect, expectEq })
     await shot(page, '01-static-server-drawer-no-delete')
     await closeDrawer(page)
   } else {
@@ -45,7 +61,10 @@ export default async function ({ page, nav, shot, get, log, closeDrawer }) {
   await page.waitForTimeout(700)
   await page.locator('table tbody tr').first().click()
   await page.waitForTimeout(900)
-  log(`native static tool ${nativeTool.tool_key}: ${await drawerFacts(page)}`)
+  expect(!!nativeTool, 'the seed ships a native static tool')
+  const toolFacts = await drawerFacts(page)
+  log(`native static tool ${nativeTool.tool_key}: ${toolFacts}`)
+  expectStaticGuards(toolFacts, `native static tool ${nativeTool.tool_key}`, { expect, expectEq })
   await shot(page, '02-native-static-tool-drawer')
   await closeDrawer(page)
 }

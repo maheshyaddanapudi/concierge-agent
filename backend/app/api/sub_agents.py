@@ -13,6 +13,7 @@ from app.api.deps import (
     apply_filters,
     enforce_static_rules,
     fetch_or_404,
+    reject_duplicate_name,
     reject_static_delete,
 )
 from app.factory.dag import validate_workflow, workflow_skill_ids
@@ -75,6 +76,7 @@ async def list_sub_agents(session: SessionDep, filters: FiltersDep) -> list[SubA
 
 @router.post("", response_model=SubAgentOut, status_code=201)
 async def create_sub_agent(body: SubAgentCreate, session: SessionDep) -> SubAgent:
+    await reject_duplicate_name(session, SubAgent, body.name)
     _validate_model_fields(body.model, body.model_params)
     skills = await _validate_and_resolve(session, body.workflow)
     agent = SubAgent(
@@ -142,6 +144,8 @@ async def get_sub_agent(agent_id: UUID, session: SessionDep) -> SubAgent:
 async def patch_sub_agent(agent_id: UUID, body: SubAgentPatch, session: SessionDep) -> SubAgent:
     agent = await fetch_or_404(session, SubAgent, agent_id)
     changes = body.model_dump(exclude_unset=True)
+    if changes.get("name"):
+        await reject_duplicate_name(session, SubAgent, changes["name"], exclude_id=agent.id)
     enforce_static_rules(agent, set(changes))
     if agent.kind == "native" and ("workflow" in changes or "persona" in changes):
         raise HTTPException(

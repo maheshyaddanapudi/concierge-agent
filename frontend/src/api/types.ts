@@ -1,6 +1,19 @@
 export type Source = 'static' | 'dynamic'
 export type Status = 'active' | 'inactive' | 'error'
-export type RunStatus = 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled'
+/** Every status the backend writes to `runs.status`. `queued` is a run
+ * waiting for an admission slot (§18.8 admission) and `stalled` is one the
+ * §17.4 reaper found silent — both reach the UI, so both belong here. */
+export type RunStatus =
+  'queued' | 'running' | 'paused_hitl' | 'completed' | 'failed' | 'cancelled' | 'stalled'
+
+/** A run that may still change: it polls, it streams, it can be cancelled.
+ * Everything else is terminal — `completed`, `failed`, `cancelled`,
+ * `stalled` — and is safe to stop watching and to delete. */
+export const LIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running', 'paused_hitl']
+
+export function isLiveRunStatus(status: string): boolean {
+  return (LIVE_RUN_STATUSES as readonly string[]).includes(status)
+}
 
 export interface RegistryRecord {
   id: string
@@ -133,7 +146,9 @@ export interface RunStep {
   parent_step_id: string | null
   sub_agent_id: string | null
   node_id: string | null
-  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate' | 'format'
+  // 'summary' is the §7.5 history-summary call — the backend emits it and
+  // the union omitted it, so such a step fell through every icon/label switch
+  step_type: 'plan' | 'route' | 'skill' | 'hitl' | 'tool_call' | 'aggregate' | 'format' | 'summary'
   input: Record<string, unknown> | null
   output: Record<string, unknown> | null
   model: string | null

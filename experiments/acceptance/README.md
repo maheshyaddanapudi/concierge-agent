@@ -25,6 +25,32 @@ for `00-fresh-slate` and carry state forward in order, the way the spec's script
 does. `ACC_CHROMIUM` points at a system Chromium when Playwright's download is
 not wanted. `publish.mjs` never publishes a stage that has a `zz-failure.png`.
 
+### Stages assert, they do not report
+
+Every stage asserts the thing it exists to demonstrate, and an assertion that
+does not hold **throws**: the runner records `zz-failure.png`, exits non-zero,
+and `publish.mjs` refuses to publish the stage. A stage that merely logged its
+outcome would "pass" with its run failed or its gate never armed, which is what
+these helpers (in `lib.mjs`) exist to prevent:
+
+| helper | asserts |
+|---|---|
+| `expect(cond, msg)` | the base assertion; everything else is sugar over it |
+| `expectEq(a, b, what)` / `expectOneOf` / `expectMatch` | a value, a membership, a pattern |
+| `expectStatus(run, 'completed', what)` | a run reached the status the stage is about |
+| `expectHttp(res, 201, what)` | an API call returned the code the stage is about |
+| `expectVisible(page, locator, what)` | the UI really shows what the frame claims |
+| `expectStep(run, /^hitl:/, what)` | the trace contains the step the stage is about |
+
+Each one logs `ok — …` on success, so the transcript reads as a checklist.
+
+Two waiting helpers, deliberately different: **`waitRun` rejects on timeout** — a
+run that never settles is a failed stage, not a result to log — while
+**`pollRun`** returns whatever it finds and is only for the places that are
+genuinely probing ("did a gate arm before the run settled?"). For the same
+reason a `.catch(() => …)` around a stage action is always either removed or
+carries a comment saying which negative case it is probing.
+
 | Range | What they prove |
 |---|---|
 | `00`–`05` | the seed, settings/models, an MCP server registered, tools, skills, sub agents (the §14 script's setup steps) |

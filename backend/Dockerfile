@@ -3,7 +3,36 @@
 # asyncio tasks, no broker/queue (spec §2).
 FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1
+# The exact @modelcontextprotocol/server-filesystem release this image bakes
+# into the npx cache. The seeded MCP server arguments pin the SAME string
+# (backend/app/seed/loader.py) — npx keys its cache directory off the full
+# package spec, so an unpinned runtime spec would miss this cache entirely and
+# go to the network on first spawn. Bump both together, never one alone.
+ARG MCP_FILESYSTEM_VERSION=2026.8.31
+
+# Dedicated unprivileged account. The stdio MCP transport spawns child
+# processes (uvx, npx) from this process; running that as root would hand any
+# tool-driven command execution the whole container. uid/gid 1000 is fixed so
+# the /workspace named volume keeps a stable owner across rebuilds.
+ENV APP_UID=1000 \
+    APP_GID=1000 \
+    APP_USER=concierge
+RUN groupadd --gid "$APP_GID" "$APP_USER" \
+    && useradd --uid "$APP_UID" --gid "$APP_GID" --shell /bin/sh \
+       --create-home --home-dir "/home/$APP_USER" "$APP_USER"
+
+# uvx and npx must find writable caches as the non-root user: point HOME and
+# every tool cache at the account's home BEFORE the prewarm steps below, so
+# the caches are built, by that account, exactly where they are read at
+# runtime. Every `/root/.cache/uv` path this file used to hard-code now goes
+# through $UV_CACHE_DIR for the same reason.
+ENV PYTHONUNBUFFERED=1 \
+    HOME=/home/concierge \
+    XDG_CACHE_HOME=/home/concierge/.cache \
+    UV_CACHE_DIR=/home/concierge/.cache/uv \
+    UV_TOOL_DIR=/home/concierge/.local/share/uv/tools \
+    NPM_CONFIG_CACHE=/home/concierge/.npm \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
@@ -12,10 +41,32 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --no-dev --no-hashes -o /tmp/requirements.txt \
-    && uv pip install --system -r /tmp/requirements.txt
+# This install runs as ROOT (it writes /usr/local site-packages), so it must
+# NOT use $UV_CACHE_DIR: root-owned files inside the runtime account's cache
+# would make the uvx prewarm below — which runs as that account — fail to
+# write. Give it a throwaway cache and drop it in the same layer; the app's
+# wheels are already unpacked into site-packages, nothing needs the cache
+# again, and the image is smaller for it.
+RUN UV_CACHE_DIR=/tmp/uv-build uv export --frozen --no-dev --no-hashes -o /tmp/requirements.txt \
+    && UV_CACHE_DIR=/tmp/uv-build uv pip install --system -r /tmp/requirements.txt \
+    && rm -rf /tmp/uv-build /tmp/requirements.txt
 
 COPY . .
+
+# Everything above needed root (apt, /usr/local site-packages). Everything
+# below does not — and running the prewarms AS the runtime account is what
+# keeps the warmed caches usable without a `chown -R` over hundreds of
+# megabytes of uv/npm cache (which would duplicate the whole tree into an
+# extra layer). /workspace is created and handed over here, before the switch:
+# Docker seeds a FRESH named volume from the image directory and KEEPS its
+# ownership, so `workspace:` comes up writable on first run. An EXISTING
+# volume from a root-era image is not re-chowned — migrate it once with:
+#   docker compose run --rm --user 0 --entrypoint chown backend -R 1000:1000 /workspace
+# /app is handed over too: the code is read-only in normal operation, but
+# Python writes __pycache__ beside it on first import.
+RUN mkdir -p /workspace \
+    && chown -R "$APP_UID:$APP_GID" /workspace /app /home/concierge
+USER concierge
 
 # seed-document gate (spec §13): every .skill.md / .agent.md must be valid
 # BEFORE the image ships. Without this a malformed document only surfaces at
@@ -36,11 +87,21 @@ RUN python -m app.prompts.check
 # cause (a poisoned cache layer) was invisible and survived rebuilds until
 # someone busted the cache by hand. Fail here, where the cause is.
 RUN uvx --with "mcp<2" mcp-server-fetch --help >/dev/null 2>&1 \
-    && find /root/.cache/uv -type d -path '*readabilipy/javascript' | grep -q . \
+    && find "$UV_CACHE_DIR" -type d -path '*readabilipy/javascript' | grep -q . \
     || { echo "BUILD ERROR: mcp-server-fetch prewarm failed — readabilipy is not in the uv cache. Check network/proxy access to PyPI, then rebuild."; exit 1; }
-# genuinely optional: a cold npx here only makes the first filesystem-server
-# spawn slower (its output goes to stderr, so it cannot corrupt JSON-RPC)
-RUN npx -y @modelcontextprotocol/server-filesystem --help >/dev/null 2>&1 || true
+
+# The filesystem MCP server, pinned and gated exactly like the fetch server
+# above. It used to be `npx -y @modelcontextprotocol/server-filesystem --help
+# || true`: unpinned (whatever the registry served that minute became the
+# sandbox guarding /workspace) and best-effort (a failed prewarm shipped an
+# image whose first tool call reaches the network over the stdio transport).
+# Note the server has no --help: an unreadable directory argument makes it
+# exit 1, so the prewarm passes a real one and lets stdin EOF end the process.
+RUN npx -y "@modelcontextprotocol/server-filesystem@${MCP_FILESYSTEM_VERSION}" /tmp </dev/null >/dev/null 2>&1 \
+    && pkg="$(find "$NPM_CONFIG_CACHE/_npx" -type f -path '*@modelcontextprotocol/server-filesystem/package.json' | head -1)" \
+    && test -n "$pkg" \
+    && node -e "const want='${MCP_FILESYSTEM_VERSION}', got=require('$pkg').version; if (got !== want) { console.error('BUILD ERROR: npx cached server-filesystem '+got+', expected '+want); process.exit(1); }" \
+    || { echo "BUILD ERROR: @modelcontextprotocol/server-filesystem@${MCP_FILESYSTEM_VERSION} prewarm failed — the pinned version is not in the npx cache. Check network/proxy access to the npm registry, then rebuild."; exit 1; }
 
 # readabilipy (inside mcp-server-fetch's uv env) shells out to node and runs
 # `npm install` in its javascript dir on first use — over the stdio transport
@@ -56,7 +117,7 @@ RUN npx -y @modelcontextprotocol/server-filesystem --help >/dev/null 2>&1 || tru
 # time uvx constructs a fresh env (seen after a long container suspension):
 # the new copy has no node_modules and readabilipy re-runs `npm install` at
 # request time, pulling node>=22-only undici 8 again.
-RUN dirs=$(find /root/.cache/uv -type d -path '*readabilipy/javascript'); \
+RUN dirs=$(find "$UV_CACHE_DIR" -type d -path '*readabilipy/javascript'); \
     test -n "$dirs" || { echo "BUILD ERROR: readabilipy not found — the uvx mcp-server-fetch prewarm above must have failed (network?)"; exit 1; }; \
     for dir in $dirs; do \
       cd "$dir" \
@@ -65,13 +126,24 @@ RUN dirs=$(find /root/.cache/uv -type d -path '*readabilipy/javascript'); \
       && rm -rf node_modules/jsdom/node_modules/undici || exit 1; \
     done
 # build-time proof: EVERY cached copy resolves undici 6.x and extracts
-RUN for dir in $(find /root/.cache/uv -type d -path '*readabilipy/javascript'); do \
+RUN for dir in $(find "$UV_CACHE_DIR" -type d -path '*readabilipy/javascript'); do \
       cd "$dir" \
       && node -e "const v=require('undici/package.json').version; if(!v.startsWith('6.')) {console.error('BUILD ERROR: undici '+v+' resolved in $dir, need 6.x for node 20'); process.exit(1)}" \
       && printf '<html><body><article><h1>t</h1><p>x</p></article></body></html>' > /tmp/rt.html \
       && node ExtractArticle.js -i /tmp/rt.html >/dev/null \
       && rm /tmp/rt.html || exit 1; \
     done
+
+# Last build gate: prove the image really does run unprivileged and that the
+# caches the prewarms just built are owned by — and writable to — the account
+# the entrypoint uses. A regression here (a stray root-run RUN above, a cache
+# path that escaped $HOME) would otherwise only show up as a tool that fails
+# at request time, over the stdio transport, in production.
+RUN test "$(id -u)" = "$APP_UID" || { echo "BUILD ERROR: expected uid $APP_UID, running as $(id -u)"; exit 1; } \
+    && test -w "$UV_CACHE_DIR" \
+    && test -w "$NPM_CONFIG_CACHE" \
+    && test -w /workspace \
+    || { echo "BUILD ERROR: the runtime account cannot write its caches or /workspace"; exit 1; }
 
 EXPOSE 8000
 # M53 deploy lifecycle: uvicorn closes the listener at SIGTERM, waits for open
@@ -80,5 +152,5 @@ EXPOSE 8000
 # drain (SHUTDOWN_GRACE_S, default 25 s). 5 + 25 < the compose
 # stop_grace_period of 40 s, so the drain always gets its window before the
 # kill. Send SIGUSR1 first (deploy.sh does) to flip readiness while the port
-# is still open.
+# is still open. Port 8000 is above 1024, so binding it needs no privilege.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

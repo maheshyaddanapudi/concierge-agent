@@ -31,7 +31,9 @@ class SubAgent(RegistryRecord):
     covers_skill_ids: Mapped[list[Any] | None] = mapped_column(default=None)
     # retrieval vector (spec §7.4): maintained best-effort on the write path
     embedding: Mapped[list[Any] | None] = mapped_column(default=None)
-    embedding_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    # Text, not String(64): the migration created it as TEXT and skills
+    # already declare it that way — the model is what drifted
+    embedding_hash: Mapped[str | None] = mapped_column(Text, default=None)
     # the definition's version (spec §3.6) — see Skill
     definition_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     definition_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")

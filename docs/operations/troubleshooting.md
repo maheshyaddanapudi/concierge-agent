@@ -19,7 +19,7 @@ Run detail (Runs page or `GET /api/v1/runs/{id}`) stores the error verbatim; ret
 
 - **Symptom**: runs fail with authentication/credit errors from Anthropic (seen in the acceptance campaign as "credit exhaustion" mid-run).
   **Cause**: `ANTHROPIC_API_KEY` missing, invalid, or the account is out of credits.
-  **Fix**: check `GET /api/v1/providers` (`configured: true/false`); fix the key in `.env` (`./quick-setup.sh --key sk-ant-...`), `docker compose up -d backend` to reload env, retry the run. Keys are env-only — there is nothing to fix in the UI or DB.
+  **Fix**: check `GET /api/v1/providers` (`configured: true/false`); fix the key in `.env` (`./quick-setup.sh --anthropic-key sk-ant-...` — it verifies the key with a free list-models call before saving; the same flags exist for `--google-key` and `--openai-key`, while `OPENROUTER_API_KEY` and `CUSTOM_GATEWAY_*` are edited by hand), `docker compose up -d backend` to reload env, retry the run. Keys are env-only — there is nothing to fix in the UI or DB.
 - **Symptom**: OpenAI reasoning model + tools returns a 400 from `/v1/chat/completions`.
   **Cause**: current OpenAI reasoning models reject function tools combined with `reasoning_effort` on the Chat Completions API.
   **Fix**: already handled — the adapter routes any run with `effort` set through the **Responses API** (`use_responses_api=True`, `backend/app/llm/adapters.py`, commit `2fc0615`). If you see this error, you are on a stale image: `./build.sh`. Selecting `effort` on `gpt-4o` is rejected at save (422) because that model declares `supports_effort=False`.
@@ -54,8 +54,11 @@ Run detail (Runs page or `GET /api/v1/runs/{id}`) stores the error verbatim; ret
 ## SSE stream drops
 
 - **Symptom**: the chat stream goes quiet, browser reconnects, or replay shows nothing.
-  **Cause**: keepalive pings are only sent after 120 s of silence (`api/chat.py`) — an intermediary with a shorter idle timeout kills the connection. The shipped nginx is already configured for SSE (`proxy_buffering off`, `proxy_read_timeout 3600s` in `frontend/nginx.conf`); other proxies in front of the stack may not be. Also: event history is **in-memory** — a backend restart erases replay for existing runs, and after a restart the stream for an old run will hang (no history, no terminal event) rather than replay.
-  **Fix**: configure any extra proxy with buffering off and a read timeout ≥ 120 s. After a backend restart, read the run's outcome from the Runs page (DB-backed) instead of the stream. Run state is authoritative in Postgres; the stream is presentation.
+  **Cause**: an intermediary with a short idle timeout killing an otherwise healthy connection. Since M53 the stream emits a `ping` event every **15 s** of silence (`SSE_HEARTBEAT_S` in `backend/app/api/chat.py`) — deliberately inside the tightest common balancer default — so an idle cut now means a proxy under 15 s, or one that buffers. The shipped nginx is already configured for SSE (`proxy_buffering off`, `proxy_read_timeout 3600s` in `frontend/nginx.conf`); other proxies in front of the stack may not be. (sse-starlette's own comment ping is set to 60 s as a backstop only; the `ping` **events** carry the beat.)
+  **Fix**: configure any extra proxy with buffering off and a read timeout comfortably above 15 s (60 s is plenty). Reconnection is handled for you: `EventSource` sends `Last-Event-ID`, every event carries a monotonic `id:`, and the client folds each sequence at most once — a deploy with open streams duplicates no answer text.
+
+- **Symptom**: a stream opened on an *old* run after a backend restart.
+  **Cause and fix**: this used to hang with no history and no terminal event. Since M53 it does not: the in-memory event history is still lost on a restart, but a run that has reached a terminal status **resolves from its row** — `_record_terminal` in `backend/app/api/chat.py` replays the outcome from `runs` and closes the stream. A run that was executing on another replica resolves the same way when the owner announces the transition on the control channel. If a stream really does hang, the run is genuinely still live somewhere; check `GET /api/v1/runs/{id}` and `GET /api/v1/replicas`. Run state is authoritative in Postgres; the stream is presentation. Contract: [api/sse-events.md](../api/sse-events.md).
 
 ## HITL card / queue disagreement (409)
 
@@ -73,7 +76,7 @@ Run detail (Runs page or `GET /api/v1/runs/{id}`) stores the error verbatim; ret
 
 - **Symptom**: `docker compose up` fails with "port is already allocated", or `start.sh` health-polls the wrong service.
   **Cause**: host 8000 or 5173 is taken (another dev server, a previous stack), or Redis profile clashing on 127.0.0.1:6379.
-  **Fix**: set `BACKEND_PORT` / `FRONTEND_PORT` in `.env` and rerun `./start.sh` (it reads those for the health poll and URLs). The redis port binding is fixed at `127.0.0.1:6379` in `docker-compose.yml` — stop the conflicting local Redis or edit the compose file.
+  **Fix**: set **`BACKEND_PORT_RANGE`** and/or `FRONTEND_PORT` in `.env` and run `./stop.sh && ./start.sh` so the containers are recreated with the new mapping. Compose publishes the backend from the *range* (`${BACKEND_PORT_RANGE:-8000-8010}:8000`), one host port per replica — `BACKEND_PORT` does **not** change it, and setting it alone leaves the conflict in place. The scripts ask `docker compose port backend 8000` for the real port, so the health poll follows the range automatically. The redis port binding is fixed at `127.0.0.1:6379` in `docker-compose.yml` — stop the conflicting local Redis or edit the compose file.
 
 ## docker compose run from the wrong directory
 

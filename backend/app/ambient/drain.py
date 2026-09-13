@@ -96,6 +96,11 @@ async def drain_once(limit: int = 20) -> int:
     event with no lock and no session open (the processor may call a
     model). 3) WRITE BACK the verdict. A claim older than RECLAIM_AFTER_S
     belonged to a process that died mid-batch and is picked up again."""
+    # §3.7.1: the master gate lives in the behavior, not only at the tick.
+    from app.ambient.store import ambient_on
+
+    if not await ambient_on():
+        return 0
     handled = 0
     to_execute: list[Any] = []
     now = datetime.now(UTC)
@@ -251,7 +256,12 @@ async def _setting_or(get_cache: Any, key: str, default: Any) -> Any:
 async def record_backlog_depth() -> dict[str, int]:
     """M53 (arch-M7): the two queues an operator must see growing — pending
     ambient events and undelivered deliveries — sampled each leader tick
-    into `concierge_backlog_depth{queue}`."""
+    into `concierge_backlog_depth{queue}`.
+
+    Deliberately NOT behind the ambient master, unlike every sibling in this
+    tick: it performs nothing, writes nothing and calls nobody — it reads two
+    counts. Hiding a backlog that accumulated before ambient was switched off
+    is the opposite of what the gauge is for."""
     from sqlalchemy import func, select
 
     from app.models import AmbientEvent, Delivery

@@ -3,20 +3,25 @@
 // timeline), the search filter, the observability controls in Settings, the
 // direct-exposure cap banner on the Tools page when the cap is lowered under
 // the exposed count, and an idempotent seed reload.
-export default async function ({ page, nav, shot, settings, get, log, closeDrawer, click }) {
+export default async function ({ page, nav, shot, settings, get, log, closeDrawer, click, expect, expectEq }) {
   await nav(page, 'runs')
   const runs = (await get('/runs?limit=50')).json
   log(`runs listed: ${runs.length} (${runs.map((r) => r.status).join(', ')})`)
   await shot(page, '00-runs-list')
+  expect(runs.length > 0, `the Runs table lists the campaign's runs (${runs.length})`)
 
   // the newest completed run's drawer: answer + artifact, then the timeline
   const completed = runs.find((r) => r.status === 'completed')
+  // the trace drawer IS this stage — a run list with nothing completed in it
+  // means the stages before this one did not do what they claimed
+  expect(!!completed, 'there is a completed run to open a trace for')
   if (completed) {
     const row = page.locator('table tbody tr').filter({ hasText: (completed.chat_message || completed.message || '').slice(0, 40) }).first()
     await row.click()
     await page.waitForTimeout(1200)
     await shot(page, '01-trace-drawer-answer-and-artifact')
     const drawer = page.locator('.fixed.inset-0').last()
+    // framing only
     await drawer.getByText(/step timeline/i).first().scrollIntoViewIfNeeded().catch(() => {})
     await page.waitForTimeout(500)
     await shot(page, '02-step-timeline')
@@ -30,6 +35,7 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   await page.waitForTimeout(800)
   const shown = await page.locator('table tbody tr').count()
   log(`search "summary" → ${shown} rows`)
+  expect(shown < runs.length, `the search filter narrowed the table (${shown} of ${runs.length})`)
   await shot(page, '03-runs-search-filter')
   await page.getByPlaceholder('Search…').fill('')
 
@@ -60,9 +66,13 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
   log(`cap warning now: ${cap}`)
   await nav(page, 'tools')
   const banner = page.getByText(/capabilities are directly exposed/i).first()
+  // a probe, asserted on below — never the outcome itself
   const sawBanner = await banner.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
   log(sawBanner ? `banner: ${(await banner.textContent()).trim().slice(0, 160)}` : 'no banner — exposed count is not above the cap')
   await shot(page, '05-exposure-cap-banner-tools')
+  // the frame is only evidence if the cap really is below the exposed count
+  expect(exposed > cap, `${exposed} capabilities are exposed, above the cap of ${cap}`)
+  expectEq(sawBanner, true, 'the Tools page raised the direct-exposure cap banner')
   await settings({ direct_exposure_cap_warning: before ?? 10 })
 
   // seed reload is idempotent: registry counts unchanged, ids unchanged
@@ -79,5 +89,8 @@ export default async function ({ page, nav, shot, settings, get, log, closeDrawe
     JSON.stringify(skillsAfter.map((s) => s.id).sort()) === JSON.stringify(idsBefore.skills)
   log(`seed reload → tools ${tools.length}→${toolsAfter.length}, skills ${skills.length}→${skillsAfter.length}, ids ${same ? 'unchanged' : 'CHANGED'}`)
   await shot(page, '06-after-seed-reload')
-  if (!same) throw new Error('seed reload changed registry ids')
+  // §4: registry ids are immutable, so a reload of the seed is a no-op
+  expect(same, 'the seed reload left every registry id unchanged')
+  expectEq(toolsAfter.length, tools.length, 'and created no duplicate tools')
+  expectEq(skillsAfter.length, skills.length, 'and no duplicate skills')
 }

@@ -189,7 +189,12 @@ async def bounded_execute(
             await _set_status(run_id, "running")
             beat = asyncio.create_task(_heartbeat(run_id))
             try:
-                await asyncio.wait_for(_execute(run_id, resume=resume), timeout=wall)
+                # §10: bind run_id + mode for the whole run body, so the ~200
+                # log events emitted inside a run carry them (merge_contextvars
+                # was wired and only ever had `eval` bound to it)
+                await asyncio.wait_for(
+                    obs.run_scope(run_id, mode, _execute(run_id, resume=resume)), timeout=wall
+                )
             except TimeoutError:
                 await _finalize_failure(
                     run_id,
@@ -477,10 +482,15 @@ async def _execute(run_id: UUID, resume: dict[str, Any] | None = None) -> None:
         from app import control
 
         await control.notify("terminal", run_id=str(run_id), status="completed")
-        # post-run memory pipeline (spec §16.2) — fire-and-forget, off = no-op
+        # post-run memory pipeline (spec §16.2) — fire-and-forget, off = no-op.
+        # §15: an eval run is ISOLATED. It used to run the whole pipeline, so a
+        # three-hundred-case batch wrote three hundred digests, rollups and
+        # extraction passes into the semantic store the next real conversation
+        # recalls from — the measurement changed the thing it measured.
         from app.memory.scheduler import on_run_completed
 
-        on_run_completed(run_id)
+        if not is_eval:
+            on_run_completed(run_id)
         obs.RUNS_TOTAL.labels(mode=mode, status="completed").inc()
         obs.RUN_DURATION.labels(mode=mode, status="completed").observe(
             (datetime.now(UTC) - started).total_seconds()
@@ -536,6 +546,8 @@ async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
     in every formatter state."""
     import json
 
+    from app.native.tools import validate_chart_spec
+
     charts: list[dict[str, Any]] = []
     async with get_session_factory()() as session:
         steps = (
@@ -559,8 +571,13 @@ async def _collect_tool_charts(run_id: UUID) -> list[dict[str, Any]]:
                 spec = json.loads(str(raw))
                 if isinstance(spec, dict) and isinstance(spec.get("spec"), dict):
                     spec = spec["spec"]  # render_chart status envelope
-                if isinstance(spec, dict) and spec.get("kind") and spec.get("labels"):
-                    charts.append(spec)
+                # through the one chart contract, exactly like the formatter
+                # path: `labels` may legitimately be [] (sparkline, scatter,
+                # bubble), so truthiness was dropping valid charts, and an
+                # unvalidated spec could reach the page
+                valid = validate_chart_spec(spec, source="tool")
+                if valid is not None:
+                    charts.append(valid)
             except (ValueError, TypeError):
                 continue  # truncated/invalid output — never break the answer
     return charts
@@ -884,11 +901,13 @@ async def _run_agentic(
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
 
+    from app.factory.worker import resolve_node_model
     from app.orchestrator.agentic_mode import (
         build_agentic_agent,
         build_history_messages,
         extract_todos,
         final_answer_from_messages,
+        usage_from_state,
     )
 
     agent = await build_agentic_agent()
@@ -948,8 +967,19 @@ async def _run_agentic(
     messages = state.values.get("messages", [])
     answer = final_answer_from_messages(messages)
     # record the final response as an aggregate step for label comparability
-    step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator")
-    await ctx.recorder.finish_step(step_id, output={"answer": answer})
+    loop_model, _loop_params = await resolve_node_model({}, {})
+    step_id = await ctx.recorder.start_step("aggregate", tier="orchestrator", model=loop_model)
+    # the agentic loop's OWN model tokens — the orchestrating model, which in
+    # this mode does the planning, the routing and the writing. `usage_from_state`
+    # was defined and never called, so every agentic run under-reported its cost
+    # and the spend ceiling under-counted by its largest single consumer.
+    loop_usage = usage_from_state(messages)
+    await ctx.recorder.finish_step(
+        step_id,
+        output={"answer": answer},
+        input_tokens=int(loop_usage.get("input_tokens") or 0),
+        output_tokens=int(loop_usage.get("output_tokens") or 0),
+    )
     ctx.recorder.emit("token", {"text": answer})
     return {"paused": False, "answer": answer}
 
@@ -962,13 +992,30 @@ async def resume_run(
 ) -> None:
     """POST /runs/{id}/hitl (spec §7): resumes from checkpoint; approve
     continues, deny routes the node to END with the note in state; form-gate
-    answers ride into worker state (spec §3.5)."""
+    answers ride into worker state (spec §3.5).
+
+    The transition is a single atomic claim, not a read-then-act. It used to
+    read `paused_hitl` and then resume, so two requests within one tick — a
+    double-clicked Approve is enough — both passed the check and the gated
+    node ran TWICE. The approve+deny pair was worse: both branches executed
+    and the deny was cosmetic. Exactly one caller now wins the row; the
+    second gets the same 409 it would get for an already-resolved gate."""
+    from app.replica import replica_id
+
     async with get_session_factory()() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
-            raise ValueError("run not found")
-        if run.status != "paused_hitl":
+        claimed = await session.execute(
+            update(Run)
+            .where(Run.id == run_id, Run.status == "paused_hitl")
+            .values(status="running", owner_replica=replica_id(), cancel_requested_at=None)
+            .returning(Run.id)
+        )
+        if claimed.first() is None:
+            run = await session.get(Run, run_id)
+            await session.commit()
+            if run is None:
+                raise ValueError("run not found")
             raise ValueError(f"run is {run.status}, not paused_hitl")
+        await session.commit()
     resume: dict[str, Any] = {"decision": decision, "note": note}
     if answers:
         resume["answers"] = answers
@@ -1030,7 +1077,14 @@ async def cancel_run(run_id: UUID) -> str:
 
 
 async def retry_run(run_id: UUID) -> Run:
-    """Re-plan from the original message (spec §4)."""
+    """Re-plan from the original message (spec §4).
+
+    The retry carries the original run's PROVENANCE, not just its text. It
+    used to copy the message and nothing else, so retrying a failed ambient
+    run re-executed the same untrusted payload with its routine's allowlist,
+    its pinned model and its owner all stripped — against the whole exposed
+    registry, metered as a chat run, with in-run memory and delivery writes
+    unscoped."""
     async with get_session_factory()() as session:
         run = await session.get(Run, run_id)
         if run is None:
@@ -1045,6 +1099,12 @@ async def retry_run(run_id: UUID) -> Run:
         target = run.target_sub_agent_id
         with_summary = run.include_history_summary
         with_memories = run.include_memories
+        trigger = dict(run.trigger or {})
+        owner = run.user_id
+        is_eval = run.is_eval
+        eval_skill_id = run.eval_skill_id
+        conversation = await session.get(Conversation, conversation_id)
+        project_key = conversation.project_key if conversation is not None else None
     new_run = await create_run(
         conversation_id,
         message,
@@ -1052,7 +1112,20 @@ async def retry_run(run_id: UUID) -> Run:
         target_sub_agent_id=target,
         include_history_summary=with_summary,
         include_memories=with_memories,
+        project_key=project_key,
+        is_eval=is_eval,
+        eval_skill_id=eval_skill_id,
+        user_id=owner,
+        trigger_kind=str(trigger.get("kind") or "chat"),
     )
+    if trigger:
+        async with get_session_factory()() as session:
+            row = await session.get(Run, new_run.id)
+            if row is not None:
+                row.trigger = trigger  # the routine, its allowlist and its model pin
+                await session.commit()
+                await session.refresh(row)
+                new_run = row
     start_run_task(new_run.id)
     return new_run
 
