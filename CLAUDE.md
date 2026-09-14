@@ -34,4 +34,4 @@
 - Full stack: `docker compose up`
 
 ## Definition of done
-All six milestones complete, all test suites green, and the ten-step Acceptance Demo Script (spec §14) passes top to bottom on a fresh `docker compose up`.
+All six milestones complete, all test suites green, and the eleven-step Acceptance Demo Script (spec §14) passes top to bottom on a fresh `docker compose up`.
