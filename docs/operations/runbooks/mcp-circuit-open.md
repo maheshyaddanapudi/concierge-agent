@@ -71,7 +71,14 @@ ladder kept hitting, sanitized, and it is what tells the causes apart:
   settings change does not; neither does a health tick.
 - Cause 1: add the launcher to `MCP_STDIO_ALLOW` (comma-separated) in the
   backend environment and recreate the container, or switch the server to a
-  launcher already on the list.
+  launcher already on the list. **Setting it in `.env` alone does nothing**:
+  `MCP_STDIO_ALLOW` is read straight from `os.environ`
+  (`app/mcp/manager.py`), the backend service has no `env_file:` and does
+  not list the variable under `environment:`, and `.env` is excluded from
+  the build context. Add it to `docker-compose.yml` under
+  `services.backend.environment` (as `MCP_STDIO_ALLOW: ${MCP_STDIO_ALLOW:-}`)
+  and recreate, or pass it to the container directly. Confirm it arrived:
+  `docker compose exec backend printenv MCP_STDIO_ALLOW`.
 - Cause 2: fix the command/args on the row (`PATCH /mcp-servers/{id}`). An
   `args` or `command` edit is logged as `mcp_server_config_changed` and
   reconnects at once — a masked-secret round-trip (`***` unchanged) is

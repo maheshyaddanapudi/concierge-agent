@@ -65,6 +65,19 @@ Live-model sample:
 
 ## Reading the baseline
 
+> **The published baseline predates the rate limiter this page describes.**
+> `docs/acceptance/prod/M49/baseline.md` records
+> `Captured 2026-09-10T21:29:28+00:00 at commit d47015c`. That is a
+> documentation-only commit whose code is `b624908` — six source commits behind
+> HEAD, and crucially *before* `backend/app/limits.py` existed at all
+> (`git log --oneline -- backend/app/limits.py` names only `401914a`). So the
+> published run was measured against a stack where the limiter still sat behind
+> auth and a load run never met it, which is exactly the situation the note
+> above says no longer holds. The numbers are still a fair record of that
+> build; they are not a measurement of HEAD, and the harness's rate-limit
+> handling had nothing to do on the run that produced them. See
+> [`../../docs/acceptance/STALENESS.md`](../../docs/acceptance/STALENESS.md).
+
 The baseline was captured **before** any M50+ fix on purpose. Expect it to
 show the ceilings the reviews predicted: the SSE probe failing once the
 pool (5 + 10 overflow) is held by streams, `/runs` latency and payload

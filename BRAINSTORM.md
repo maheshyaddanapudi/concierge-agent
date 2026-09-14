@@ -1,5 +1,14 @@
 # Concierge Agent — Design Conversation Transcript
 
+> **This is a dated record, not documentation.** It captures the conversation
+> that produced the first `spec.md` on 4 August 2026, and it is preserved
+> unchanged so the reasoning behind each decision stays readable. The system
+> has moved a long way past it: this transcript ends at six milestones, six
+> admin pages and `bypass` as the cache default, where the built system has
+> M1–M56, **eleven** pages and `memory`. For what exists today, read
+> [`docs/README.md`](./docs/README.md) and `spec.md`; where this page and
+> those disagree, this page is the one that is out of date.
+
 **Date:** August 4, 2026 · **Participants:** Mahesh × Claude
 **Note on fidelity:** every user message is reproduced verbatim (lightly trimmed of typos only where meaning is unaffected). Claude's responses are faithfully condensed to their full technical substance — every decision, correction, and rationale is preserved; conversational padding and tool-call mechanics are omitted. Spec/file changes are marked as `[→ file updated]`. This conversation produced: `spec.md`, `CLAUDE.md`, `README.md`, `.env.example`, and the `/goal` kickoff prompt.
 

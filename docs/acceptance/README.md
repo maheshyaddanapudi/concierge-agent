@@ -1,5 +1,24 @@
 # Acceptance evidence — campaign v1 (dev images)
 
+> ## ⚠ EVERY PAGE IN THIS TREE IS STALE
+>
+> Nothing here was captured on HEAD (`3891914`). The newest evidence in the
+> tree is stage 36, on build `9f9ee53`; 26 of the 37 stages are on `b624908`,
+> **six source commits back**. The hardening wave (`401914a` — ~470 reviewer
+> findings across 220 files, including the prompts, memory recall scoring, the
+> registry cache default, chart validation and the formatter) landed *after*
+> every capture below, and **the planned live re-run of this tree never
+> happened**: the provider account ran out of credit mid-session and the
+> container's Docker state was then lost, so no stack could be built or run.
+>
+> **[`STALENESS.md`](STALENESS.md) is the record**: what each page was captured
+> against, a per-stage grade of how far its claim has moved, every count
+> re-audited against the disk, and an explicit list of what could not be
+> verified. Each stage and drill transcript carries the same warning at its own
+> top, so a reader who lands on one page rather than this one still sees it.
+>
+> Read the tables below as *the state of a previous build*, not of the system.
+
 One campaign, one tree. Every frame here was captured click-driven on the
 `dev` images by the drivers in `experiments/acceptance/` against the live
 model `openrouter:qwen/qwen3.8-max` (all roles unless a stage's claim *is* a
@@ -83,10 +102,13 @@ Stages 27–29 need the host-side counterparties and sinks described in
 server's `mutate_schema` tool; the drills need `docker compose` and the db
 container reachable through `docker exec`.
 
-`publish.mjs` clears the destination directory but the capture directory
-(`ACC_SHOTS/<stage>/`) is only created, never cleared. A stage whose frame
-names carry run-dependent values — `35-schema-drift` puts the live schema
-version in each filename — therefore accumulates frames across re-runs and
-publishes all of them; clear `ACC_SHOTS/<stage>/` before re-running one of
-those, or the published directory carries the previous reading's frames too
-(see the note at the end of `INVENTORY.md`).
+**The capture-directory bug is fixed, and the fix has never been exercised.**
+`publish.mjs` always cleared the destination directory, but the *capture*
+directory (`ACC_SHOTS/<stage>/`) used to be created and never emptied, so a
+stage whose frame names carry run-dependent values — `35-schema-drift` puts
+the live schema version in each filename — accumulated frames across re-runs
+and published all of them. That is where the eight orphan frames in
+`35-schema-drift/` came from. `lib.mjs:stageStart()` now clears the directory
+before capturing (landed in `401914a`); since no stage has been run since,
+**the fix is untested** and the eight orphan frames are still on disk, kept
+rather than deleted. See `STALENESS.md` §4 and §7.

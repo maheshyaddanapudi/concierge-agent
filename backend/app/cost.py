@@ -304,11 +304,27 @@ async def record_job_usage(
 ) -> None:
     """Ledger one model call made OUTSIDE a run.
 
-    The ceiling counted runs only, so the overlap judge, the significance and
-    salience judges, anticipation, run digests, reflection, community
-    summaries, extraction and every embedding spent money that appeared
-    nowhere: the dashboard said $0 for all of it while the operator watched
-    chat refused at a ceiling the background jobs had already passed.
+    The ceiling counted runs only, so autonomous model calls spent money that
+    appeared nowhere: the dashboard said $0 for all of it while the operator
+    watched chat refused at a ceiling the background jobs had already passed.
+
+    WHAT THIS ACTUALLY COVERS, as of this writing — the docstring used to
+    claim more than the code delivers, which is worse than claiming nothing:
+
+      ledgered AND gated: overlap_judge, salience_judge, anticipation,
+                          reflection, community_summary
+      ledgered, NOT gated: eval_judge, run_digest — they add to the total
+                          and can push it past the ceiling that then
+                          refuses chat, but are not themselves refused
+      NEITHER: memory extraction (app/memory/extract.py), the significance
+                          judge (app/ambient/decide.py, which records token
+                          counts only), and every embedding call
+                          (app/llm/registry.py::get_embeddings, which
+                          reaches the adapter directly)
+
+    So `spend_today` is a FLOOR, not a total, and the ceiling cannot bound
+    embedding-heavy work. Closing those three is open work, not a claim this
+    function may make.
 
     Best-effort by design — a ledger write never fails the job it is
     measuring, and a model with no price anywhere is recorded UNPRICED

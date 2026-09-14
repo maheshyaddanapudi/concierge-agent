@@ -26,7 +26,7 @@ sequenceDiagram
 
     UI->>API: POST /chat {conversation_id, message}
     API->>Runner: create_run then start_run_task
-    Note over Runner: Run row created with status running
+    Note over Runner: Run row created with status queued — running once it holds an admission slot
     API-->>UI: 201 {run_id, conversation_id}
     UI->>API: GET /chat/stream/{run_id} EventSource
     API->>Bus: subscribe — history replay + live queue
@@ -65,7 +65,7 @@ sequenceDiagram
     Bus-->>UI: SSE events render cards, ticker, streamed answer
 ```
 
-**Walkthrough.** `POST /chat` (`backend/app/api/chat.py`) calls `create_run` — which inserts a `Run` row with `status="running"` — and `start_run_task`, which spawns `_execute` as a plain asyncio task in the same FastAPI process (`backend/app/orchestrator/runner.py`; no broker, per spec §2). The response returns `run_id` immediately; the UI then opens `GET /chat/stream/{run_id}`, whose generator subscribes to the in-memory `EVENT_BUS` (`backend/app/orchestrator/context.py`) and yields history replay followed by live events.
+**Walkthrough.** `POST /chat` (`backend/app/api/chat.py`) calls `create_run` — which inserts a `Run` row with `status="queued"` (M51) after checking admission and the spend ceiling — and `start_run_task`, which spawns `bounded_execute` as a plain asyncio task in the same FastAPI process (`backend/app/orchestrator/runner.py`; no broker, per spec §2). The task first awaits an `orchestrator/admission.slot`; only on acquiring one does the row flip to `running`, the 30 s heartbeat start, and `_execute` run under the `run_wall_clock_s` timeout. The response returns `run_id` immediately; the UI then opens `GET /chat/stream/{run_id}`, whose generator subscribes to the in-memory `EVENT_BUS` (`backend/app/orchestrator/context.py`) and yields history replay followed by live events.
 
 `plan_node` resolves the planner model from settings (`planner_model` falling back to `default_model`) and calls `run_planner` (`backend/app/orchestrator/planner.py`): it assembles progressive-disclosure catalog summaries through `registry_summaries` (each catalog gated by `apply_retrieval`, see [resolution-ladder.md](resolution-ladder.md)), invokes the model with `with_structured_output(PlannerOutput)`, then `validate_plan` checks entry-id uniqueness, `depends_on` references, `max_plan_steps`, and that every referenced capability id resolves to an active registry record. On errors it retries exactly once with the error list appended to the prompt; a second failure raises `PlanFailure` → `RunFailed`, and the run finishes `failed` with the raw planner outputs stored on `run.plan`.
 
@@ -242,7 +242,7 @@ The **listChanged** path: the `ClientSession` message handler routes `ToolListCh
 
 ## 5. Cache invalidation and cross-replica sync
 
-Every registry and settings read in the run path goes through the singleton `RegistryCache` (`backend/app/registry_cache.py`). Freshness is **event-invalidated**: no TTLs — an entry is current or invalidated.
+Every registry and settings read in the run path goes through the singleton `RegistryCache` (`backend/app/registry_cache.py`). Freshness is **event-invalidated**: every write path calls `invalidate(registry)` before returning, and that — not expiry — is what holds the "visible at the next model call" contract. A TTL exists behind it as a backstop only: `REGISTRY_CACHE_TTL_S` (default 300 s) expires every memory-mode entry and every redis blob, so a **cross-replica NOTIFY that was never delivered** — the one gap invalidation cannot detect — costs at most one TTL of staleness rather than unbounded staleness.
 
 ```mermaid
 sequenceDiagram
@@ -271,7 +271,7 @@ sequenceDiagram
     opt manual refresh button
         UI->>API: POST /cache/refresh/{registry} or /cache/refresh/all
         API->>CA: cache.refresh — invalidate + eager reload force
-        CA-->>UI: {records, generation, loaded_at, cached}
+        CA-->>UI: {records, generation, dirty, loaded_at, cached}
     end
 ```
 
@@ -283,7 +283,7 @@ sequenceDiagram
 
 Reload is lazy: the next read through `_ensure` sees the dirty flag (in `memory` mode) or the deleted blob (in `redis` mode) and reloads the registry wholesale from Postgres — registries are small, and a full reload can never leave a stale embedded relationship. In `bypass` mode every read is a direct Postgres query and invalidation only bumps generations; `bypass` was the shipped default through M56 and is now the rollback lever, with `memory` shipped by default.
 
-The **manual refresh** path: the "⟳ Refresh cache" button (`frontend/src/components/CacheControls.tsx`, `useRefreshCache` in `frontend/src/api/hooks.ts`) posts `POST /cache/refresh/{registry}` — or `all` — handled in `backend/app/api/cache.py`, which calls `cache.refresh`: invalidate (including the peer notify) plus an **eager** `_ensure(force=True)` reload, returning `{records, generation, loaded_at, cached}` for the status line next to the button. `GET /cache/status` feeds the same UI.
+The **manual refresh** path: the "⟳ Refresh cache" button (`frontend/src/components/CacheControls.tsx`, `useRefreshCache` in `frontend/src/api/hooks.ts`) posts `POST /cache/refresh/{registry}` — or `all` — handled in `backend/app/api/cache.py`, which calls `cache.refresh`: invalidate (including the peer notify) plus an **eager** `_ensure(force=True)` reload, returning `{records, generation, dirty, loaded_at, cached}` for the status line next to the button. `GET /cache/status` feeds the same UI.
 
 ---
 

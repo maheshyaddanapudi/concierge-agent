@@ -73,10 +73,13 @@ Distinguish:
   invalidation costs at most `REGISTRY_CACHE_TTL_S` (300 s) of staleness,
   because every entry expires on it.
 - **Immediate mitigation, no restart**: `PATCH /api/v1/settings`
-  `{"registry_cache_mode": "memory"}` (or `"bypass"` — direct DB reads, the
-  shipped default and the rollback lever). Both apply mid-process; flipping
-  into `memory` warm-loads. `concierge_cache_degraded_total` stops moving at
-  once. This is the right first move in any of causes 1–3.
+  `{"registry_cache_mode": "memory"}` — `memory` is the **shipped default**
+  (`DEFAULTS` in `app/settings_store.py`) — or `"bypass"` for direct DB
+  reads, which is the rollback lever rather than the default (it was the
+  default through M56; see `../../adr/0004-registry-cache-bypass-default.md`).
+  Both apply mid-process; flipping into `memory` warm-loads.
+  `concierge_cache_degraded_total` stops moving at once. This is the right
+  first move in any of causes 1–3.
 - Cause 1: `COMPOSE_PROFILES=redis` in `.env` (that is what
   `./quick-setup.sh --redis` writes) and `docker compose up -d`, or leave it
   off and stay in `memory` mode.

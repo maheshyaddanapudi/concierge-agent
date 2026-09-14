@@ -72,7 +72,9 @@ docker compose exec db psql -U concierge -d concierge -c \
   "select id, name, status, status_reason from routines where status='paused';"
 
 curl -s "http://localhost:${PORT}/api/v1/settings" \
-  | python3 -c 'import json,sys;d=json.load(sys.stdin);print({k:d[k] for k in ("run_wall_clock_s","run_stall_after_s","run_max_concurrent","run_queue_max","max_tool_iterations","agentic_recursion_limit","llm_timeout_s") if k in d})'
+  | python3 -c 'import json,sys;d=json.load(sys.stdin);print({k:d[k] for k in ("run_wall_clock_s","run_stall_after_s","run_max_concurrent","run_queue_max","max_tool_iterations","agentic_recursion_limit") if k in d})'
+# `LLM_TIMEOUT_S` is an env var, not a setting — it is not in /settings.
+# Read it off the container: docker compose exec backend printenv LLM_TIMEOUT_S
 ```
 
 Distinguish:

@@ -233,7 +233,12 @@ async def _create_chat_run(body: ChatRequest, session: Any) -> Run:
 # and a client that reconnects with Last-Event-ID gets only what it missed.
 SSE_HEARTBEAT_S = 15.0
 SSE_RECONNECT_RETRY_MS = 5000
-_TERMINAL = {"completed", "failed", "cancelled"}
+# `stalled` belongs here: obs.TERMINAL_RUN_STATUSES and the frontend both
+# treat it as terminal, and the §17.4 reaper writes it as a final state. Left
+# out, the server never closed a stalled run's stream, kept heartbeating into
+# it, and had no branch to synthesise a terminal event for a client that
+# reconnected after the history was evicted.
+_TERMINAL = {"completed", "failed", "cancelled", "stalled"}
 
 
 def _wire(event: dict[str, Any]) -> dict[str, Any]:
@@ -278,6 +283,13 @@ def synthesize_terminal_events(run: Run, after: int) -> list[dict[str, Any]]:
         ev("run_status", {"status": "failed"})
     elif run.status == "cancelled":
         ev("run_status", {"status": "cancelled"})
+    elif run.status == "stalled":
+        # §17.4: the reaper marks a run whose heartbeat went silent. It is a
+        # terminal state with an error, so it resolves like `failed` — before
+        # this branch existed a client reconnecting to a stalled run after
+        # its events were evicted received nothing at all and hung.
+        ev("error", {"message": run.error or "run stalled"})
+        ev("run_status", {"status": "stalled"})
     elif run.status == "paused_hitl":
         ev("run_status", {"status": "paused_hitl"})
     return events
@@ -405,11 +417,18 @@ def _is_terminal(event: dict[str, Any]) -> bool:
     return event.get("type") == "run_status" and event.get("payload", {}).get("status") in {
         "failed",
         "cancelled",
+        "stalled",  # the §17.4 reaper's final state — the stream must end here too
     }
 
 
 @router.post("/runs/{run_id}/hitl")
-async def resolve_hitl(run_id: UUID, body: HitlRequest) -> dict[str, Any]:
+async def resolve_hitl(run_id: UUID, body: HitlRequest, session: SessionDep) -> dict[str, Any]:
+    # §18.8: the gate is the human control point, so it has to be the
+    # OWNER's human. Unguarded, any member could approve another member's
+    # pause — including one holding an irreversible action back for review.
+    run = await session.get(Run, run_id)
+    if run is None or not owns_row(run):
+        raise HTTPException(status_code=404, detail="run not found")
     try:
         await resume_run(run_id, body.decision, body.note, body.answers)
     except ValueError as exc:

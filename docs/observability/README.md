@@ -13,11 +13,18 @@ docker compose -f docs/observability/docker-compose.observability.yml up -d
 
 The compose file joins the stack's network (`concierge-agent_default` by
 default — override `CONCIERGE_NETWORK` if your project name differs) and
-scrapes `backend:8000/metrics` every 10 s.
+scrapes the backend's `/metrics` every 10 s.
+
+The scrape job uses **DNS service discovery**, not a static target (M54):
+`dns_sd_configs` resolves the `backend` A records every 15 s, so under
+`docker compose up --scale backend=N` each replica is scraped as its own
+target and `instance` identifies it. A static `backend:8000` target would
+alternate replicas scrape by scrape and render every counter as a series of
+resets.
 
 | File | What |
 |---|---|
-| `prometheus.yml` | one scrape job, `backend:8000` |
+| `prometheus.yml` | one scrape job, `concierge-backend` — DNS-SD on `backend` (A records, port 8000, 15 s refresh), `service=concierge-agent` relabel, 10 s scrape interval |
 | `grafana/provisioning/datasources/prometheus.yml` | the Prometheus datasource, default |
 | `grafana/provisioning/dashboards/dashboards.yml` | loads `grafana/dashboards/*.json` |
 | `grafana/dashboards/saturation.json` | **Saturation** — pool saturation and connections, in-flight vs slots, backlog depth, loop errors, MCP/listener state, SSE subscribers |

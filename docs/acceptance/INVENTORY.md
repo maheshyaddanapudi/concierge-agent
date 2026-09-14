@@ -1,5 +1,28 @@
 # Acceptance evidence inventory (campaign acceptance_v1)
 
+> ## ⚠ THIS INVENTORY DESCRIBES A STALE TREE
+>
+> Every directory listed here holds evidence captured on a build that is no
+> longer HEAD (`3891914`). The hardening wave (`401914a`) landed after the last
+> capture and **the planned live re-run never happened**. See
+> [`STALENESS.md`](STALENESS.md) for what each page was captured against and
+> how far its claim has moved.
+>
+> **Two things on this page were re-audited and corrected**: the
+> end-of-campaign totals (below, marked **[corrected]**), and the fact that the
+> file model here accounts for **418 of the 424 files on disk**. The six it
+> does not name are the five stage-written data files in stages 29–33
+> (`.txt` / `.csv`, which are neither frames nor `transcript.md`) and
+> `coordination_m35/report.md`. That last one is a **39th directory that is
+> still physically present**: its disposition below reads "kept as `prod/M54`",
+> which suggests it moved, but `docs/acceptance/coordination_m35/report.md` is
+> still on disk, is referenced by nothing except that row, and falls outside
+> both the "37 stage directories" and the "12 drill folders" this page counts by.
+>
+> Everything else on this page was recounted against the disk and is correct —
+> including the per-directory `frames` column, which is a **historical** record
+> of the tree at `28732b4` and must not be "corrected" to today's counts.
+
 Every asset in `docs/acceptance/` as it stood at the start of the campaign (commit `28732b4`, the merge of PR #25 into `dev`), what it claims to prove, when it was captured, and its **disposition** — `recaptured` (the same moment re-driven on the dev images and filed under the consolidated tree), `dropped` (nothing in the current spec asks for it, or a duplicate), `kept` (transcript-only evidence that is still the record). Dispositions are filled in as the passes complete; `pending` means not yet decided.
 
 | directory | assets | frames | captured | proves | disposition |
@@ -50,9 +73,9 @@ Every asset in `docs/acceptance/` as it stood at the start of the campaign (comm
 | `evals_m32` | 4 | 3 | 4537a6e 2026-08-25 | campaign evals_m32 | recaptured as stage `33-evals` (removed from the tree; git history keeps it) |
 | `prod` | 94 | 31 | ae19740 2026-09-10 | the production-hardening drills M49–M56 | re-run on the dev images: M34 (new), M49, M50, M51, M52, M53, M54 recall, M55, M56 ceremony + addendum + perf record; the M54 fleet legs kept from the same day's capture on the merged code; the per-milestone tests.md pages replaced by one `prod/tests.md` |
 
-Totals at the start: 879 assets, 775 frames, 133 MB. At the end of the campaign: 377 files, 303 frames (283 in the 35 stage directories, 20 under `prod/`), 55 MB — one tree, every directory captured in this campaign except the six M54 fleet transcripts kept from the same day's capture on the merged code.
+Totals at the start: 879 assets, 775 frames, 133 MB. At the end of the campaign: **379** files, 303 frames (283 in the 35 stage directories, 20 under `prod/`), 55 MB — one tree, every directory captured in this campaign except the six M54 fleet transcripts kept from the same day's capture on the merged code. **[corrected]** — this read "377 files"; `git ls-tree -r --name-only bf04afc docs/acceptance/ | wc -l` is 379. The frame counts on this sentence were re-checked at `bf04afc` and are right; the 55 MB was not re-measured.
 
-**The tree today**, after the post-campaign fix, schema-drift, hardening-wave and third-reading passes: **424 files, 336 frames (316 across 37 stage directories, 20 under `prod/`), 60 MB** — 37 stage transcripts, 12 drill folders under `prod/` holding 31 transcripts and 8 captured data files (`.json` / `.txt`), plus `prod/README.md`, `prod/tests.md`, `prod/frontend-tests.md` and this tree's three root pages.
+**The tree today**, after the post-campaign fix, schema-drift, hardening-wave and third-reading passes: **425 files, 336 frames (316 across 37 stage directories, 20 under `prod/`), 60 MB** — 37 stage transcripts, 12 drill folders under `prod/` holding 31 transcripts and 8 captured data files (`.json` / `.txt`), plus `prod/README.md`, `prod/tests.md`, `prod/frontend-tests.md` and this tree's four root pages (`README.md`, `report.md`, this inventory and `STALENESS.md`). Every one of those numbers was recounted against the disk in the staleness pass; the file total was 424 before that pass added `STALENESS.md`. Six of the 425 are named by no count on this page — see the note at the top.
 
 After the campaign, the fixes for findings 1, 2 and 4 added `prod/FIXES/` (three transcripts, no frames) and replaced `11-hitl-deny-and-queue` with its re-run on the fixed image (six frames, one transcript — same names). The schema-drift work added stage `35-schema-drift` (thirteen frames, one transcript) and `prod/DRIFT/` (three transcripts), and replaced stages `02-mcp-servers`, `03-tools`, `04-skills`, `05-sub-agents`, `14-runs-and-ops`, `18-registry-cache-and-retrieval` and `28-config-hardening` with their re-runs on that image. The hardening wave added stage `36-hardening-wave` (eleven frames, one transcript) and `prod/HARDENING/` (three transcripts), and replaced stages `03-tools`, `04-skills`, `05-sub-agents`, `14-runs-and-ops`, `18-registry-cache-and-retrieval`, `28-config-hardening` and `35-schema-drift` with their re-runs on the second-reading image. The third reading added `prod/HARDENING/third-reading.md`, replaced `prod/M56/` (the ceremony and addendum re-run from a fresh volume on the third-reading image, eleven frames), and replaced stages `02-mcp-servers`, `03-tools`, `04-skills`, `05-sub-agents`, `14-runs-and-ops`, `18-registry-cache-and-retrieval`, `27-a2a`, `28-config-hardening`, `35-schema-drift` and `36-hardening-wave` (twelve frames now: the unjudged-save notice) with their re-runs on that image.
 

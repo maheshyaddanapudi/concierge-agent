@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `9f9ee53`** (the unjudged-save build) — **1 source commit behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> The newest evidence in the tree, and still falsified in a recorded value: this transcript reads `prompts=24 files`, while HEAD ships 27 prompt `.md` files. The snapshot this stage photographs therefore pins a different set than the one it names.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 36-hardening-wave — 2026-09-12T15:06:12.880Z
 [   0.1s] settings ← {"orchestrator_mode":"graph","formatter_enabled":true,"evals_enabled":true,"ambient_enabled":true,"ambient_salience_model":null,"eval_judge_model":null,"eval_judge_model_params":null,"registry_overlap_audit_enabled":false}

@@ -50,11 +50,18 @@ async def hitl_pending(session: SessionDep) -> list[dict[str, Any]]:
     dataset's policy and have no human waiting, so a batch used to fill this
     queue with approvals nobody could meaningfully act on. Ordered, because
     the queue is polled every few seconds and rendered with buttons: an
-    unordered result reshuffled them under the operator's cursor."""
+    unordered result reshuffled them under the operator's cursor.
+
+    §18.8: scoped to the caller. Unscoped, this queue showed every user's
+    paused runs — and the decision endpoint it links to was itself unguarded,
+    so it was a list of other people's gates with working buttons beside them.
+    """
+    from app.auth import scope_to_user
+
     runs = (
         (
             await session.execute(
-                select(Run)
+                scope_to_user(select(Run), Run)
                 .where(Run.status == "paused_hitl", Run.is_eval.is_(False))
                 .order_by(Run.started_at, Run.id)
             )

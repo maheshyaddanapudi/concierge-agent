@@ -22,7 +22,7 @@ The lifecycle scripts at the repo root are the supported path (all idempotent):
 
 Equivalent manual path: `cp .env.example .env && docker compose up`.
 
-- Compose runs exactly three services — `db` (Postgres 16), `backend`, `frontend` (`docker-compose.yml`). A fourth, `redis`, exists behind the `redis` profile only (`docker compose --profile redis up` + `REDIS_URL=redis://redis:6379/0`) and is never required.
+- The default stack runs three services — `db` (Postgres 16 via `pgvector/pgvector:0.8.6-pg16`), `backend`, `frontend`. `docker-compose.yml` defines a fourth, `redis`, behind the `redis` profile only (`docker compose --profile redis up` + `REDIS_URL=redis://redis:6379/0`); the default `docker compose up` never starts it and nothing but the optional registry cache may depend on it.
 - First start runs Alembic migrations and loads seed data automatically (the FastAPI lifespan in `backend/app/main.py` does both); later starts resume with the same data.
 - Frontend at `http://localhost:${FRONTEND_PORT}` (default **5173**, nginx-served build on the container's port 8080), API at the port compose published from `BACKEND_PORT_RANGE` (default range **8000-8010**, so **8000** for a single replica — `./start.sh` prints it).
 - Containers do **not** hot-reload: after code changes, `./build.sh && ./start.sh` (images are rebuilt; data volumes survive).
@@ -40,15 +40,17 @@ cd backend
 uv sync                          # Python 3.12, installs runtime + dev groups (pyproject.toml)
 ```
 
-The test suite needs a Postgres it can own, and it must be the **pgvector** image — `backend/tests/conftest.py` runs `CREATE EXTENSION IF NOT EXISTS vector` before the first test, which a stock `postgres:16` cannot satisfy (spec §16.1). Use the same image the compose stack uses. The convention (see `backend/tests/conftest.py`) is a throwaway instance on **port 5433**:
+The test suite needs a Postgres it can own, and that Postgres must have **pgvector** — `backend/tests/conftest.py` runs `CREATE EXTENSION IF NOT EXISTS vector` before the first test, which a stock `postgres:16` cannot satisfy (spec §16.1). The easiest route is the image the compose stack already uses; the convention (see `backend/tests/conftest.py`) is a throwaway instance on **port 5433**:
 
 ```bash
 docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:0.8.6-pg16
 docker exec <container> createdb -U postgres concierge_test
 ```
 
-or point `TEST_DATABASE_URL` at any instance you control — the default is
-`postgresql+asyncpg://postgres:postgres@localhost:5433/concierge_test`. Tests drop/create all tables and `TRUNCATE` between tests, so never point it at a database you care about.
+The container is a convenience, not the requirement: any Postgres 16 with the `vector` extension available works (a host Postgres 16 + pgvector 0.8.0 runs the suite green). Point `TEST_DATABASE_URL` at whatever you control — the default is
+`postgresql+asyncpg://postgres:postgres@localhost:5433/concierge_test`. Tests drop/create all tables and `TRUNCATE` between tests, so never point it at a database you care about, and don't share one server with a second full-suite run (see the flake note in [testing.md](./testing.md#running)).
+
+**Unset `OPENROUTER_API_KEY` and `CUSTOM_GATEWAY_*` before running the suite.** `conftest.py` clears `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` but not those, and either one left in the shell fails `tests/test_llm_contract.py::test_unconfigured_provider_refuses_model` for that provider.
 
 To run the app itself against a local Postgres:
 
@@ -61,8 +63,11 @@ Migrations and seeds run automatically at startup (`lifespan` in `backend/app/ma
 
 ```bash
 uv run pytest                       # full suite
-uv run ruff check . && uv run mypy app
+uv run ruff check . && uv run ruff format --check . && uv run mypy app
+uv run python -m app.doclint && uv run python -m app.prompts.check   # the two build gates, offline
 ```
+
+Always through `uv`. A bare `pytest` / `mypy` / `python -m app.…` picks up whatever is on your `PATH`, not the project environment, and fails on import (`ModuleNotFoundError: No module named 'httpx'` / `'structlog'`; `mypy` cannot even load the `pydantic.mypy` plugin).
 
 ### Frontend
 

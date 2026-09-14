@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `ab07205`** (the third-reading build) — **2 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> **The most affected stage in the tree.** Its subject is the registry cache mode, and the wave flipped the shipped default from `bypass` to `memory` — the ONE default value that changed. This transcript also reads `settings:g33/116`; HEAD ships 122 settings keys. Its own honest note (the threshold field would not commit through the UI) names the control the wave rewrote.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 18-registry-cache-and-retrieval — 2026-09-11T22:37:22.731Z
 [   0.1s] settings ← {"registry_cache_mode":"bypass","default_model_params":null}

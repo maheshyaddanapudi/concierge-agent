@@ -26,11 +26,10 @@ recall, by design, not a bug to chase.
 | Signal | Healthy | Stuck |
 |---|---|---|
 | log `memory_embedding_backfill` | one INFO per pass with `embedded` (up to 500) and `model_key` | absent for hours while rows are still missing — **the line is only emitted when `embedded > 0`, so silence alone is ambiguous** |
-| `concierge_memory_ops_total{kind="backfill",status="ok"}` | increments **every** pass, including empty ones | flat ⇒ the job is not running at all |
+| `concierge_memory_ops_total{kind="backfill",status="ok"}` | increments on **every** pass that gets past the gates, including passes that embed nothing | flat ⇒ the job is not running at all, **or** it is returning early at a gate (`memory_enabled` off, `embedding_model` null, unsupported dimension) — the counter is incremented after those returns, not before |
 | log `memory_backfill_dims_unsupported` | absent | WARNING with `model_key` — the model's dimension has no typed column, so the job returns 0 forever |
 | `concierge_loop_errors_total{loop="memory"}` | flat | climbing ⇒ the job is raising |
 | `GET /api/v1/memories/status` | outstanding count falling pass over pass | flat across hours |
-| `concierge_spend_ceiling_refusals_total{kind="embedding"}` | flat | climbing ⇒ the job is declining on the spend ceiling |
 | rows in `memory_embeddings` for the active `model_key` | rising | flat |
 
 The clean way to ask "how much is left" is the query in **First checks** —
@@ -42,9 +41,9 @@ it is the same `~exists` the job itself uses.
 PORT=$(docker compose port backend 8000 | head -1 | sed 's/.*://')
 curl -s "http://localhost:${PORT}/api/v1/memories/status" | python3 -m json.tool
 curl -s "http://localhost:${PORT}/api/v1/settings" \
-  | python3 -c 'import json,sys;d=json.load(sys.stdin);print({k:d[k] for k in ("memory_enabled","embedding_model","memory_forget_enabled","spend_ceiling_enabled")})'
+  | python3 -c 'import json,sys;d=json.load(sys.stdin);print({k:d[k] for k in ("memory_enabled","embedding_model","memory_forget_enabled")})'
 docker compose logs --since 6h backend \
-  | grep -E 'memory_embedding_backfill|memory_backfill_dims_unsupported|job_held_on_spend_ceiling'
+  | grep -E 'memory_embedding_backfill|memory_backfill_dims_unsupported'
 
 # what the active key is, and what is still missing under it
 docker compose exec db psql -U concierge -d concierge -c \
@@ -81,15 +80,11 @@ Distinguish:
    width has nowhere indexable to live and its rows stay lexical-only. Note
    the key is `provider:model@dims` — a key with **no** `@dims` suffix also
    resolves to no column.
-4. **The spend ceiling is declining it.** `job_held_on_spend_ceiling` with
-   `kind="embedding"` and `concierge_spend_ceiling_refusals_total{kind="embedding"}`
-   climbing. The job declines quietly and retries next tick — see
-   [spend-ceiling.md](./spend-ceiling.md).
-5. **The embeddings provider is failing.** `concierge_loop_errors_total{loop="memory"}`
+4. **The embeddings provider is failing.** `concierge_loop_errors_total{loop="memory"}`
    climbing and the provider named in the log; the whole pass aborts, so
    `embedded` stays 0. Usually a key that is not configured for the provider
    the `embedding_model` ref names, or a rate limit.
-6. **The leader never runs it.** `job_clock` is not advancing for
+5. **The leader never runs it.** `job_clock` is not advancing for
    `memory:backfill` at all while other jobs are. The periodic loop runs on
    the ambient leader — if no replica holds the lease, nothing ticks. See
    [leader-loss.md](./leader-loss.md).
@@ -106,11 +101,9 @@ Distinguish:
   supported width if the provider offers dimension reduction (Matryoshka
   models commonly do). Rows already embedded under the old key stay usable
   until you switch back — nothing is deleted.
-- Cause 4: raise or disable the spend ceiling, or accept the delay: embedding
-  is the cheapest thing on the ledger and will get its turn.
-- Cause 5: fix the provider credential or the ref. `GET /api/v1/providers`
+- Cause 4: fix the provider credential or the ref. `GET /api/v1/providers`
   shows which adapters are `configured`.
-- Cause 6: restore the leader.
+- Cause 5: restore the leader.
 
 **Do not** delete the old model key's rows to "make room". They are what
 recall is still serving from while the new key fills, and the switch is only
@@ -122,3 +115,22 @@ zero-downtime because both coexist.
 `model_key`, the outstanding count falling pass over pass to zero, the
 `memory_embeddings` count under the active key matching the live row count,
 and recall hits carrying real cosine scores rather than lexical-only ones.
+
+## Known gap
+
+- **The backfill is not on the spend ceiling and not on the cost ledger.**
+  `get_embeddings` (`app/llm/registry.py`) calls the adapter directly: there
+  is no `enforce_job_ceiling` and no `job_spend` anywhere on the embeddings
+  path. So a stalled backfill is **never** the spend ceiling declining it,
+  there is no `concierge_spend_ceiling_refusals_total{kind="embedding"}`
+  series to check, and a large backfill's cost does not appear in
+  `GET /spend`. Do not go looking for those signals — see the Known gap in
+  [spend-ceiling.md](./spend-ceiling.md).
+- **There is no "rows outstanding" metric.** Progress is only visible from
+  `GET /memories/status`, the SQL in **First checks**, or the
+  `memory_embedding_backfill` log line (which is suppressed when a pass
+  embeds nothing). `concierge_memory_ops_total{kind="backfill"}` proves the
+  job *ran*, not that it *progressed*, and it is not incremented on the
+  early-return paths (`memory_enabled` off, no `embedding_model`,
+  unsupported dimension) — so a flat counter means the job is not running
+  *or* is returning at a gate.

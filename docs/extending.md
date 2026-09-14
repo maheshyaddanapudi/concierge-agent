@@ -47,6 +47,17 @@ class MyCorpAuth:
 - Every per-user store asks `scope_to_user(stmt, Model)` and `owns_row(row)`;
   both are thin façades over your `tenancy_filter` / `may_see`. A rule you
   express once reaches every list and detail endpoint.
+  **Read that boundary literally: list and detail.** A set of run-plane
+  *action* endpoints — HITL resolution, cancel, retry, the run-history
+  purge, the ambient ledger — calls neither façade today and so never
+  reaches your rule, whatever you write in it. They are named individually
+  in [Known gaps](./security.md#known-gaps-run-plane-surfaces-that-do-not-ask-the-port),
+  and closing them is core work, not something a provider can do from
+  outside. If your deployment needs them gated before that lands, gate them
+  at your proxy by path; `authorize(principal, method=, path=)` is the other
+  hook that sees them, and it can refuse a `POST` by path — but it cannot
+  see *which* run is being acted on, so it can enforce "who may cancel", not
+  "whose runs may they cancel".
 - Every memory read goes through `visibility_sql`, which appends your
   `memory_visibility` fragment and binds its parameters.
 - Every SSE surface asks the same rule: the run stream checks `owns_row`

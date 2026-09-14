@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `24e53b6`** (the campaign-fixes build (findings 1, 2, 4)) — **5 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: B — the surface moved underneath; the claim still stands**
+> The two regressions re-verified here (a HITL deny reported as a refusal, the ambient tick leading again after off→on) were not re-opened by the wave, but `factory/worker.py` and the ambient loop both moved under them.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # finding 1 re-verified — 2026-09-10T23:47:45Z — agent site-reporter, model openrouter:qwen/qwen3.8-max
 
 $ POST /chat: Ask the site-reporter sub agent to summarize this: the demo site says 21 and 21 make the answer; publish the summary.

@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `ab07205`** (the third-reading build) — **2 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: B — the surface moved underneath; the claim still stands**
+> The drift path itself barely moved: `toolschema.py` gained four lines (a new `ingest_state` for an operator-disabled server) and the badge, drawer banner, Acknowledge and quarantine surfaces are unchanged. Separately, this directory holds EIGHT frames its transcript does not name — see the orphan-frame section of `../STALENESS.md`.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 35-schema-drift — 2026-09-11T22:52:09.412Z
 [   0.1s] settings ← {"orchestrator_mode":"graph","mcp_schema_change_policy":"warn","overlap_judge_model":null,"overlap_judge_model_params":null}

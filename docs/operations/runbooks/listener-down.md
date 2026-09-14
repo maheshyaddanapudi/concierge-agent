@@ -30,7 +30,7 @@ cache mode, cross-replica coherency down to the TTL.
 |---|---|---|
 | `concierge_listener_connected{channel}` | **1** for all three channels, on every replica | 0 for one or more |
 | `concierge_listener_reconnects_total{channel}` | flat, or a step after a database restart | climbing steadily — a flapping connection, not a clean one |
-| log `listener_connect_failed` | absent | WARNING with `channel`, sanitized `error`, `retry_in_s` (5 s doubling) |
+| log `listener_connect_failed` | absent | WARNING with `channel`, sanitized `error`, `retry_in_s` (**1 s doubling to a 30 s cap** — not the MCP ladder's 5 s/5 min; `SupervisedListener` in `app/listen.py`) |
 | log `listener_lost` | absent | WARNING with `channel` and `retry_in_s` — the connection was up and went away |
 | log `listener_reconnected` | one after a database restart | repeated |
 | log `listener_reconnect_hook_failed` | absent | the reconnect succeeded but the owner's repair (cache dirty-marking, drain wake) raised |

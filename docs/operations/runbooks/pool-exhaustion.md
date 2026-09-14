@@ -53,7 +53,20 @@ Distinguish the three causes:
 - Cause 3: lower `run_max_concurrent` (Settings → API guardrails) so fewer
   runs contend, or raise the budget — `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` in
   `.env` and a rolling deploy (`./deploy.sh`), keeping Postgres
-  `max_connections ≥ replicas × (pool + overflow + 12)` (`../scaling.md`).
+  `max_connections` above what the fleet needs:
+
+  ```
+  needed = DB_REPLICAS × (pool + overflow + 10 + 4) + 10
+  ```
+
+  10 is the LangGraph checkpointer's own psycopg pool and 4 the session
+  connections that sit outside the SQLAlchemy pool (the two supervised
+  LISTENs, the control listener, the leader lease); the trailing 10 is the
+  reserve for migrations, `psql` and the load harness
+  (`CHECKPOINTER_POOL` / `SESSION_CONNECTIONS` / `RESERVED_CONNECTIONS` in
+  `backend/app/db.py`). Do not do this arithmetic by hand — `GET /replicas`
+  → `budget` publishes it, including `fits` and
+  `max_replicas_at_declared`. Sizing guidance: `../scaling.md`.
 
 ## Recovery looks like
 

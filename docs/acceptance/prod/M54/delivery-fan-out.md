@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `0c4011b`** (the M54 horizontal-scale build, captured 2026-09-03) — **13 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: B — the surface moved underneath; the claim still stands**
+> **The oldest evidence in the tree** — captured a week before the campaign build and thirteen source commits before HEAD. The fleet properties it proves (cross-replica cancel, delivery fan-out, the cluster-wide job clock and rate-limit budget, a three-replica cold boot) were not the wave's subject, but every layer beneath them has moved since.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # §14q-92 — a delivery reaches subscribers on every replica
 
 Three `curl -N /ambient/stream` subscribers pinned to the three host ports, then two Chromium pages through the balancer (`browsers.log` section below).

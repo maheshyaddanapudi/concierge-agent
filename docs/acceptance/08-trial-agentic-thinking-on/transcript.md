@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> Same surfaces as stage 06, on the agentic path: `agentic_mode.py`, `ladder.py` and `ChatPage.tsx` all moved under this capture.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 08-trial-agentic-thinking-on — 2026-09-10T03:38:30.619Z
 [   0.0s] settings ← {"orchestrator_mode":"agentic","default_model":"openrouter:qwen/qwen3.8-max","default_model_params":{"effort":"high"}}

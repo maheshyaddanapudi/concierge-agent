@@ -59,11 +59,14 @@ DEFAULTS: dict[str, Any] = {
     "otlp_endpoint": "",
     # registry cache (spec §7.3). `memory` is the shipped default
     # (code_setting_ui_hardening): invalidation is event-driven and
-    # exhaustive — every write path calls invalidate() before returning, and
-    # TTLs are forbidden — so the in-process cache is the mode the design was
-    # built for, while `bypass` re-read the registry from Postgres on every
-    # resolution. `bypass` stays available and remains an instant escape
-    # hatch; it is a live read, not a faster cache.
+    # exhaustive — every write path calls invalidate() before returning — so
+    # the in-process cache is the mode the design was built for, while
+    # `bypass` re-read the registry from Postgres on every resolution.
+    # REGISTRY_CACHE_TTL_S (300 s) is a backstop under that contract, not a
+    # freshness mechanism: it bounds the one case invalidation cannot cover,
+    # a cross-replica NOTIFY that was never delivered. `bypass` stays
+    # available as an instant escape hatch; it is a live read, not a faster
+    # cache.
     "registry_cache_mode": "memory",
     # progressive-disclosure retrieval (spec §7.4) — dark by default
     "retrieval_enabled": False,

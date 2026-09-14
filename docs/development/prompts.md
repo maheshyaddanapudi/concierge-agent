@@ -11,9 +11,9 @@ text = load_prompt("planner")   # reads backend/app/prompts/planner.md, cached, 
 
 ## Golden sets — the regression harness (M49)
 
-Every prompt file has a **golden set** beside it in `backend/app/prompts/golden/<stem>.yaml`, and `python -m app.prompts.check` (`backend/app/prompts/check.py`) renders each prompt exactly the way its consumer does — `format` (`str.format(**vars)`), `replace` (chained `str.replace("{name}", …)`), or `verbatim` — then grades the rendered text with the spec §15 `contains` grader. A golden set names its consumer module (the harness verifies that module really calls `load_prompt("<stem>")`), the placeholders a `replace` consumer substitutes, and one or more cases: the vars to render with, the sentences that must survive (`must_contain`), and optionally the ones that must not (`must_not_contain`, e.g. an escaped `{{}}` that must render as `{}`).
+Every prompt file has a **golden set** beside it in `backend/app/prompts/golden/<stem>.yaml` — 27 prompts, 27 golden sets, 29 cases as of 2026-09-14 (`cd backend && uv run python -m app.prompts.check` prints the three numbers and is the authority) — and `check.py` renders each prompt exactly the way its consumer does — `format` (`str.format(**vars)`), `replace` (chained `str.replace("{name}", …)`), or `verbatim` — then grades the rendered text with the spec §15 `contains` grader. A golden set names its consumer module (the harness verifies that module really calls `load_prompt("<stem>")`), the placeholders a `replace` consumer substitutes, and one or more cases: the vars to render with, the sentences that must survive (`must_contain`), and optionally the ones that must not (`must_not_contain`, e.g. an escaped `{{}}` that must render as `{}`).
 
-What it catches, before a request does: a binding sentence edited out of a prompt (the planner's `no_confident_match` contract, an untrusted-data fence, the ambient abstain protocol); a placeholder renamed in the file while the consumer still passes the old name (`.format` would `KeyError`; `.replace` would silently leave the token in the prompt); a prompt file that no code loads any more. It runs three ways, like doclint: `pytest tests/test_prompt_golden.py`, by hand, and as a Docker build gate (`RUN python -m app.prompts.check` in `backend/Dockerfile`). The golden directory is the authoritative per-prompt index — the catalog below describes the orchestration prompts in prose; the memory, ambient, A2A, eval and salience prompts are documented by their golden sets.
+What it catches, before a request does: a binding sentence edited out of a prompt (the planner's `no_confident_match` contract, an untrusted-data fence, the ambient abstain protocol); a placeholder renamed in the file while the consumer still passes the old name (`.format` would `KeyError`; `.replace` would silently leave the token in the prompt); a prompt file that no code loads any more. It runs three ways, like doclint: `uv run pytest tests/test_prompt_golden.py`, by hand (`uv run python -m app.prompts.check`), and as a Docker build gate (`RUN python -m app.prompts.check` in `backend/Dockerfile`, where the image's interpreter already has the deps). The golden directory is the authoritative per-prompt index — the catalog below describes the orchestration prompts in prose; the memory, ambient, A2A, eval and salience prompts are documented by their golden sets.
 
 ### Fence tokens (M52)
 
@@ -21,17 +21,19 @@ Every prompt that carries untrusted content — a remote agent's output, a fired
 
 ## Catalog
 
+Consumers are given as module paths, not `file:line` — line numbers rot, and the golden set already names each prompt's consumer module and is *checked*: `python -m app.prompts.check` fails if the named module does not call `load_prompt("<stem>")`. `grep -rn 'load_prompt("<stem>")' backend/app` is the exact call site.
+
 | File | Loaded by | When it runs | Template slots |
 |---|---|---|---|
-| `planner.md` | `backend/app/orchestrator/planner.py:145` | Graph-mode plan step, at the start of every graph-mode run | `{task}`, `{history}`, `{sub_agent_cards}`, `{direct_capabilities}`, `{max_plan_steps}` |
-| `concierge.md` | `backend/app/orchestrator/agentic_mode.py:92` | System prompt of the agentic-mode `create_agent` concierge — active for the whole agentic run | none (static) |
-| `aggregator.md` | `backend/app/orchestrator/graph_mode.py:330` | Graph-mode aggregate step, after all dispatches finish — produces the streamed final answer | `{task}`, `{outputs}` |
-| `direct_tool.md` | `backend/app/orchestrator/ladder.py:306` | Rung-1 direct-tool execution: a plan entry resolved to an exposed tool | `{task}` |
-| `router.md` | `backend/app/factory/worker.py:488` | Inside a running worker, whenever a workflow node with multiple conditional edges finishes — picks the edge | `{output}`, `{conditions}` |
-| `tool_guidance.md` | `backend/app/factory/worker.py:279` (`assemble_skill_prompt`) | Appended verbatim as the final section of **every** skill-node system prompt (workers, rung-1 inline loops, ephemeral workers, fallback skill runs) | none (appended, not formatted) |
+| `planner.md` | `backend/app/orchestrator/planner.py` | Graph-mode plan step, at the start of every graph-mode run | `{task}`, `{history}`, `{sub_agent_cards}`, `{direct_capabilities}`, `{max_plan_steps}` |
+| `concierge.md` | `backend/app/orchestrator/agentic_mode.py` | System prompt of the agentic-mode `create_agent` concierge — active for the whole agentic run | none (static) |
+| `aggregator.md` | `backend/app/orchestrator/graph_mode.py` | Graph-mode aggregate step, after all dispatches finish — produces the streamed final answer | `{task}`, `{outputs}` |
+| `direct_tool.md` | `backend/app/orchestrator/ladder.py` | Rung-1 direct-tool execution: a plan entry resolved to an exposed tool | `{task}` |
+| `router.md` | `backend/app/factory/worker.py` | Inside a running worker, whenever a workflow node with multiple conditional edges finishes — picks the edge | `{output}`, `{conditions}` |
+| `tool_guidance.md` | `backend/app/factory/worker.py` (`assemble_skill_prompt`) | Appended verbatim as the final section of **every** skill-node system prompt (workers, rung-1 inline loops, ephemeral workers, fallback skill runs) | none (appended, not formatted) |
 | `formatter.md` | `backend/app/orchestrator/answer_ui.py` | After the final answer text, before the `done` SSE event, when `formatter_enabled` — the formatter role's transformation contract producing the declarative answer UI (M8/M24; it replaced the earlier `answer_ui.md`, removed in M49 once the golden harness showed it had no consumer) | `{task}`, `{answer}`, `{chart_rules}`, `{existing_charts}` (filled with `.replace()` — the body is brace-heavy) |
-| `overlap_judge.md` | `backend/app/overlap.py:120` (`_judge`) | On `POST /skills/check-overlap` and `POST /sub-agents/check-overlap`, i.e. before the UI saves a skill/sub agent draft | `{draft_type}`, `{draft}`, `{candidates}` |
-| `summarize_and_structure.md` | `backend/app/native/tools.py:48` | Inside the `summarize-and-structure` native subgraph tool, whenever a skill loop calls it | `{text}` |
+| `overlap_judge.md` | `backend/app/overlap.py` (`_judge`) | On `POST /skills/check-overlap` and `POST /sub-agents/check-overlap`, i.e. before the UI saves a skill/sub agent draft | `{draft_type}`, `{draft}`, `{candidates}` |
+| `summarize_and_structure.md` | `backend/app/native/tools.py` | Inside the `summarize-and-structure` native subgraph tool, whenever a skill loop calls it | `{text}` |
 
 ## Per-prompt notes
 

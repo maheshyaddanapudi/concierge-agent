@@ -16,7 +16,7 @@ is rows that stay `delivered_at IS NULL` for longer than their tier allows.
 | `concierge_delivery_sends_total{channel,status="retry"}` | occasional | rising; `status="dead"` appearing |
 | `concierge_ambient_ops_total{kind="deliver"}` | increments each tick with work | flat |
 | `concierge_ambient_leader` | 1 somewhere | 0 — no flush without a leader |
-| `GET /api/v1/deliveries/unread-count` | small | large `count` with old `created_at` |
+| `GET /api/v1/deliveries?status=pending` | few `items`, none old | many `items`, oldest `created_at` far behind |
 
 Not a backlog: rows held by **quiet hours**, the **notification budget**
 (`ambient_notification_budget_per_day`) or **pursuit** (`ambient_pursuit`) —
@@ -26,7 +26,11 @@ those are the policy working; the ledger says so.
 
 ```bash
 curl -s http://localhost:8000/metrics | grep -E 'concierge_backlog_depth|concierge_delivery_sends_total|concierge_ambient_leader'
-curl -s 'http://localhost:8000/api/v1/deliveries?pending=true&limit=20'
+# `status` is the filter (all | pending | delivered) — an unknown query
+# param is ignored by FastAPI, so `?pending=true` silently lists everything.
+curl -s 'http://localhost:8000/api/v1/deliveries?status=pending&limit=20'
+# NOT a backlog gauge: /deliveries/unread-count returns {count, attention}
+# over rows that WERE delivered but never opened — the opposite population.
 # the real event names (app/ambient/channels.py): a failed external send is
 # `ambient_channel_failed`, a retry-ladder attempt `ambient_channel_retry`.
 docker compose logs --since 15m backend \

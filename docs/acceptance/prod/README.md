@@ -1,3 +1,16 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> Every drill indexed below was captured between 2026-09-10 and 2026-09-11, on builds `b624908`, `24e53b6`, `58f77e7`, `a4424a9` or `ab07205` — **all of them before HEAD `3891914`, and all of them before the hardening wave `401914a`.**
+>
+> The hardening wave (`401914a`, ~470 findings across 220 files) landed after
+> every capture under `prod/`, and the planned live re-run of this tree
+> **never happened** — the provider account ran out of credit and Docker was
+> lost, so no stack could be built or run. Nothing here has been re-verified.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 # Production-hardening drills — campaign v1 on the dev images
 
 The drills in `experiments/acceptance/prod/` re-run against the `dev`

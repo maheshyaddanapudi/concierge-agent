@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `d186208`** (the M54 horizontal-scale build, captured 2026-09-03) — **12 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> Load numbers measured before `backend/app/limits.py` existed, so the inbound rate limiter — unconditional since the wave — was never met by this run. Its two halves name commits `354974d` (a docs commit over `0c4011b`'s code) and `d186208`.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # §14q-94 — the M49 load scenarios at N=3 against N=1
 
 The harness in `experiments/load/` driven through the balancer (the frontend nginx at :5174, which resolves `backend` per request), fake provider, `run_max_concurrent` as shipped. `GET /replicas` publishes the budget the peak is checked against.

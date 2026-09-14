@@ -12,12 +12,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.api.deps import SessionDep
 from app.auth import current_user_id, owns_row, scope_to_user
 from app.db import get_session_factory
-from app.models import AmbientEvent, AmbientPolicy, Delivery, StandingIntent
+from app.models import AmbientEvent, AmbientPolicy, Delivery, Routine, StandingIntent
 
 deliveries_router = APIRouter(prefix="/deliveries", tags=["ambient"])
 watches_router = APIRouter(prefix="/watches", tags=["ambient"])
@@ -370,6 +370,31 @@ async def ambient_stream() -> Any:
     )
 
 
+def _scope_ledger(query: Any) -> Any:
+    """§18.8 tenancy for the event ledger.
+
+    `ambient_events` carries no `user_id`, so the usual `scope_to_user`
+    filter has nothing to bind to and the ledger returned every user's
+    events — including `verdict_reason` and `decision`, which are model
+    prose about why ANOTHER user's routine fired or was held. Ownership is
+    reached through the routine instead. An event with no routine is a
+    source-level occurrence (an unmatched webhook, a schedule tick) that is
+    attributable to nobody, and stays visible.
+
+    Dark (single-user) behaviour is unchanged: with auth off the provider's
+    filter is None and this returns the query untouched."""
+    # `tenancy_on()` asks the PORT, not the config flag — §20 keeps the auth
+    # switch inside app/auth, and `tests/test_m55_seam.py` enforces it.
+    from app.auth import current_principal, tenancy_on
+
+    if not tenancy_on():
+        return query
+    principal = current_principal()
+    owner = principal.id if principal is not None else None
+    mine = select(Routine.id).where(Routine.user_id == owner)
+    return query.where(or_(AmbientEvent.routine_id.is_(None), AmbientEvent.routine_id.in_(mine)))
+
+
 @ledger_router.get("/ledger")
 async def ledger(
     session: SessionDep,
@@ -392,6 +417,7 @@ async def ledger(
             query = query.where(AmbientEvent.verdict == verdict)
         elif verdict == "pending":
             query = query.where(AmbientEvent.verdict.is_(None))
+    query = _scope_ledger(query)
     rows = list((await session.execute(query)).scalars())
     return {
         "items": [

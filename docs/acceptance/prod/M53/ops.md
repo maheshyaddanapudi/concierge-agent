@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> The spend ceiling this drill exercises now counts background model calls through a new `job_usage` ledger, and retention grew from six tables to nine with six new settings keys.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # M53 ops drill — 2026-09-10T21:14:37Z — model openrouter:qwen/qwen3.8-max
 PATCH /settings → openrouter:qwen/qwen3.8-max ambient True
 warm-up run 991b94fe-63b2-409b-9088-9e24b777e093 → timeout (a completed run for the record-stream check; today's spend for the ceiling)

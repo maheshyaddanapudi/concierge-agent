@@ -46,7 +46,7 @@ The numbers below are the **currently published** run — the §14p-90 drill as 
 | `backup.sh` | 1 s |
 | `restore.sh` — `pg_restore` (schema, data, and every index, pgvector included) | 1 s |
 | `restore.sh` — total RTO (stop → restore → `/ready` 200) | **9 s** |
-| Same answers after restore | row counts identical on every table, all nine pgvector/HNSW indexes present, `GET /conversations/{id}` byte-identical before and after, all three MCP servers back `active`, `/ready` 200 within 1 s of start |
+| Same answers after restore | row counts identical on every table, all **eight** pgvector/HNSW indexes present (one per supported dimension — `EMBEDDING_DIMS` is `(64, 256, 384, 512, 768, 1024, 1536, 3072)`; `memory_embeddings_model_idx` is a ninth index on that table but a plain btree), `GET /conversations/{id}` byte-identical before and after, all three MCP servers back `active`, `/ready` 200 within 1 s of start |
 
 Note the caveat this particular data set carries: `memory_embeddings` was **0**, so the pgvector index rebuild — the part of a restore that grows fastest — was not exercised by this run. The earlier measurement (412 embeddings) is the one that did, and it is why the paragraph below stands.
 
@@ -71,10 +71,13 @@ the number of embeddings and is the part that grows fastest.
 After `restore.sh` reports ready:
 
 ```bash
-curl -s http://localhost:8000/ready                 # {"status":"ready","db":"ok",...}
-curl -s http://localhost:8000/api/v1/mcp-servers    # status active, recent last_connected_at
-curl -s http://localhost:8000/api/v1/runs?limit=3   # the restored history
-curl -s http://localhost:8000/api/v1/settings | head -c 300
+# compose publishes the backend from BACKEND_PORT_RANGE (8000-8010 by
+# default), so ask rather than assume — restore.sh resolves it the same way.
+PORT=$(docker compose port backend 8000 | head -1 | sed 's/.*://')
+curl -s "http://localhost:${PORT}/ready"                 # {"status":"ready","db":"ok",...}
+curl -s "http://localhost:${PORT}/api/v1/mcp-servers"    # status active, recent last_connected_at
+curl -s "http://localhost:${PORT}/api/v1/runs?limit=3"   # the restored history
+curl -s "http://localhost:${PORT}/api/v1/settings" | head -c 300
 ```
 
 A restored stack keeps the settings it was dumped with — including a spend

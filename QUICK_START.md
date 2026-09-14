@@ -23,6 +23,8 @@ What it does (safe to re-run any time — **re-running is how you update**: ever
 - asks whether to provision the **optional Redis cache backend** upfront (whether the app *uses* it stays a runtime Settings decision — the default cache mode never touches Redis)
 - installs local dev dependencies (backend `uv sync`, frontend `npm install`)
 
+**Keys live in `.env`, not in your shell.** `.env` is gitignored, so it is the safe place for them and the only copy compose reads — `docker-compose.yml` passes every provider key through as `${VAR:-}`. A key exported only in a terminal, or typed only into a container, disappears with that terminal or container and takes the run it was serving with it.
+
 A first run looks like this — provider menu, hidden key input, live verification, and the closing configuration summary (key tail redacted here; the deps warnings appear only on machines without local `uv`/`npm`, which Docker-only users can ignore):
 
 ![First run: provider menu, key verified, configuration summary](./docs/assets/quick-start/qs-02-fresh-run.png)
@@ -35,7 +37,9 @@ No keys at all? Option 8 provisions the keyless demo mode:
 
 ![Keyless demo mode via option 8](./docs/assets/quick-start/qs-05-keyless.png)
 
-Only providers with a key appear in the UI's model selects (with their effort options), and **first boot picks the default model from whatever you configured** — Anthropic's Sonnet if its key exists, else Gemini Flash, else GPT-5.6 Luna, else the fake provider. You can re-mix models per role (orchestrator / planner / aggregator / sub agents) in Settings at any time.
+Only providers with a key appear in the UI's model selects (with their effort options), and **first boot picks the default model from whatever you configured**, in this order (`_FLAGSHIPS` in `backend/app/seed/loader.py`): Anthropic's Sonnet → Gemini Flash → GPT-5.6 Luna → **OpenRouter's Qwen 3.8 Max** → the custom gateway's first declared model → the fake provider. An explicitly saved `default_model` is never touched. You can re-mix models per role (orchestrator / planner / aggregator / sub agents) in Settings at any time.
+
+> `./quick-setup.sh --help` still prints the older four-entry chain (anthropic → gemini → gpt → fake). The code above is the authority.
 
 Re-running later to update is the same command — every prompt defaults to "keep what I have" (note the menu pre-selecting the current setup and Enter keeping the existing key):
 
@@ -120,7 +124,7 @@ Dismantles everything: containers, network, **and the data volumes** — registr
 
 ## Optional: Redis cache backend
 
-The registry cache defaults to `bypass` (direct DB reads) and can be flipped live in Settings between `bypass`, `memory`, and `redis` — no restart. To make `redis` selectable:
+The registry cache ships as `memory` (the in-process, event-invalidated cache) and can be flipped live in Settings between `memory`, `bypass` (direct DB reads — the rollback lever) and `redis` — no restart. To make `redis` selectable:
 
 1. provision it (`./quick-setup.sh --redis`, or set `REDIS_URL` in `.env` yourself)
 2. start the profile: `docker compose --profile redis up -d`

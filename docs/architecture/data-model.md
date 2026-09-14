@@ -6,7 +6,7 @@ This page is organised by domain: the ERD below diagrams the **registry + run co
 
 ## Migration chain
 
-29 migrations, one linear chain, run automatically at startup under the boot lock:
+30 migrations, one linear chain (`<base> → ebf05a862e33 → … → x3l4m5n6o7p8`, the current head), run automatically at startup under the boot lock:
 
 | # | Migration | What it added |
 |---|---|---|
@@ -34,11 +34,12 @@ This page is organised by domain: the ERD below diagrams the **registry + run co
 | 22 | `p5d6e7f8a9b0_tombstone_token_hashes` | the distinctive-token hashes for the M44 hybrid gate |
 | 23 | `q6e7f8a9b0c1_hot_path_indexes` | the five missing hot-path indexes (M50) |
 | 24 | `r7f8a9b0c1d2_tool_ingest_state` | `tools.ingest_state` — re-ingest preserves operator intent (M53) |
-| 25 | `s8g9h0i1j2k3_m54_scale` | `replicas`, `job_clock`, `rate_buckets`, `job_usage`, `runs.owner_replica` / `cancel_requested_at`, the typed per-dimension embedding columns and their HNSW indexes (§18.9, M54) |
+| 25 | `s8g9h0i1j2k3_m54_scale` | `replicas`, `job_clock`, `rate_buckets`, `runs.owner_replica` / `cancel_requested_at`, the `tools_server_tool_uq` idempotent-ingest index, the typed per-dimension embedding columns and their HNSW indexes (§18.9, M54) |
 | 26 | `t9h0i1j2k3l4_m54_memory_fk_indexes` | indexes on the self-referencing foreign keys in `memories` |
 | 27 | `u0i1j2k3l4m5_tool_schema_fingerprint` | `tools.schema_hash` / `schema_version` / `schema_changed_at`, `run_steps.entity_version` / `entity_hash` (§3.2, §3.6) |
 | 28 | `v1j2k3l4m5n6_hardening_wave` | definition fingerprints and versions on the registries, `run_steps.entity_name` / `model_params`, `runs.cost_usd` / `cost_priced` / `price_snapshot`, the MCP config hash, the proposal `origin` |
 | 29 | `w2k3l4m5n6o7_third_reading` | two backfills the hardening-wave migration left out (pre-`origin` proposals stamped `mined`; description fingerprints re-trimmed) |
+| 30 | `x3l4m5n6o7p8_hardening_wave_two` | **head.** Operator intent (`mcp_servers.disabled_at`, `remote_agents.disabled_at`, backfilled for rows that had connected at least once); the out-of-run spend ledger `job_usage`; `eval_datasets.allow_hitl_autoapprove` (default FALSE — the eval harness no longer auto-clears gates unless a dataset opts in); and the index sweep — the partial-unique `tools_agent_skill_uq`, a 19-entry `create_index` list (17 previously unindexed foreign keys, the composite `ambient_events_routine_recent_idx` the per-routine hourly cap counts, and `job_usage_at_idx`), plus `text_pattern_ops` indexes on the three LangGraph checkpoint tables — raw DDL guarded by `to_regclass`, since the saver owns those tables and may not have created them yet, and `thread_id LIKE '<run>:%'` cannot use a normal index under a non-C collation |
 
 ## Entity-relationship diagram — the registry and run core
 
@@ -84,7 +85,7 @@ erDiagram
         varchar schema_hash "3.2 drift fingerprint"
         int schema_version
         timestamptz schema_changed_at "null once acknowledged"
-        varchar ingest_state "present, missing, changed, agentoff"
+        varchar ingest_state "present, missing, changed, agentoff, srvroff"
         jsonb embedding "retrieval vector"
         varchar embedding_hash
         timestamptz created_at
@@ -237,7 +238,7 @@ All five registry tables inherit the abstract `RegistryRecord` base (`backend/ap
 - **`source`** is `static` or `dynamic`. Static rows are seeded from code (`backend/app/seed/loader.py`); the API rejects definition writes to them — only `status` and `direct_exposure` are togglable (spec §4). Dynamic rows are user-created and fully editable.
 - **`status`** is `active | inactive | error`. Only `active` rows are surfaced to the run path (the `RegistryCache` typed reads filter on it).
 - **`direct_exposure`** (on `tools`, `skills` and `sub_agents`) gates what the orchestrator sees in "exposed" mode and which sub agents may be invoked directly (§7.5); the full-catalog fallback ignores the flag on tools and skills.
-- **`tools.tool_key`** is the one **unique** registry constraint (`ix_tools_tool_key`, unique index). It is the stable LLM-facing identity; `sanitize_tool_name(tool_key)` becomes the bound tool name. `kind` discriminates `mcp` (has `mcp_server_id`), `native` (has `native_ref`) and `a2a` (has `remote_agent_id`, projected from a card skill). `input_schema` (jsonb) holds the JSON Schema for tool arguments, and `schema_hash`/`schema_version`/`schema_changed_at` carry the §3.2 drift fingerprint. `ingest_state` records why a tool is out of service (`present` · `missing` · `changed` · `agentoff`) so a re-ingest never silently undoes an operator's decision.
+- **`tools.tool_key`** is the registry's one unconditional **unique** constraint (`ix_tools_tool_key`). It is the stable LLM-facing identity; `sanitize_tool_name(tool_key)` becomes the bound tool name. The `tools` table carries two further unique indexes, both **partial**, both there to make ingest idempotent under concurrent refreshes: `tools_server_tool_uq` on `(mcp_server_id, tool_name) WHERE mcp_server_id IS NOT NULL` (migration 25) and `tools_agent_skill_uq` on `(remote_agent_id, tool_name) WHERE remote_agent_id IS NOT NULL` (migration 30, which deduplicated existing rows before creating it). No other registry table has a unique constraint beyond its primary key. `kind` discriminates `mcp` (has `mcp_server_id`), `native` (has `native_ref`) and `a2a` (has `remote_agent_id`, projected from a card skill). `input_schema` (jsonb) holds the JSON Schema for tool arguments, and `schema_hash`/`schema_version`/`schema_changed_at` carry the §3.2 drift fingerprint. `ingest_state` (varchar 8, nullable) records why a tool is out of service so a re-ingest never silently undoes an operator's decision: `present` · `missing` · `changed` (the §3.2 schema-drift quarantine, `QUARANTINED`) · `agentoff` (`AGENT_INACTIVE` — its remote agent was disabled) · `srvroff` (`SERVER_INACTIVE` — its MCP server was disabled). The constants are in `backend/app/toolschema.py`; the column is 8 characters wide, which is why the last two are spelled as they are.
 - **`skills`** carry the prompt material (`persona`, `instructions`), an optional per-skill `model`/`model_params` override (null inherits from the invoking sub-agent, then settings defaults), a nullable `max_tool_iterations` loop-budget override, and the §3.6 `definition_hash`/`definition_version` a run pins. `origin` (`human` | `mined`) marks a §16.5 mined proposal, which must be judged before it can be activated. Bound tools live in the `skill_tools` join table; binding is availability — a skill loop sees exactly its bound tools.
 - **`sub_agents.workflow`** (jsonb) is the workflow DAG: `{"nodes": [...], "edges": [...]}` with node types `skill` and `hitl`, validated at save by `backend/app/factory/dag.py` and compile-checked by the worker factory. `covers_skill_ids` (jsonb array) supports rung-3 resolution precedence; `sub_agent_skills` is maintained from the distinct skill ids in the DAG. `native_ref` points at a code-registered graph builder for `kind = 'native'` agents.
 - The join tables `skill_tools` and `sub_agent_skills` have composite primary keys and plain FKs (no `ON DELETE CASCADE` — deletes are soft, and the API blocks deleting a skill with dependents with a 409).
@@ -252,11 +253,11 @@ An `mcp_servers` row is a connection definition plus health state. `transport` s
 
 - `conversations` groups `runs` (multi-turn chat); it carries a title, the owning `user_id` when auth is on, and an optional `project_key` that scopes §16.3 project memories.
 - `runs` is one orchestrated request. `plan` (jsonb) stores the planner output; `snapshot` (jsonb) freezes the dispatched configuration — the sub-agent header and workflow DAG, embedded skill snapshots, the `settings` and `prompts` hashes, the planner's `context` surface, `catalog_calls`, and the pinned registry records with their versions — so a trace is readable against the registry as it *was*. `answer_ui` (jsonb) stores the formatter's artifact, `charts` the `render_chart` specs, and `cost_usd`/`cost_priced`/`price_snapshot` the cost stamped at finish with the prices it was computed from (a later price change never rewrites history). Token totals aggregate from steps.
-  **`status` is one of `queued | running | paused_hitl | completed | failed | cancelled | stalled`.** `queued` (M51) is a first-class row: admission is full and the run is waiting for a slot. `stalled` (§17.4) is what the heartbeat reaper writes when a run's task goes silent — routed through the same finalisation as every other terminal status, so its steps close, it is priced, and its stream ends.
+  **`status` is one of `queued | running | paused_hitl | completed | failed | cancelled | stalled`.** `queued` (M51) is a first-class row: admission is full and the run is waiting for a slot. `stalled` (§17.4) is what the heartbeat reaper writes when a run's task goes silent — routed through the same `_finalize_failure` as every other terminal status, so its still-`running` steps are closed, it is priced, and a `run_status: stalled` event is emitted. (The SSE layer does not yet treat it as stream-terminal; see the known gap in [api/sse-events.md](../api/sse-events.md).)
   **`orchestrator_mode` is `graph | agentic | direct`.** `owner_replica` names the process executing the run and `cancel_requested_at` is the persisted cancel intent any replica may write (§18.9) — no process ever writes a status it did not cause.
-- `run_steps` is the trace tree: `parent_step_id` self-references for nesting (a `tool_call` under a `skill` step, a native-subgraph step under its tool call). **`step_type` is one of `plan | route | skill | hitl | tool_call | aggregate | format | summary`** — `format` is the formatter's own call (counted once) and `summary` the §7.5 history-summary call. `entity_version`/`entity_hash`/`entity_name`/`model_params` pin what the step ran against (§3.6). `run_id` is the **only FK in the schema with `ON DELETE CASCADE`** — deleting a run removes its steps. `sub_agent_id` is a bare uuid column with no FK constraint, so traces survive registry deletion. `input`/`output` are jsonb payloads (tool args, truncated results, route decisions).
+- `run_steps` is the trace tree: `parent_step_id` self-references for nesting (a `tool_call` under a `skill` step, a native-subgraph step under its tool call). **`step_type` is one of `plan | route | skill | hitl | tool_call | aggregate | format | summary`** — `format` is the formatter's own call (counted once) and `summary` the §7.5 history-summary call. `entity_version`/`entity_hash`/`entity_name`/`model_params` pin what the step ran against (§3.6). `run_id` is the **only cascading FK among the ten core tables diagrammed above** — deleting a run removes its steps, while `runs.conversation_id` does not cascade. (Schema-wide the count is higher: the later domains added 15 `ON DELETE CASCADE` FKs in all, plus 8 `ON DELETE SET NULL` ones — the latter is how `memories`, `deliveries`, `a2a_tasks`, `eval_results` and `ambient_*` keep their rows when the run or routine that produced them is deleted.) `sub_agent_id` is a bare uuid column with no FK constraint, so traces survive registry deletion. `input`/`output` are jsonb payloads (tool args, truncated results, route decisions).
 
-## Memory (§16) — 11 tables
+## Memory (§16) — 10 tables
 
 | Table | What it holds |
 |---|---|
@@ -270,7 +271,8 @@ An `mcp_servers` row is a connection definition plus health state. `transport` s
 | `conversation_rollups` | L1 rolling per-conversation summary |
 | `plan_exemplars` | L3 procedural: a positively-signaled plan keyed by task text, with the reuse-vote lifecycle |
 | `routing_stats` | L3 per-capability outcome statistics, consolidation-refreshed |
-| `job_usage` | model tokens spent by work that is **not** a run (judges, digests, reflection, community summaries, extraction, embeddings) — the §3.7 cost model's other half |
+
+(The other half of the §3.7 cost model — the tokens these background jobs spend — is `job_usage`, listed with the cluster tables below; it lives in `backend/app/models/cluster.py`, not with the memory models.)
 
 ## Ambient (§17/§18) — 8 tables
 
@@ -285,7 +287,7 @@ An `mcp_servers` row is a connection definition plus health state. `transport` s
 | `ambient_policies` | the append-only category policy ledger — the latest row per category wins, every learner change is reversible from it |
 | `user_presence` | the presence snapshot the pursuit oracle reads |
 
-## Evals (§15), auth (§18.8/§20) and the cluster (§18.9) — 11 tables
+## Evals (§15), auth (§18.8/§20) and the cluster (§18.9) — 10 tables
 
 | Table | What it holds |
 |---|---|
@@ -295,6 +297,9 @@ An `mcp_servers` row is a connection definition plus health state. `transport` s
 | `replicas` | one row per live process, refreshed every heartbeat; `GET /replicas` serves it |
 | `job_clock` | `last_run_at` per periodic job — the interval is a cluster property, so a restart re-runs nothing |
 | `rate_buckets` | the §18.8 token bucket shared by every replica; idle keys evicted hourly |
+| `job_usage` | one row per model call made **outside** a run — the overlap/significance/salience judges, anticipation, run digests, reflection, community summaries, extraction, embeddings — priced when it happens exactly as a run is, so the §3.7 spend ceiling covers the background work too (migration 30) |
+
+Together with the ten core tables of the ERD, the two A2A tables, the ten memory tables and the eight ambient tables, that is the **40**.
 
 ## Settings: `app_settings`
 
@@ -305,7 +310,7 @@ A key-value store read live at runtime (spec §3.7): `key` (varchar 64) is the p
 Two different mechanisms, for two different jobs:
 
 - **Registry retrieval (§7.4)** — migration `f31a9c04e7d1` added `embedding` (jsonb array of floats) and `embedding_hash` to `tools`, `skills` and `sub_agents`. They are maintained best-effort on the write path (`schedule_embedding` in `backend/app/retrieval.py`) and backfilled at startup by `backfill_embeddings()`. `embedding_hash` is a SHA-256 of `"{model}:{embed_text}"`, so re-embedding is skipped when neither the record text nor the embedding model changed. Cosine scoring for ranking happens **in-process over the cache snapshot** — a registry is at most a few hundred rows, so there is no index and no per-call query.
-- **Memory recall (§16.1)** — `memory_embeddings` is a real pgvector table. The vector lives in **one typed column per supported dimension** (`emb_64` … `emb_3072`, `halfvec` above pgvector's 2000-dim index ceiling), chosen from the model key's `@dims` suffix, and **each column carries a real HNSW cosine index** (migration `s8g9h0i1j2k3`). Several dimensions coexist under different `model_key`s, which is what makes the §16.1 zero-downtime embedding-model switch true: the backfill job (`app/memory/lifecycle.embedding_backfill`) fills the active key's column in the background and recall flips by querying it. Rows whose dimension has no column are lexical-only.
+- **Memory recall (§16.1)** — `memory_embeddings` is a real pgvector table. The vector lives in **one typed column per supported dimension** — eight of them: `emb_64`, `emb_256`, `emb_384`, `emb_512`, `emb_768`, `emb_1024`, `emb_1536` as `vector(n)`, and `emb_3072` as `halfvec(3072)` because pgvector indexes `vector` only to 2000 dimensions and `halfvec` to 4000 — chosen from the model key's `@dims` suffix. **Each of the eight carries a real HNSW cosine index** (`memory_embeddings_emb_<n>_hnsw`, `vector_cosine_ops` / `halfvec_cosine_ops` for the 3072 column), created by migration `s8g9h0i1j2k3`. The primary key is the composite `(ref_id, table_ref, model_key)`. Several dimensions coexist under different `model_key`s, which is what makes the §16.1 zero-downtime embedding-model switch true: the backfill job (`app/memory/lifecycle.embedding_backfill`) fills the active key's column in the background and recall flips by querying it. Rows whose dimension has no column are lexical-only.
 
 ## LangGraph checkpoint tables
 

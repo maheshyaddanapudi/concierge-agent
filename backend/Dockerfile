@@ -153,4 +153,13 @@ EXPOSE 8000
 # stop_grace_period of 40 s, so the drain always gets its window before the
 # kill. Send SIGUSR1 first (deploy.sh does) to flip readiness while the port
 # is still open. Port 8000 is above 1024, so binding it needs no privilege.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]
+# --proxy-headers + --forwarded-allow-ips: honour X-Forwarded-For/-Proto from
+# the frontend's nginx (which now sets them), so `request.client.host` is the
+# CALLER's address rather than the proxy's. The inbound rate limiter keys on
+# that, and without this every browser shared one bucket. The allow-list is
+# the compose network's private ranges — trusting the header from an
+# arbitrary source would let a caller forge its own identity and evade the
+# limit entirely, which is worse than one shared bucket.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--timeout-graceful-shutdown", "5", \
+     "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"]

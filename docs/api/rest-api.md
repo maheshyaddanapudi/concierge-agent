@@ -1,6 +1,6 @@
 # REST API Reference
 
-The Concierge Agent backend is a single FastAPI process. All application routers are mounted under the **`/api/v1`** prefix (`backend/app/main.py`, `backend/app/api/__init__.py`): **86 paths, 115 operations** across 20 mounted routers (17 modules — `ambient.py` contributes three and `routines.py` two). Three operational endpoints — `/health`, `/ready` and `/metrics` — live at the application root, *outside* `/api/v1`.
+The Concierge Agent backend is a single FastAPI process. All application routers are mounted under the **`/api/v1`** prefix (`backend/app/main.py`, `backend/app/api/__init__.py`): **89 paths, 118 operations** across 20 mounted routers (17 modules — `ambient.py` contributes three and `routines.py` two). Three operational endpoints — `/health`, `/ready` and `/metrics` — live at the application root, *outside* `/api/v1`.
 
 The authority is the running process: `GET /openapi.json` (or `/docs`) enumerates every path this page describes. If the two ever disagree, the OpenAPI document is right and this page is stale.
 
@@ -26,7 +26,7 @@ Related documents: [SSE event stream](sse-events.md) · [Workflow DSL](workflow-
 | 404 | Record not found or soft-deleted. Also returned by the `/_fake/*` endpoints when `FAKE_LLM_ENABLED` is not set (the router hides itself). |
 | 409 | Conflict: HITL decision posted to a run that is not `paused_hitl`; cancel/retry of a run in the wrong state; delete of a `running` run; delete of a tool/skill/MCP server that other records still bind; `tool_key` collision on tool PATCH. |
 | 422 | Validation: Pydantic request-shape errors; empty chat message; unknown/inactive `tool_ids` on skill save; `{tool:...}` mention of an unbound tool; invalid `model`/`model_params` selection; workflow DAG validation and compile failures ([workflow-dsl.md](workflow-dsl.md)); settings validation — including `registry_cache_mode: "redis"` without `REDIS_URL` set in the environment (`backend/app/settings_store.py`); unknown registry name on `POST /cache/refresh/{registry}`. |
-| 401 | Auth is on and the request carries no valid bearer session (`AuthMiddleware`, exempt: `/health`, `/metrics`, `/ready`, `/auth/login`, and the token-authenticated routine fire). |
+| 401 | Auth is on and the request carries no valid bearer session. `AuthMiddleware` guards only paths under `/api/v1`, and exempts exactly two of them: `POST /auth/login` and `POST /routines/{id}/fire` (the fire token *is* its auth). The root endpoints `/health`, `/ready` and `/metrics` are never guarded because they are outside the prefix, not because they are listed. |
 | 403 | Also: a non-admin principal attempting a registry or settings write when auth is on. |
 | 413 | Request body over `MAX_REQUEST_BYTES`, or an upload over `MAX_UPLOAD_BYTES` / `MAX_EVAL_ROWS`. |
 | 429 | Rate limit (`rate_limit_burst` / `rate_limit_per_s`) or the spend ceiling; both carry `Retry-After`. |
@@ -164,7 +164,7 @@ Dark unless `AUTH_ENABLED=true`: with auth off, `POST /auth/login` returns **409
 | `GET /auth/users` | List identities (admin). | 401; 403 non-admin |
 | `POST /auth/users` | Create an identity (201, admin). | 401; 403 non-admin |
 
-`AuthMiddleware` covers everything under `/api/v1` with four exemptions: `/auth/login`, `/health`, `/metrics`, `/ready`, and `POST /routines/{id}/fire` when it carries a valid fire token (the token **is** the auth). `GET /chat/stream/{id}` and `GET /ambient/stream` additionally accept `?token=`, because `EventSource` cannot set headers.
+`AuthMiddleware` (`backend/app/auth/__init__.py`) guards **only paths that start with `/api/v1`**, and within that prefix it exempts exactly **two**, by the regex `^/api/v1/(auth/login$|routines/[0-9a-f-]+/fire$)`: `POST /auth/login`, and `POST /routines/{id}/fire`, where the fire token **is** the auth. The root endpoints `/health`, `/ready` and `/metrics` need no exemption — they are outside the prefix the middleware inspects. With `AUTH_ENABLED` off the middleware short-circuits before any check, so the unauthenticated deployment is byte-identical. `GET /chat/stream/{id}` and `GET /ambient/stream` additionally accept `?token=`, because `EventSource` cannot set headers.
 
 ## Memories router — `backend/app/api/memories.py` (prefix `/memories`, §16)
 
@@ -292,7 +292,7 @@ Demo/testing only. Every endpoint returns **404** unless the `FAKE_LLM_ENABLED` 
 |---|---|
 | `GET /health` | **Liveness only**: `{"status": "ok"}`. Never probes a dependency — a replica whose database is away must not be killed for it, only taken out of rotation. |
 | `GET /ready` | **Readiness** (M51/M53): 200 `{status: "ok", db: "ok", ...}` when this replica can serve; **503** `draining` while the SIGUSR1/SIGTERM drain is running, and 503 `degraded` when the database does not answer within the probe budget. This is the endpoint a balancer and `deploy.sh` poll. |
-| `GET /metrics` | Prometheus metrics — 45 series (runs/steps/tokens/errors, LLM latency and outcome by provider/model, pool saturation, in-flight runs, backlog depth, loop errors, MCP and listener state, spend, retention; `backend/app/obs.py`), `text/plain; version=0.0.4`. |
+| `GET /metrics` | Prometheus metrics — **45 metric families** declared in `backend/app/obs.py` (runs/steps/tokens/errors, LLM latency and outcome by provider/model, pool saturation, in-flight runs, backlog depth, loop errors, MCP and listener state, spend, retention). The number of exported *series* is higher and varies, since most families are labelled. `text/plain; version=0.0.4`. |
 
 
 ### Fleet (M54)

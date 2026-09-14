@@ -33,7 +33,7 @@ except where a backfill is explicitly described below.
    datasets are created at the new default: a batch that reaches a gate now
    refuses it rather than clearing it, and says so on the run.
 
-4. INDEXES — nineteen foreign keys that every query and every cascading
+4. INDEXES — seventeen foreign keys that every query and every cascading
    delete walked with a sequential scan, plus a partial index for the
    per-routine hourly event cap, plus `text_pattern_ops` indexes for the
    per-run checkpoint purge's `thread_id LIKE '<run>:%'` (which cannot use a

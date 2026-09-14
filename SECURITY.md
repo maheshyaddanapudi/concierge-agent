@@ -30,7 +30,10 @@ advisory is published when the fix ships.
   it and add your provider. Reports that the **seam** lets a provider's rule
   be bypassed — a surface that does not ask the port — are in scope and
   taken seriously; that class of defect is exactly what the M55 drill found
-  and fixed.
+  and fixed. Already known, already written down, and therefore **not** a
+  new report: the run-plane action endpoints listed under *Known gaps* in
+  `docs/security.md` (HITL resolution, cancel, retry, the run-history purge,
+  the ambient ledger) check no ownership. A surface not on that list is.
 - **Multi-tenancy beyond the seam.** Rows carry one nullable owner; richer
   tenancy is a provider's filter.
 - **MCP servers and remote agents you register.** A stdio server is a
@@ -42,9 +45,23 @@ advisory is published when the fix ships.
 
 ## Secrets
 
-Provider keys, session tokens and passwords are environment-only — never in
-the database, never in the UI, never in logs (`docs/security.md`, the M52
-sanitiser). If you find one anywhere else, that is a vulnerability.
+**Provider keys are environment-only** — never in the database, never in the
+UI, never in logs (`docs/security.md`, the M52 sanitiser). If you find one
+anywhere else, that is a vulnerability.
+
+Session tokens and passwords are a different rule, not the same one:
+passwords are scrypt hashes and bearer sessions are SHA-256 hashes, both in
+Postgres (`users`, `auth_sessions`) — the plaintext is never stored. A
+report that either is recoverable from what is stored, or that one appears
+in a log, an API response or an error, is in scope.
+
+MCP and A2A credentials are write-only columns: reads return `***`, and an
+`env:VAR_NAME` value resolves from the environment at connect time. Stored
+literally they are plaintext at rest, which is documented, not a finding.
+One known leak **is** a finding and is already recorded in
+`docs/security.md`: `AMBIENT_WEBHOOK_URL` is outside the sanitiser's
+known-values list, so a webhook token carried in the URL path can reach the
+delivery ledger.
 
 ## Supported versions
 

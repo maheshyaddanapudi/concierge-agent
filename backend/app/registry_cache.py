@@ -4,8 +4,10 @@ Every registry and settings read in the run path goes through the singleton
 ``RegistryCache``. Its storage backend is selected live by the
 ``registry_cache_mode`` setting:
 
-- ``bypass`` (default) — stateless: every read executes the same Postgres
-  queries the consumers ran before this layer existed.
+- ``bypass`` — stateless: every read executes the same Postgres queries the
+  consumers ran before this layer existed. It is the rollback lever, and a
+  live read rather than a faster cache. It was the shipped default until
+  code_setting_ui_hardening; ``memory`` is now.
 - ``memory`` — per-process store with per-registry generation counters and
   reload-on-dirty: ``invalidate()`` marks a registry stale, the next read
   reloads it wholesale (registries are small; full reload can never leave a

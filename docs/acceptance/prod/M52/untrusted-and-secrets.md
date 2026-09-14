@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: B — the surface moved underneath; the claim still stands**
+> `egress.py` moved only slightly; the fence and secret-masking behaviour this drill proves was not the wave's subject. `main.py` (+77) now also bounds request bodies and stops a validation error echoing the request.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # M52 untrusted + secrets drill — 2026-09-10T20:46:35Z
 
 $ backend env: EGRESS_POLICY / EGRESS_ALLOW_HOSTS / EGRESS_MAX_BYTES (unset → public, none, 5 MiB)

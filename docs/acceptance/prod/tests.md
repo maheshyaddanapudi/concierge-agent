@@ -1,3 +1,16 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> This suite ran on **`b624908`'s code**. The page names commit `17acdc1`, a documentation-only commit sitting between `b624908` and `24e53b6` with no source change in between — so the numbers here (1068 passed, 1 skipped) describe the campaign build, **6 source commits behind HEAD**.
+>
+> The hardening wave (`401914a`, ~470 findings across 220 files) landed after
+> every capture under `prod/`, and the planned live re-run of this tree
+> **never happened** — the provider account ran out of credit and Docker was
+> lost, so no stack could be built or run. Nothing here has been re-verified.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 # Backend test suite — 2026-09-10T22:38:18Z — commit 17acdc1 — fake provider, test db pgvector 0.8.6-pg16
 
 ```

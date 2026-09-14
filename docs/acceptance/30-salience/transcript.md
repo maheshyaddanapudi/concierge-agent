@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: B — the surface moved underneath; the claim still stands**
+> `delivery_salience.md`, the judge's own prompt, was NOT touched, and `salience.py` changed only to ledger the judge's spend and check the ceiling — a no-op below the ceiling. The verdicts recorded here remain representative.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 30-salience — 2026-09-10T19:48:41.042Z
 [   0.0s] settings ← {"ambient_enabled":true,"ambient_tick_interval_s":15,"ambient_quiet_hours":[],"ambient_salience_mode":"auto","ambient_salience_min_urgency":3,"ambient_salience_learning":"off","ambient_pursuit":"off","ambient_channels":{}}

@@ -12,8 +12,8 @@ Context / Decision / Consequences structure.
 | [0003](./0003-middleware-precedence.md) | Middleware precedence — out-of-box first, custom last | Accepted | 2026-08-05 |
 | [0004](./0004-registry-cache-bypass-default.md) | RegistryCache facade with bypass as the shipped default | **Accepted, default amended** (the shipped default is now `memory`; `bypass` stays the rollback lever — see the amendment in the record) | 2026-08-06 |
 | [0005](./0005-hybrid-retrieval-bm25-rrf.md) | Hybrid BM25 + cosine retrieval with RRF, dark by default | Accepted | 2026-08-06 |
-| [0006](./0006-jsonb-embeddings-before-pgvector.md) | JSONB embedding storage before pgvector | Accepted | 2026-08-07 |
+| [0006](./0006-jsonb-embeddings-before-pgvector.md) | JSONB embedding storage before pgvector | **Accepted, addendum** (still in force for the registry vectors; pgvector is now installed and used by the §16 memory layer — see the addendum) | 2026-08-07 |
 | [0007](./0007-openai-responses-api-routing.md) | Route OpenAI reasoning-effort runs through the Responses API | Accepted | 2026-08-07 |
 | [0008](./0008-listen-notify-cross-replica.md) | Postgres LISTEN/NOTIFY for cross-replica cache invalidation | Accepted | 2026-08-07 |
 | [0009](./0009-skills-as-markdown.md) | Skills as markdown documents — one format, two homes | Accepted | 2026-08-04 |
-| [0010](./0010-two-orchestrator-modes.md) | Two orchestrator modes, side by side and runtime-switchable | Accepted | 2026-08-05 |
+| [0010](./0010-two-orchestrator-modes.md) | Two orchestrator modes, side by side and runtime-switchable | **Accepted, addendum** (the setting is still `graph`\|`agentic`; `direct` was later added as a third *recorded* `Run.orchestrator_mode` — see the addendum) | 2026-08-05 |

@@ -223,6 +223,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
             passthrough: Response = await call_next(request)
             return passthrough
         path = request.url.path
+        # A CORS preflight carries no credentials by definition — the browser
+        # strips them — so guarding OPTIONS 401s the preflight and the real
+        # request is never sent. That made a cross-origin admin UI impossible
+        # under exactly the configuration the hardening checklist recommends
+        # (auth on + FRONTEND_ORIGIN pinned). CORSMiddleware sits inside this
+        # one and answers the preflight itself; a preflight reveals nothing
+        # beyond which methods and headers an endpoint accepts.
+        if request.method == "OPTIONS":
+            set_current_user(None)
+            preflight: Response = await call_next(request)
+            return _harden(preflight)
         if not path.startswith("/api/v1") or _EXEMPT.match(path):
             set_current_user(None)
             response: Response = await call_next(request)

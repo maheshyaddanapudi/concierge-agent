@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `ab07205`** (the third-reading build) — **2 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> `hardening-wave.md` was captured on the round-two build and `third-reading.md` on the third-reading build. Both predate the wave, which changed the pinned-snapshot contents these drills read back — HEAD ships 27 prompt files where these pages record 24.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # hardening wave — 2026-09-11T22:32:05Z — model openrouter:qwen/qwen3.8-max
 
 $ settings ← formatter on, evals on, a price override for the live model

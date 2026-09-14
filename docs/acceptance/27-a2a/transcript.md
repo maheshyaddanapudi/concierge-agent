@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `ab07205`** (the third-reading build) — **2 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> `32-card-drift-new-skill.png` and `33-drift-tool-projected.png` sit on the card-refresh path the wave changed twice: operator-disable intent (`disabled_at`) is now honoured by refresh, and a new unique index stops two overlapping refreshes from double-inserting an agent's tools.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 27-a2a — 2026-09-11T22:57:10.878Z
 [   0.1s] settings ← {"orchestrator_mode":"graph","default_model_params":null,"a2a_enabled":false,"ambient_enabled":true}

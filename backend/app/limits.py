@@ -16,8 +16,16 @@ Two things, both unconditional:
   runs always, keyed on the caller's address; when auth is on, the
   per-principal bucket still applies on top of it.
 
-Both are env configuration (`MAX_REQUEST_BYTES`, `RATE_LIMIT_*` settings for
-the shape), not something the API can raise about itself mid-flight.
+The two are configured differently, and the difference matters:
+
+- The **body cap** is env-only (`MAX_REQUEST_BYTES`, `MAX_UPLOAD_BYTES`) and
+  genuinely cannot be raised through the API.
+- The **rate limit's shape** is not. `rate_limit_burst` / `rate_limit_per_s`
+  are live settings read per request, so a caller who can PATCH `/settings`
+  can widen the limit that governs them. With auth ON that is an admin
+  action; with auth dark — the shipped default — every endpoint is open
+  anyway, so the limiter bounds accident and load, not a determined caller.
+  Treat it as a stability control, not an access control.
 """
 
 from __future__ import annotations

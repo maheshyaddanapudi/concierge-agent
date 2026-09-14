@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> The trials photograph plan card, live rails, gate, answer and trace — the surfaces the wave rewrote: `ChatPage.tsx`'s event fold and gate consumption, `graph_mode` / `agentic_mode` / `planner` / `recorder` / `ladder`, and the `planner`, `router` and `concierge` prompts.
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 06-trial-graph-thinking-on — 2026-09-10T03:35:22.446Z
 [   0.1s] settings ← {"orchestrator_mode":"graph","default_model":"openrouter:qwen/qwen3.8-max","default_model_params":{"effort":"high"}}

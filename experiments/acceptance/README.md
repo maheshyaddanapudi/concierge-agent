@@ -1,5 +1,28 @@
 # Acceptance drivers (spec §14)
 
+> **The drivers described here are current. The evidence they produced is not.**
+> Every page under `docs/acceptance/` was captured before the hardening wave
+> (`401914a`) landed, and the planned live re-run never happened — the provider
+> account ran out of credit and Docker was lost. See
+> [`../../docs/acceptance/STALENESS.md`](../../docs/acceptance/STALENESS.md).
+>
+> Two differences between these drivers and the ones that produced the
+> published tree matter when reading it:
+>
+> - **The assertion helpers below did not exist yet.** `expect`, `expectStatus`,
+>   `expectHttp`, `expectVisible` and `expectStep` entered `lib.mjs` in
+>   `401914a`. Not one of the 37 published transcripts contains an `ok — …`
+>   line, because the drivers that wrote them had nothing to assert with
+>   (`grep -rl "ok — " --include=transcript.md docs/acceptance/` returns
+>   nothing). The published stages were judged by a human reading frames, not
+>   by the drivers. The `zz-failure.png` publish gate is older and did exist,
+>   but it only fires on an uncaught throw — and before these helpers, almost
+>   nothing threw on a wrong outcome.
+> - **`stageStart()` now clears the capture directory.** It used to create and
+>   never empty it, which is why `docs/acceptance/35-schema-drift/` holds eight
+>   frames its transcript does not name. That fix also landed in `401914a` and
+>   **has never been exercised**, since no stage has been run since.
+
 Click-driven Playwright stages and shell drills that produce the evidence under
 `docs/acceptance/`. Nothing here reads a provider key or knows about a
 deployment: the stack's own environment does, and every script is

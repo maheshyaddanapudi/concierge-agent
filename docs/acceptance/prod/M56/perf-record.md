@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `ab07205`** (the third-reading build) — **2 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> The §14 ceremony end to end: it crosses the prompts, the orchestrator, the formatter, the settings surface and the seed, all of which the wave moved.
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # performance record — 2026-09-10T22:37:17Z — base http://localhost:5174 (through the frontend proxy) — label v1
 [22:37:17] at rest: {'connections': {'total': 14, 'idle': 14}, 'max_connections': 100}
 [22:37:17] ── scenario api ──

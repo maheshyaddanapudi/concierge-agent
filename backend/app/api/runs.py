@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import SessionDep
-from app.auth import owns_row, scope_to_user
+from app.auth import owns_row, scope_to_user, tenancy_on
 from app.models import Run, RunStep
 from app.orchestrator.runner import cancel_run, forget_run_events, retry_run
 
@@ -156,14 +156,52 @@ async def list_runs(
     return [_run_out(r, cost=costs.get(r.id)) for r in runs]
 
 
+async def _owned_or_404(session: AsyncSession, run_id: UUID) -> Run:
+    """The guard the action endpoints were missing.
+
+    `GET /runs/{id}` and `DELETE /runs/{id}` have always asked `owns_row`;
+    cancel, retry and the HITL decision did not, so with auth ON any member
+    could resume another member's gate, stop their run, or spend tokens
+    retrying it. 404 rather than 403 — the same answer the read paths give,
+    so the endpoint does not confirm that a run it will not act on exists."""
+    run = await session.get(Run, run_id)
+    if run is None or not owns_row(run):
+        raise HTTPException(status_code=404, detail="run not found")
+    return run
+
+
 @router.delete("", status_code=204)
 async def purge_runs(session: SessionDep) -> None:
-    """Run-history purge (spec §8.7)."""
-    for run_id in (await session.execute(select(Run.id))).scalars():
+    """Run-history purge (spec §8.7), scoped to the caller.
+
+    It used to delete unconditionally — `delete(RunStep)`, `delete(Run)`,
+    every checkpoint — with no tenancy filter and no admin gate, while
+    `_ADMIN_WRITE` (app/auth/builtin.py) covers the registry and settings
+    but not `/runs`. With auth ON that made destroying EVERY user's entire
+    run history a plain member action. The deferred-ownership note in §18.8
+    covers acting on someone else's run; it never covered erasing everyone's.
+
+    Dark (single-user) behaviour is unchanged: the provider's tenancy filter
+    is None when auth is off, so the scoped query is every row, and the
+    checkpoint sweep stays the unqualified one. That distinction matters —
+    §8.7 promises NO RESIDUE, and a per-run sweep only reaches threads whose
+    run row still exists. An orphaned checkpoint (its run already deleted,
+    or a sub-thread whose parent is gone) is only reachable by the
+    unqualified purge, so narrowing it unconditionally would have quietly
+    left residue behind on the single-user path the promise was made for."""
+    run_ids = list((await session.execute(scope_to_user(select(Run.id), Run))).scalars())
+    for run_id in run_ids:
         forget_run_events(run_id)
-    await session.execute(delete(RunStep))
-    await session.execute(delete(Run))
-    await _purge_checkpoints(session)
+    if run_ids:
+        await session.execute(delete(RunStep).where(RunStep.run_id.in_(run_ids)))
+        await session.execute(delete(Run).where(Run.id.in_(run_ids)))
+    if tenancy_on():
+        # multi-user: only this caller's threads, so another user's paused
+        # run keeps the checkpoints it needs to resume
+        for run_id in run_ids:
+            await _purge_checkpoints(session, run_id)
+    else:
+        await _purge_checkpoints(session)  # single-user: everything, orphans included
     await session.commit()
 
 
@@ -179,10 +217,11 @@ async def get_run(run_id: UUID, session: SessionDep) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/cancel")
-async def cancel(run_id: UUID) -> Response:
+async def cancel(run_id: UUID, session: SessionDep) -> Response:
     """M54 (spec §18.9): the response is the run's REAL status. A run
     executing on another replica gets a persisted cancel intent the owner
     acts on; `202 cancel_requested` says the owner has not acted yet."""
+    await _owned_or_404(session, run_id)
     try:
         status = await cancel_run(run_id)
     except ValueError as exc:
@@ -193,7 +232,8 @@ async def cancel(run_id: UUID) -> Response:
 
 
 @router.post("/{run_id}/retry", status_code=201)
-async def retry(run_id: UUID) -> dict[str, Any]:
+async def retry(run_id: UUID, session: SessionDep) -> dict[str, Any]:
+    await _owned_or_404(session, run_id)
     try:
         new_run = await retry_run(run_id)
     except ValueError as exc:

@@ -9,7 +9,9 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 [PR #3].
 
 
-> **Reconstruction note (M56).** Entries M13–M55 below were reconstructed from the README milestone table when the project was tagged `v1.0.0`; each entry's text is that milestone's row, its date the newest commit in the history that names the milestone. Entries M1–M12 are the original hand-written ones.
+> **Reconstruction note (M56).** Entries M13–M56 below were reconstructed from the README milestone table when `1.0.0` was cut **in the files** — no git tag was created, by decision (see M56, and line 5 above: a tag is cut when a consumer needs to pin one). Each entry's text is that milestone's row, its date the newest commit in the history that names the milestone. Entries M1–M12 are the original hand-written ones.
+>
+> **A gap in the history itself.** `git rev-list --max-parents=0 HEAD` returns six roots; an orphan import on 2026-08-08 replaced the tree, so feature commits before that date are unreachable from this history. M9 is the visible casualty — its code, settings keys and 64 passing tests all exist, but no commit in this repository implements it. Its entry rests on the code and the tests, not on a SHA.
 
 ## The code/setting/UI hardening wave — 2026-09-13
 
@@ -131,6 +133,12 @@ The three product findings of the acceptance campaign on the `dev` images (`docs
 
 - The rate limiter runs only for identified principals: the token bucket is per user (spec §18.8) and auth off is byte-identity (§14 step 44), so there is no key to bucket on while dark — the 429 boundary is proven under `AUTH_ENABLED=1` (`prod/M34`).
 - The egress policy refusing private counterparties unless named in `EGRESS_ALLOW_HOSTS`, the scripted counterparty's per-task "ask" script, and the missing embeddings provider are environment or driver facts, not defects.
+
+## M56 — Release — 2026-09-10
+
+### Added / changed
+
+- Release (PLAN M56): LICENSE (MIT), CONTRIBUTING, SECURITY with the auth-is-a-fork stance, issue and PR templates, this CHANGELOG reconstructed from the README milestone table, version `1.0.0` in `backend/pyproject.toml` and `frontend/package.json`, and the README retold as run-and-extend. The §14 acceptance script (steps 1–11) was re-earned on a fresh `docker compose up` of the release images with a UI frame after each step, plus an addendum for the direct-invocation DAG error edge and the agentic todo list, and the M49 load scenarios re-run as the performance record. Evidence: `docs/acceptance/prod/M56/`. **No git tag was cut, by decision** — no consumer needs to pin one yet, and the version lives in the files.
 
 ## M55 — The fork seam — 2026-09-10
 
@@ -390,7 +398,7 @@ The three product findings of the acceptance campaign on the `dev` images (`docs
 
 - Memory substrate (spec §16.1: pgvector store, bi-temporal supersession, admission gate, hybrid recall, settings — dark by default)
 
-## M12 — Declarative .agent.md sub-agents — 2026-08-09
+## M12 — Declarative .agent.md sub-agents — 2026-08-11
 
 ### Added
 

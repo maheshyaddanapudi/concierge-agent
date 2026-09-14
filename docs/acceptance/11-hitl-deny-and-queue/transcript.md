@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `24e53b6`** (the campaign-fixes build (findings 1, 2, 4)) — **5 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> Captured on the campaign-fixes build. Since then `ChatPage.tsx`'s gate-consumption fold was rewritten precisely so a gate closed on another surface never leaves armed buttons behind, and `factory/worker.py` moved (+60/−5).
+>
+> Full build attribution, per-stage grading and the audited counts:
+> [`../STALENESS.md`](../STALENESS.md)
+
 ```
 [   0.0s] # 11-hitl-deny-and-queue — 2026-09-10T23:42:19.596Z
 [   0.1s] settings ← {"orchestrator_mode":"graph"}

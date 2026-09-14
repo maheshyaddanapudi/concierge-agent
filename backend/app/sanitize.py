@@ -82,6 +82,12 @@ def secret_values() -> tuple[str, ...]:
         cfg.custom_gateway_api_key,
         _url_password(cfg.redis_url),
         _url_password(cfg.database_url),
+        # A Slack/Teams-shaped webhook carries its token in the URL PATH, so
+        # neither `_url_password` nor the shape patterns catch it. httpx puts
+        # the full URL in the exception raised by `raise_for_status`, and the
+        # ambient channel ledger stores that text and renders it in the Inbox
+        # — so a failing delivery published the token to the page.
+        cfg.ambient_webhook_url,
     ]
     values = sorted(
         {c for c in candidates if isinstance(c, str) and len(c) >= _MIN_SECRET_LEN},

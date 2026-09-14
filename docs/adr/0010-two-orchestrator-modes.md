@@ -1,6 +1,6 @@
 # ADR-0010: Two orchestrator modes, side by side and runtime-switchable
 
-Status: Accepted
+Status: **Accepted, still in force** — see *Addendum, 2026-09-14: `direct` is a third recorded run mode, not a third orchestrator*
 
 Date: 2026-08-05
 
@@ -63,9 +63,37 @@ Negative:
 - Agentic-mode parallelism is structurally weaker, so "same registries" does
   not mean "same latency" — comparisons must control for it.
 
+## Addendum — 2026-09-14: `direct` is a third recorded run mode, not a third orchestrator
+
+The A/B decision above is unchanged and the setting is still binary:
+`settings_store.py` validates `orchestrator_mode` against exactly
+`{"graph", "agentic"}` and rejects anything else, default `graph`. Two things
+recorded here have since been extended, and readers comparing this ADR to the
+code should know which is which:
+
+- **`Run.orchestrator_mode` has three values, not two.** Spec §7.5 added
+  **`direct`** (migration `c9e1f5a2d7b8`): `POST /api/v1/sub-agents/{id}/invoke`
+  passes `mode="direct"` to `create_run`, pinning one sub agent and skipping
+  planning and routing altogether. It is *not* a third orchestration strategy
+  and not selectable from Settings — it is a per-invocation bypass that still
+  shares everything the "Everything else is shared" bullet lists (SSE, HITL,
+  checkpointer, recorder, labels), which is exactly why it was cheap to add.
+  Trace comparability is preserved: `direct` runs are labelled `mode='direct'`
+  and are simply excluded from graph-vs-agentic comparisons.
+- **The graph gained two nodes.** The Decision describes graph mode as
+  `plan → resolve → dispatch (parallel) → aggregate`. The compiled graph in
+  `build_orchestrator_graph` now has six nodes: `plan`, `resolve`,
+  **`coordinate`** (a `defer=True` node that re-runs after each dispatch wave
+  and emits `Send` packets for entries whose `depends_on` outputs exist,
+  capped at `max_parallel_dispatch`), `dispatch`, **`fallback`**, and
+  `aggregate`. The shape of the decision — explicit planner artifact,
+  deterministic ladder, `Send`-based parallelism — is what `coordinate`
+  implements rather than replaces.
+
 ## References
 
-- spec.md §7 (mode switch), §7.1 (graph mode), §7.2 (agentic mode)
+- spec.md §7 (mode switch), §7.1 (graph mode), §7.2 (agentic mode), §7.5
+  (direct sub-agent invocation)
 - /home/user/concierge-agent/backend/app/orchestrator/graph_mode.py,
   agentic_mode.py, ladder.py, planner.py
 - /home/user/concierge-agent/docs/acceptance/README.md ("Graph vs agentic —

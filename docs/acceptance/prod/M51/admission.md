@@ -1,3 +1,19 @@
+<!-- staleness-banner -->
+> ## ⚠ STALE EVIDENCE — this page predates the current code
+>
+> **Captured on build `b624908`** (release 1.0.0 / M1–M56 — the campaign build) — **6 source commits behind HEAD `3891914`.**
+> It does **not** show the code as it stands. The hardening wave (`401914a`,
+> ~470 findings across 220 files) landed afterwards and the planned live
+> re-run of this tree **never happened** — the provider account ran out of
+> credit and Docker was lost, so no stack could be built or run.
+> Nothing on this page has been re-verified.
+>
+> **Staleness grade: C — the hardening wave moved what this page claims**
+> Admission, the wall clock and the 429/503 boundaries all sit under `limits.py` (a new module, +115), `cost.py` (+128, the new `job_usage` ledger) and `runner.py` (+86/−13).
+>
+> Full build attribution, per-drill grading and the audited counts:
+> [`../../STALENESS.md`](../../STALENESS.md)
+
 # M51 admission drill — 2026-09-10T21:20:55Z — model openrouter:qwen/qwen3.8-max
 
 $ PATCH /settings run_max_concurrent=0 → 422; run_queue_max=-1 → 422; run_wall_clock_s=10 → 422 (floor 30)
