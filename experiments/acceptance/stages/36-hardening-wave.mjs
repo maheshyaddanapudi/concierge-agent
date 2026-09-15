@@ -112,7 +112,10 @@ export default async function ({ page, nav, shot, get, post, patch, del, log, se
     log(`panel status after the edit: ${panelAfter}`)
     // the same trace, read after the registry moved, must SAY the registry moved
     expect(panelAfter !== panelStatus, 'the panel now reports the registry has changed under the run')
-    expectMatch(panelAfter, /chang|differ|drift/i, '…and says so in words')
+    // `moved` too: the panel's own wording is "1 of 2 pinned records MOVED
+    // since this run", which reports the drift precisely — it was the
+    // assertion's vocabulary that was short, not the panel's.
+    expectMatch(panelAfter, /chang|differ|drift|moved/i, '…and says so in words')
     const rows = await panel.locator('tbody tr').allTextContents()
     log(`panel rows: ${rows.map((r) => r.replace(/\s+/g, ' ').trim()).join(' || ')}`)
     await closeDrawer(page)

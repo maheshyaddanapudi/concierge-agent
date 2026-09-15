@@ -144,7 +144,14 @@ export default async function ({ page, nav, shot, get, post, patch, log, setting
     if (t.schema_version > changed.schema_version) quarantined = t
   }
   expect(!!quarantined, 'the second mutation versioned the schema again')
-  expectEq(quarantined.ingest_state, 'quarantined', 'and under the quarantine policy the tool was quarantined')
+  // §3.2 states the quarantine as TWO fields: `status='inactive'` with
+  // `ingest_state='changed'` (the QUARANTINED sentinel in toolschema.py —
+  // and note `ingest_state` is String(8), so the literal 'quarantined' this
+  // asserted could never have been stored in it on any build). Taking the
+  // tool OUT OF SERVICE is the half that matters; the flag alone is what
+  // `warn` already does.
+  expectEq(quarantined.status, 'inactive', 'and under the quarantine policy the tool went out of service')
+  expectEq(quarantined.ingest_state, 'changed', '…flagged as changed until it is acknowledged')
   log(`quarantined: schema v${quarantined.schema_version} status=${quarantined.status} ingest_state=${quarantined.ingest_state} params=${Object.keys(quarantined.input_schema?.properties || {})}`)
   await post(`/mcp-servers/${stub.id}/refresh-tools`)
   await new Promise((r) => setTimeout(r, 2000))
