@@ -47,8 +47,10 @@ export default async function ({ page, nav, shot, get, log, setTheme, openConver
   await page.waitForTimeout(500)
   await shot(page, 'picker-restored-default')
   expectEq(
+    // null, for the same reason as above: `default` is the absence of the
+    // attribute. This second copy of the assumption survived the first fix.
     await page.evaluate(() => document.documentElement.getAttribute('data-theme')),
-    'default',
+    null,
     'the picker is back on the default palette for the stages that follow',
   )
 }

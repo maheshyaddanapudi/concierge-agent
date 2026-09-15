@@ -6,12 +6,28 @@ import { TRIAL_MESSAGE } from './_trial.mjs'
 
 export default async function ({ page, context, nav, shot, settings, get, log, sendChat, waitRun, run, steps, closeDrawer, newConversation, expect, expectMatch, expectStatus }) {
   await settings({ orchestrator_mode: 'graph' })
-  await nav(page, '')
-  await newConversation(page)
-  await sendChat(page, TRIAL_MESSAGE)
-  await page.waitForTimeout(2000)
-  const r1 = (await get('/runs?limit=1')).json[0]
-  await page.getByText('HUMAN APPROVAL REQUIRED').first().waitFor({ timeout: 180000 })
+  // retried for the reason _trial.mjs explains: the sub agent's branch is
+  // natural language the model evaluates, so reaching the gate is a model
+  // decision. This stage is about the QUEUE and the DENIAL, not about which
+  // edge the planner's workflow took.
+  let r1 = null
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await nav(page, '')
+    await newConversation(page)
+    await sendChat(page, TRIAL_MESSAGE)
+    await page.waitForTimeout(2000)
+    r1 = (await get('/runs?limit=1')).json[0]
+    const armed = await page
+      .getByText('HUMAN APPROVAL REQUIRED')
+      .first()
+      .waitFor({ timeout: 120000 })
+      .then(() => true)
+      .catch(() => false)
+    if (armed) break
+    const settled = await run(r1.id)
+    log(`attempt ${attempt}: no gate — ${settled?.status}, steps ${steps(settled)}`)
+    expect(attempt < 3, 'the sub agent reached its HITL gate within three attempts')
+  }
   await page.waitForTimeout(500)
   await shot(page, '00-gate-armed')
 

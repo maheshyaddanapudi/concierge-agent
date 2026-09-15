@@ -199,13 +199,25 @@ async def resolve_node(state: OrchestratorState) -> dict[str, Any]:
 
 
 def after_plan(state: OrchestratorState) -> str:
-    # a direct_answer only short-circuits when the planner produced NO
-    # entries — for multi-part requests it may answer the trivial part
-    # directly while still planning capability entries for the rest
-    if state.get("direct_answer") is not None and not state.get("entries"):
-        return "aggregate"
+    # The fallback outranks the direct answer, and the order here is the whole
+    # point. §7.0 says that when the planner reports no confident match for a
+    # capability-needing query, the full-catalog fallback takes over "rather
+    # than answering blind" — but a helpful model almost always writes a
+    # courteous refusal alongside that flag ("I don't have an
+    # invoice-reconciler capability, so I can't route this"). With the
+    # direct-answer short-circuit tested first, that refusal won, the
+    # `use_fallback` that plan_node had correctly computed was discarded, and
+    # the run answered blind with no route step at all. The backup path for
+    # bad tool descriptions therefore did not run in exactly the case it
+    # exists for, and said nothing about declining to.
+    #
+    # The multi-part behaviour b97e1ca added is untouched: a direct answer
+    # that accompanies real entries still falls through to `resolve`, where
+    # aggregate_node merges it with the dispatched outputs.
     if state.get("use_fallback"):
         return "fallback"
+    if state.get("direct_answer") is not None and not state.get("entries"):
+        return "aggregate"
     return "resolve"
 
 

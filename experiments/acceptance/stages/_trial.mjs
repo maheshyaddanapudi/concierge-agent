@@ -16,15 +16,40 @@ export function trial({ mode, effort }) {
     await nav(page, 'settings')
     await shot(page, '00-settings-mode-and-effort')
 
-    // message 1 from the composer
-    await nav(page, '')
-    await newConversation(page)
-    await sendChat(page, TRIAL_MESSAGE)
-    await page.waitForTimeout(2500)
-    const runs = (await get('/runs?limit=1')).json
-    const r1 = Array.isArray(runs) ? runs[0] : runs.items?.[0]
-    log(`run 1: ${r1?.id} (${mode}, effort ${effort || 'default'})`)
-    expect(!!r1?.id, 'the composer started a run')
+    // message 1 from the composer.
+    //
+    // Retried, like stage 35's route check, and for the same reason: the
+    // `site-analyst` workflow's branch conditions are NATURAL LANGUAGE the
+    // model evaluates, so whether the run reaches the `approve` gate or takes
+    // the "if nothing to do" edge to END is a model decision, not a property
+    // of the gate. Measured over one clean campaign it reached the gate on
+    // three trials of four. A stage whose subject is the HITL gate should not
+    // report a routing coin-flip as a broken gate, so it re-asks on a fresh
+    // conversation and says so in the log when it does.
+    let r1 = null
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await nav(page, '')
+      await newConversation(page)
+      await sendChat(page, TRIAL_MESSAGE)
+      await page.waitForTimeout(2500)
+      const runs = (await get('/runs?limit=1')).json
+      r1 = Array.isArray(runs) ? runs[0] : runs.items?.[0]
+      log(`run 1 (attempt ${attempt}): ${r1?.id} (${mode}, effort ${effort || 'default'})`)
+      expect(!!r1?.id, 'the composer started a run')
+      const armed = await page
+        .getByText('HUMAN APPROVAL REQUIRED')
+        .first()
+        .waitFor({ timeout: 120000 })
+        .then(() => true)
+        .catch(() => false)
+      if (armed) break
+      const settled = await run(r1.id)
+      log(
+        `attempt ${attempt}: no gate — the workflow's branch went round it ` +
+          `(run ${settled?.status}, steps ${steps(settled).join(',')})`,
+      )
+      expect(attempt < 3, 'the sub agent reached its HITL gate within three attempts')
+    }
     const live = await settings()
     expectEq(live.orchestrator_mode, mode, `the trial is running in ${mode} mode`)
     expectEq(live.default_model_params?.effort ?? null, effort, `…at effort ${effort || 'default'}`)

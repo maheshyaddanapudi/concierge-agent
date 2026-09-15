@@ -592,6 +592,51 @@ class TestWorkerResult:
         assert "Do not publish" in result["error"]
 
 
+class TestAfterPlanPrecedence:
+    """`after_plan` decides the whole shape of a run from three state flags,
+    and had no test of its own — the bug it hid (a refusal outranking the
+    fallback) cost a live acceptance stage to find."""
+
+    def test_fallback_outranks_a_direct_answer(self) -> None:
+        from app.orchestrator.graph_mode import after_plan
+
+        assert (
+            after_plan(
+                {"direct_answer": "I can't route this.", "entries": [], "use_fallback": True}
+            )
+            == "fallback"
+        )
+
+    def test_a_lone_direct_answer_short_circuits(self) -> None:
+        from app.orchestrator.graph_mode import after_plan
+
+        assert (
+            after_plan({"direct_answer": "Four.", "entries": [], "use_fallback": False})
+            == "aggregate"
+        )
+
+    def test_a_direct_answer_beside_entries_still_resolves(self) -> None:
+        """b97e1ca's multi-part case, pinned so the reorder cannot undo it."""
+        from app.orchestrator.graph_mode import after_plan
+
+        assert (
+            after_plan(
+                {"direct_answer": "Four.", "entries": [{"capability": "x"}], "use_fallback": False}
+            )
+            == "resolve"
+        )
+
+    def test_a_plain_plan_resolves(self) -> None:
+        from app.orchestrator.graph_mode import after_plan
+
+        assert (
+            after_plan(
+                {"direct_answer": None, "entries": [{"capability": "x"}], "use_fallback": False}
+            )
+            == "resolve"
+        )
+
+
 class TestFallback:
     async def test_no_confident_match_uses_full_catalog(self, client: AsyncClient) -> None:
         unexposed = await create_tool(
@@ -610,6 +655,53 @@ class TestFallback:
         seen = [names for names in fake_llm.seen_tools() if names]
         assert any(sanitize_tool_name(unexposed.tool_key) in names for names in seen), (
             "full catalog must include unexposed tools"
+        )
+
+    async def test_no_confident_match_beats_a_courteous_refusal(self, client: AsyncClient) -> None:
+        """The shape a real planner emits, and the one nothing covered.
+
+        `test_no_confident_match_uses_full_catalog` above passes
+        `no_confident_match=True` with NO direct answer, so the direct-answer
+        short-circuit in `after_plan` never fired and the ordering bug hid.
+        A live model asked for a capability it cannot find sets the flag AND
+        writes a polite refusal — "I don't have an invoice-reconciler
+        capability, so I can't route this request" — and that refusal used to
+        win, sending the run to `aggregate` with no route step at all. §7.0
+        requires the full-catalog fallback to take over "rather than answering
+        blind", which is precisely what answering blind looks like.
+        """
+        await create_tool(
+            tool_name="orch_echo", tool_key=f"hidden-{uuid4().hex[:4]}", direct_exposure=False
+        )
+        plan_call(
+            no_confident_match=True,
+            direct_answer="I don't have an invoice-reconciler capability, so I can't route this.",
+        )
+        fake_llm.push_ai("fallback handled it")
+        fake_llm.push_ai("Aggregated: fallback handled it")
+        run_id = await send_chat(client, "use the invoice-reconciler capability")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "fallback" in route_rungs(run), (
+            "a courteous refusal alongside no_confident_match must not suppress the "
+            f"fallback rung — rungs were {route_rungs(run)}"
+        )
+
+    async def test_a_direct_answer_alone_still_short_circuits(self, client: AsyncClient) -> None:
+        """The other half of the precedence, so the fix cannot over-reach.
+
+        A planner that answers a trivial request needing no capability (§7.0:
+        "an empty plan with a direct answer") must still skip the ladder —
+        putting the fallback first must not drag every chat through a full
+        catalogue.
+        """
+        plan_call(direct_answer="Four.")
+        fake_llm.push_ai("Aggregated: Four.")
+        run_id = await send_chat(client, "what is two plus two")
+        run = await wait_run(client, run_id, {"completed", "failed"})
+        assert run["status"] == "completed", run["error"]
+        assert "fallback" not in route_rungs(run), (
+            f"a trivial direct answer must not engage the fallback — rungs were {route_rungs(run)}"
         )
 
     async def test_duplicate_skill_names_bind_unique_tool_names(self, client: AsyncClient) -> None:

@@ -43,11 +43,19 @@ export default async function ({ page, nav, shot, settings, get, log, sendChat, 
   expectStatus(done0, ['completed', 'failed'], 'the missing-file ask settled')
   expectMatch(
     `${done0.final_answer || ''} ${done0.error || ''}`,
-    // contractions included, and with BOTH apostrophes: a model that writes
-    // "I can’t summarize it" (typographic U+2019, which is what most of them
-    // emit) is refusing exactly as this leg requires, but only `cannot`
-    // was listed, so the right behaviour read as a failure.
-    /not exist|no such|not found|could ?n[o']?t|can[’']t|cannot|couldn[’']t|does ?n[o']?t|doesn[’']t|unable|missing|fail/i,
+    // What this leg actually requires is that the system NAMES the absence
+    // instead of inventing a summary — and a model says that a dozen ways.
+    // Two real answers this assertion has already rejected wrongly:
+    //   "I can’t summarize `does-not-exist.txt` because…"  (typographic
+    //      apostrophe; only `cannot` was listed)
+    //   "There is no file named `does-not-exist.txt` in the workspace."
+    //      (no listed alternative matched at all — and note `not exist`
+    //      cannot match the HYPHENATED filename, so the obvious-looking
+    //      alternative was never going to fire on this fixture)
+    // Matching prose from a live model is inherently brittle; the breadth
+    // here is deliberate, and the real guard is the negative assertion below
+    // that no fabricated summary was returned.
+    /there is no|no (such )?file|not exist|does[-\s]?not[-\s]?exist|not found|could ?n[o’']?t|can[’']?t|cannot|does ?n[o’']?t|unable|missing|absent|fail/i,
     'the outcome admits the file could not be read',
   )
   await nav(page, 'runs')

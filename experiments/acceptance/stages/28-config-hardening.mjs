@@ -208,10 +208,27 @@ export default async function (ctx) {
     log(`rate_limit_burst=5 rate_limit_per_s=1 set live (the 429 boundary is exercised under an identity in prod/m34-auth.sh)`)
     await shot(page, '21-guardrails-burst-5')
   } finally {
-    await api('PATCH', '/settings', {
-      rate_limit_burst: initial.rate_limit_burst,
-      rate_limit_per_s: initial.rate_limit_per_s,
-    })
+    // The restore is subject to the very limit it is undoing, and `api` does
+    // not throw on a non-2xx — so a single PATCH here came back 429, was
+    // silently discarded, and left the deployment pinned at 1 req/s. Every
+    // later stage then died on `PATCH /settings 429`. Retry until the bucket
+    // has refilled (it refills at per_s, so a few seconds is always enough)
+    // and SAY so if it never does, rather than walking away from a throttled
+    // deployment in silence.
+    let restored = false
+    for (let attempt = 1; attempt <= 8 && !restored; attempt++) {
+      const r = await api('PATCH', '/settings', {
+        rate_limit_burst: initial.rate_limit_burst,
+        rate_limit_per_s: initial.rate_limit_per_s,
+      })
+      restored = r.status === 200
+      if (!restored) await new Promise((res) => setTimeout(res, 2000))
+    }
+    log(
+      restored
+        ? `rate limit restored to per_s=${initial.rate_limit_per_s} burst=${initial.rate_limit_burst}`
+        : 'WARNING: could not restore the rate limit — later stages will see 429s',
+    )
   }
   expectEq(liveBurst, 5, 'the rate-limit burst took live')
 
