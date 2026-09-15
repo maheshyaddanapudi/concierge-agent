@@ -13,6 +13,36 @@ earlier [PR #1] merge of the M1–M6 line); the HITL card fix landed via
 >
 > **A gap in the history itself.** `git rev-list --max-parents=0 HEAD` returns six roots; an orphan import on 2026-08-08 replaced the tree, so feature commits before that date are unreachable from this history. M9 is the visible casualty — its code, settings keys and 64 passing tests all exist, but no commit in this repository implements it. Its entry rests on the code and the tests, not on a SHA.
 
+## The live re-run wave — 2026-09-15
+
+The first wave whose findings came from **running the system** rather than reading it. Standing the stack up against a live model on a persistent database — rather than the fresh Docker volumes every previous campaign started from — surfaced two product defects and two harness defects that no amount of reading had found. Migration `y4m5n6o7p8q9`. Spec §4 amended.
+
+### Migration notes for an existing deployment
+
+- **`ix_tools_tool_key` becomes a partial unique index** (`WHERE deleted_at IS NULL`). No action needed; the migration rebuilds the index in place.
+- **Tool keys already mangled by the old behaviour are not rewritten.** `tool_key` is operator-editable and skills match `{tool:…}` mentions against it, and a migration cannot tell a key this bug suffixed from a genuine collision between two servers that are both still live. Rename them in the Tools page if you want the plain key back.
+- **Restoring a soft-deleted tool can now return 409**, where before it always succeeded: the freed key may have been taken by a live row in the meantime. Rename one and retry.
+- **`openrouter:qwen/qwen3.8-max` no longer exists upstream.** A deployment whose `default_model` names it must change it; the dated snapshot `openrouter:qwen/qwen3.8-max-0902` is the direct successor.
+
+### Fixed
+
+- **A soft-deleted tool reserved its `tool_key` forever**, so deleting an MCP server and registering it again under the same name collided with its own tombstones and suffixed every key: `sitefiles.echo` came back as `sitefiles.echo-88501d`. The operator could see neither the tombstone (no API or page shows a deleted row) nor any reason for the mangled key. §4 gives that suffix one job — keeping two *live* servers that expose the same tool name apart — and §14 step 2 promises plain `{server}.{tool}` keys. The unique index is now partial on `deleted_at IS NULL` and the ingest's collision probe filters to match; the two had to move together, since scoping only the probe trades a mangled key for an `IntegrityError` and scoping only the index leaves the suffix in place. **This survived every previous acceptance campaign because they all started on fresh volumes, where a re-registration has no past to collide with.**
+- **Two models in the OpenRouter catalogue had been retired upstream** — the `qwen/qwen3.8-max` alias and the `stealth/ox-alpha` preview — and sat in the Settings dropdown as options that fail at first call. Worse, the first-boot preference list seeded `openrouter:qwen/qwen3.8-max` for an `OPENROUTER_API_KEY`-only install, so the fix that wave two made for exactly that install (it could not run a chat until a human opened Settings) had been undone by the vendor. Both entries are gone, the flagship is pinned to the dated snapshot, and a new offline guard asserts every `_FLAGSHIPS` entry is a model its own adapter still offers.
+
+### Changed
+
+- **`POST /tools/{id}/restore` refuses with 409** when another live tool already holds the restored row's key — a conflict the partial index newly makes possible. It is an actionable refusal naming the key, not the `IntegrityError` a bare commit would have raised, and nothing is silently suffixed on the operator's behalf.
+
+### Documentation honesty
+
+- **An acceptance assertion that could only ever fail** shipped in the code/setting/UI hardening wave and sat in the tree for two waves looking like evidence. Stage 05 asserted `e.condition === 'error'` on a sub agent's error edge; the builder writes `on: 'error'` and keeps `condition` for the natural-language branch text, exactly as its own field hint says. No workflow the UI can build ever satisfied it. It went in with the wave whose live acceptance re-run **did not happen**, and this wave is the first time it has been executed. It is the sharpest argument available for the rule that evidence is only evidence once it has run.
+- **The acceptance harness was measuring the model, not the product.** `submitSave`'s 30 s budget was cut to one model's latency; it has to cover a chain — the overlap judge's live call, the operator's "Save anyway", then the POST and its rendered result. On a slower default model the judge alone spent ~8 s, the chain overran, and stages reported `timeout` for saves the backend had in fact refused correctly with a 422 naming the offending mention. Raised to 120 s.
+
+### Known limitations stated rather than fixed
+
+- **Which branch a sub agent takes is the model's call, and the trial stages encode one model's answer.** Stages `06`–`09` drive the `site-analyst` workflow expecting it to reach its HITL gate. The edge conditions are natural-language text the model evaluates, and a model that reads the trial prompt as under-specified takes the "if nothing to do" edge to END instead, never arming the gate — which is the workflow behaving as designed, and the stage asserting a routing decision that was never the product's to guarantee. §14 step 6's HITL demonstration is therefore model-dependent. Recorded here rather than papered over by rewording the prompt until a given model complies.
+- **`docs/acceptance/` remains stale**, and this wave does not clear it. The tree still reflects a build two waves old. Stages `00`–`05` have been re-run green against a live model; the trial stages are blocked on the routing limitation above, and the remaining stages and prod drills are not yet republished.
+
 ## The code/setting/UI hardening wave — 2026-09-13
 
 A reviewer army read the whole system from every angle it has — deployment posture, registry intent, orchestrator correctness, memory, providers, prompts, untrusted input, the formatter, observability, retention, the frontend, the build, the seed, the tests, and the documentation — and produced ~470 findings. Every one was put to the operator as an explicit decision before any code was written; the answers are the structure of this entry. Migration `x3l4m5n6o7p8`. Spec §3.7.1, §4, §7.3, §8.7, §13, §14, §17.3, §17.4 and §19.4 amended.

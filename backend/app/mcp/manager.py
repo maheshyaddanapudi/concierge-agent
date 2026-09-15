@@ -441,7 +441,14 @@ class McpManager:
                     await db.execute(select(Tool).where(Tool.mcp_server_id == server_id))
                 ).scalars()
             }
-            taken_keys = set((await db.execute(select(Tool.tool_key))).scalars())
+            # live rows only: a soft-deleted tool must not reserve its key
+            # (see the partial `ix_tools_tool_key` in models/tool.py). Reading
+            # every row here meant an operator's own deleted history collided
+            # with the re-registration of the same server and pushed its tools
+            # onto suffixed keys they could never get back.
+            taken_keys = set(
+                (await db.execute(select(Tool.tool_key).where(Tool.deleted_at.is_(None)))).scalars()
+            )
             # the LLM-facing name is the sanitized key: two keys that
             # sanitize alike would bind first-wins and leave the newcomer
             # silently unbound (spec §3.2 collision-safety applies to the

@@ -284,16 +284,28 @@ class OpenRouterProvider(ModelProviderBase):
         return len(table)
 
     def list_models(self) -> list[ModelInfo]:
-        # curated tool-capable subset (any 'openrouter:vendor/model' ref
-        # still resolves — the catalog is 400+ models and changes weekly)
+        # Curated tool-capable subset (any 'openrouter:vendor/model' ref still
+        # resolves — the catalog is 400+ models and changes weekly). Because
+        # this list IS the Settings dropdown, every id on it must be one the
+        # gateway will actually serve: an entry here that upstream has dropped
+        # is not a stale comment, it is an operator picking a model and having
+        # their first call fail. Two such entries were found by auditing this
+        # list against the live /models catalogue:
+        #
+        #   qwen/qwen3.8-max     — the floating alias was RETIRED; upstream now
+        #                          carries only the dated snapshot, so the id
+        #                          below is pinned. Pinned ids do not vanish
+        #                          under a deployment the way an alias does.
+        #   stealth/ox-alpha     — a stealth preview, rotated out. Previews are
+        #                          ephemeral by design, which is exactly why a
+        #                          curated list is the wrong place for one.
         return [
             ModelInfo("z-ai/glm-5.3", "GLM 5.3 (Z.ai)"),
             ModelInfo("z-ai/glm-5.2", "GLM 5.2 (Z.ai)"),
             ModelInfo("deepseek/deepseek-v4-pro-0813", "DeepSeek V4 Pro"),
-            ModelInfo("qwen/qwen3.8-max", "Qwen 3.8 Max"),
+            ModelInfo("qwen/qwen3.8-max-0902", "Qwen 3.8 Max"),
             ModelInfo("qwen/qwen3.6-plus", "Qwen 3.6 Plus"),
             ModelInfo("moonshotai/kimi-k3", "Kimi K3"),
-            ModelInfo("stealth/ox-alpha", "Ox Alpha (stealth preview)"),
         ]
 
     def get_chat_model(self, model: str, params: ModelParams | None = None) -> BaseChatModel:

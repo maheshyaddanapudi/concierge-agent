@@ -277,8 +277,19 @@ export async function click(page, name) {
  * error note, or the drawer closes on success. Returns
  * {outcome: 'saved'|'error'|'overlap', text}. With `acceptOverlap` the
  * dialog's "Save anyway" is clicked and the wait continues.
+ *
+ * The budget covers a chain, not one request: the overlap judge's live call,
+ * the operator's "Save anyway", then the actual POST and its rendered result.
+ * The former 30s was cut to Qwen's latency and is not a property of the
+ * system under test — on a slower default model the judge alone spent ~8s,
+ * the chain overran, and stages reported `timeout` for saves the backend had
+ * in fact refused correctly (422, naming the offending mention). A harness
+ * that reports the model's speed as the product's verdict is measuring the
+ * wrong thing, so the budget is now generous enough to outlast the slowest
+ * model we point this at. Stages that mean to assert latency time it
+ * themselves rather than reading it off this timeout.
  */
-export async function submitSave(page, buttonName, { timeoutMs = 30000, acceptOverlap = true, onOverlap } = {}) {
+export async function submitSave(page, buttonName, { timeoutMs = 120000, acceptOverlap = true, onOverlap } = {}) {
   await page.getByRole('button', { name: buttonName }).first().click()
   const t0 = Date.now()
   let sawOverlap = false

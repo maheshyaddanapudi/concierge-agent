@@ -36,6 +36,27 @@ class Tool(RegistryRecord):
             unique=True,
             postgresql_where=text("remote_agent_id IS NOT NULL"),
         ),
+        # `tool_key` is unique among LIVE rows only. It used to be unique
+        # across every row ever written, tombstones included, which made a
+        # soft delete reserve its key forever: delete an MCP server and
+        # register it again under the same name and the ingest found
+        # `sitefiles.echo` taken by a row no API or page will show, so it fell
+        # to the collision suffix and wrote `sitefiles.echo-88501d`. §4 gives
+        # the suffix one job — keeping two SERVERS that expose the same tool
+        # name apart — not disambiguating a server from its own deleted past,
+        # and §14 step 2 promises plain `{server}.{tool}` keys. The operator
+        # saw neither the tombstone nor a reason for the mangled key.
+        #
+        # A partial index is what lets the key be reused, so the ingest probe
+        # in mcp/manager.py filters to live rows to match. The pair has to
+        # move together: scoping only the probe trades a mangled key for an
+        # IntegrityError, and scoping only the index leaves the suffix.
+        Index(
+            "ix_tools_tool_key",
+            "tool_key",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     kind: Mapped[str] = mapped_column(String(16))  # 'mcp' | 'native' | 'a2a'
@@ -47,7 +68,10 @@ class Tool(RegistryRecord):
     )
     tool_name: Mapped[str] = mapped_column(String(255))
     native_ref: Mapped[str | None] = mapped_column(String(512), default=None)
-    tool_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # uniqueness and the index both live in __table_args__ above, as a
+    # partial (live-rows-only) unique index — `unique=True, index=True` here
+    # would additionally emit the unconditional one this replaces
+    tool_key: Mapped[str] = mapped_column(String(255))
     direct_exposure: Mapped[bool] = mapped_column(Boolean, default=False)
     input_schema: Mapped[dict[str, Any] | None] = mapped_column(default=None)
     # M53: what the SERVER last said about an MCP tool — 'present' | 'missing'

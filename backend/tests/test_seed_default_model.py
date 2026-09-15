@@ -87,7 +87,7 @@ async def test_openrouter_only_install_gets_a_usable_model(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     get_config.cache_clear()
     async with get_session_factory()() as session:
-        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max"
+        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max-0902"
 
 
 async def test_openrouter_is_preferred_over_the_fake_provider(
@@ -96,7 +96,38 @@ async def test_openrouter_is_preferred_over_the_fake_provider(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     get_config.cache_clear()
     async with get_session_factory()() as session:
-        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max"
+        assert await resolve_first_boot_default_model(session) == "openrouter:qwen/qwen3.8-max-0902"
+
+
+def test_every_flagship_is_a_model_its_own_adapter_offers() -> None:
+    """The seed and the Settings dropdown must not disagree about what exists.
+
+    Be clear about what this does NOT do: it would not have caught the bug
+    that prompted it. When `openrouter:qwen/qwen3.8-max` was retired upstream,
+    `_FLAGSHIPS` and `OpenRouterProvider.list_models()` both still named it —
+    they agreed, and they were both wrong. Only a live call to the catalogue
+    found that, and this suite is key-free by §11, so no offline test can.
+
+    What it guards is the drift that becomes possible the moment someone
+    curates one of the two lists: fixing the dropdown and forgetting the seed
+    leaves a first-boot default an operator cannot find in the model select,
+    which fails at their first chat with nothing on screen explaining why.
+    That is a regression a test can own, so this one does."""
+    from app.llm import list_providers
+    from app.seed.loader import _FLAGSHIPS
+
+    providers = {p.provider_id: p for p in list_providers()}
+    for provider_id, ref in _FLAGSHIPS:
+        if not ref:
+            continue  # deployment-specific (the custom gateway): resolved live
+        adapter = providers.get(provider_id)
+        assert adapter is not None, f"_FLAGSHIPS names an unregistered provider: {provider_id}"
+        model_id = ref.split(":", 1)[1]
+        offered = {m.id for m in adapter.list_models()}
+        assert model_id in offered, (
+            f"_FLAGSHIPS seeds {ref!r}, which {provider_id}.list_models() does not offer — "
+            f"a first-boot default an operator cannot find in the model select"
+        )
 
 
 async def test_custom_gateway_resolves_to_its_first_declared_model(

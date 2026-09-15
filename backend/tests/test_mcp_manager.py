@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import sys
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -122,6 +123,95 @@ class TestConnectAndIngest:
             await session.commit()
         await manager.connect_server(server_id)
         assert (await get_server(server_id)).status == "active"
+
+    async def test_reregistering_a_server_reuses_its_deleted_tool_keys(
+        self, manager: McpManager
+    ) -> None:
+        """Delete a server and register it again: plain `{server}.{tool}` keys.
+
+        The tombstoned tools used to keep their keys reserved — `tool_key` was
+        unique across every row ever written — so the second registration
+        found `stub.echo` taken by a row no API or page shows and fell to the
+        collision suffix, giving the operator `stub.echo-88501d` with nothing
+        on screen to explain it. §4 scopes that suffix to two SERVERS sharing
+        a tool name; §14 step 2 promises the plain key.
+        """
+        first = await make_stub_server()
+        await manager.connect_server(first)
+        assert (await tools_of(first))["echo"].tool_key == "stub.echo"
+
+        # what DELETE /mcp-servers/{id} does: soft-delete the server and its tools
+        async with get_session_factory()() as session:
+            now = datetime.now(UTC)
+            server = await session.get(McpServer, first)
+            assert server is not None
+            server.deleted_at = now
+            for row in (
+                await session.execute(select(Tool).where(Tool.mcp_server_id == first))
+            ).scalars():
+                row.deleted_at = now
+            await session.commit()
+
+        second = await make_stub_server()
+        await manager.connect_server(second)
+        reingested = await tools_of(second)
+        assert reingested["echo"].tool_key == "stub.echo"
+        assert reingested["add"].tool_key == "stub.add"
+        assert reingested["echo"].id != (await tools_of(first))["echo"].id  # a new row
+
+    async def test_restoring_onto_a_taken_key_is_refused(
+        self, manager: McpManager, client: AsyncClient
+    ) -> None:
+        """The conflict the partial index newly makes possible.
+
+        Once a tombstone stops reserving its key, a re-registration can take
+        it — and then restoring the original would put two live rows on one
+        `tool_key`. That has to be a 409 the operator can act on, not the
+        IntegrityError a bare commit would raise.
+        """
+        first = await make_stub_server()
+        await manager.connect_server(first)
+        echo_id = (await tools_of(first))["echo"].id
+
+        async with get_session_factory()() as session:
+            now = datetime.now(UTC)
+            server = await session.get(McpServer, first)
+            assert server is not None
+            server.deleted_at = now
+            for row in (
+                await session.execute(select(Tool).where(Tool.mcp_server_id == first))
+            ).scalars():
+                row.deleted_at = now
+            await session.commit()
+
+        second = await make_stub_server()
+        await manager.connect_server(second)
+        assert (await tools_of(second))["echo"].tool_key == "stub.echo"  # key reused
+
+        refused = await client.post(f"{API}/tools/{echo_id}/restore")
+        assert refused.status_code == 409
+        assert "stub.echo" in refused.json()["detail"]
+        # and it really did not come back
+        async with get_session_factory()() as session:
+            still_gone = await session.get(Tool, echo_id)
+            assert still_gone is not None and still_gone.deleted_at is not None
+
+    async def test_a_live_collision_still_takes_the_suffix(self, manager: McpManager) -> None:
+        """The suffix keeps the job §4 actually gives it.
+
+        Making the key reusable must not make it shareable: two LIVE servers
+        exposing the same tool name still get distinct keys.
+        """
+        first = await make_stub_server()
+        await manager.connect_server(first)
+        assert (await tools_of(first))["echo"].tool_key == "stub.echo"
+
+        # a second, still-connected server of the same name — nothing deleted
+        second = await make_stub_server()
+        await manager.connect_server(second)
+        key = (await tools_of(second))["echo"].tool_key
+        assert key != "stub.echo"
+        assert key.startswith("stub.echo-")
 
 
 class TestHttpTransport:

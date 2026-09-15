@@ -429,7 +429,12 @@ _FLAGSHIPS: tuple[tuple[str, str], ...] = (
     ("anthropic", "anthropic:claude-sonnet-4-6"),
     ("google_genai", "google_genai:gemini-3.6-flash"),
     ("openai", "openai:gpt-5.6-luna"),
-    ("openrouter", "openrouter:qwen/qwen3.8-max"),
+    # pinned, not the `qwen/qwen3.8-max` alias this used to name: that alias
+    # was retired upstream, which turned the first-boot default for an
+    # OPENROUTER_API_KEY-only install into a model the gateway would refuse —
+    # reintroducing, by way of the vendor, the exact "cannot run a single chat
+    # until a human opens Settings" failure the list above was added to end.
+    ("openrouter", "openrouter:qwen/qwen3.8-max-0902"),
     ("custom", ""),  # "" = ask the adapter for its first configured model
     ("fake", "fake:scripted"),
 )

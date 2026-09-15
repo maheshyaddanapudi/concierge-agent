@@ -61,8 +61,17 @@ export default async function ({ page, nav, shot, get, log, click, closeDrawer, 
     (mine?.workflow?.nodes || []).some((x) => x.id === 'recover'),
     'the recover node added on the error edge survived the save',
   )
+  // `on`, not `condition` — the builder keeps them apart and so does the
+  // saved workflow: `condition` is the natural-language branch text the
+  // planner reads ("if work produced a result"), `on: 'error'` is the routing
+  // flag that sends a failure down this edge. The Field's own hint says it
+  // ("condition = natural language; on=error routes failures"). This
+  // assertion read `condition === 'error'`, which no edge the UI can build
+  // ever satisfies, so it could only ever fail — it went in with the
+  // hardening wave, whose live acceptance re-run never happened, and this is
+  // the first execution it has had.
   expect(
-    (mine?.workflow?.edges || []).some((e) => e.condition === 'error' && e.to === 'recover'),
+    (mine?.workflow?.edges || []).some((e) => e.on === 'error' && e.to === 'recover'),
     '…and so did its error edge',
   )
   await closeDrawer(page)

@@ -149,6 +149,31 @@ async def restore_tool(tool_id: UUID, session: SessionDep) -> Tool:
         raise HTTPException(status_code=404, detail="tool not found")
     if tool.deleted_at is None:
         return tool
+    # `tool_key` is unique among live rows, so coming back from the dead can
+    # collide: delete a tool, let a re-ingest take the freed key, then restore.
+    # Before the index went partial the key stayed reserved and this could not
+    # happen; now it can, and it has to be a 409 the operator can act on
+    # rather than the IntegrityError a bare commit would raise. Renaming the
+    # live tool's key or the restored one is the operator's call — the API
+    # will not silently suffix either, which is the behaviour this whole
+    # change exists to stop.
+    clash = (
+        await session.execute(
+            select(Tool.id).where(
+                Tool.tool_key == tool.tool_key,
+                Tool.deleted_at.is_(None),
+                Tool.id != tool.id,
+            )
+        )
+    ).first()
+    if clash is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"cannot restore: another live tool already holds the key "
+                f"'{tool.tool_key}'. Rename it, then restore this one."
+            ),
+        )
     tool.deleted_at = None
     await session.commit()
     await session.refresh(tool)
