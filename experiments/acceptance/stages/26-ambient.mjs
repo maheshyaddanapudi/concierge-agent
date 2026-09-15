@@ -136,8 +136,11 @@ export default async function ({ page, nav, shot, settings, get, post, api, log,
   log(`ledger: ${items.slice(0, 6).map((e) => `${e.kind}/${e.verdict}: ${String(e.reason || '').slice(0, 50)}`).join(' | ')}`)
   // the audit must show BOTH decisions — a ledger that only records fires is
   // not an audit
-  expect(items.some((e) => e.verdict === 'fire'), 'the ledger records the fire')
-  expect(items.some((e) => e.verdict === 'hold'), '…and the hold')
+  // `fired` / `held`, not `fire` / `hold` — the column records what HAPPENED
+  // to the event, in the past tense the model writes. Both assertions were
+  // unsatisfiable on any build.
+  expect(items.some((e) => e.verdict === 'fired'), 'the ledger records the fire')
+  expect(items.some((e) => e.verdict === 'held'), '…and the hold')
   const expand = page.getByRole('button', { name: /expand .* event/ }).first()
   if (await expand.count()) {
     await expand.click()

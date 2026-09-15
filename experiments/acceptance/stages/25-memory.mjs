@@ -39,7 +39,11 @@ export default async function ({ page, nav, shot, settings, get, post, log, clos
   const manual = (await get('/memories')).json
   log(`after + Remember: ${manual.length} rows — ${manual.map((m) => `${m.kind}/${m.status}/${m.source}`).join(', ')}`)
   expectEq(manual.length, 1, '+ Remember wrote exactly one row into the empty store')
-  expectEq(manual[0].source, 'manual', '…marked manual')
+  // `user_stated`, not `manual`: §16.2's rule is that a user-asked remember is
+  // attributed to the user, and `manual` is not one of the five legal sources
+  // (extracted | user_stated | user_edited | hitl_note | inferred). The
+  // assertion could never pass on any build.
+  expectEq(manual[0].source, 'user_stated', '…attributed to the user who typed it')
   expectMatch(manual[0].text, /aurora-2/, '…with the text the operator typed')
   await shot(page, '02-remember-quick-add')
 

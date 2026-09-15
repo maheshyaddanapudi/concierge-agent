@@ -4,6 +4,15 @@
 // in a second browser context and sees an empty Runs page. Run by
 // prod/m34-auth.sh, which supplies ACC_AUTH_PASSWORD, ACC_MEMBER_PASSWORD
 // and ACC_BEARER (the lib's API calls ride the admin session).
+// The backend must be running with AUTH_ENABLED=1 and this stage needs the
+// bootstrap passwords. Run bare against the default (dark) auth there is no
+// login gate to wait for, so it dies on a locator timeout that reads like a
+// broken login screen. Declaring the requirement makes a bare run SKIP it.
+export const requires = [
+  { env: 'ACC_AUTH_PASSWORD', why: 'AUTH_ENABLED=1 and the admin bootstrap password' },
+]
+export const driver = 'prod/m34-auth.sh'
+
 export default async function ({ page, context, browser, nav, shot, get, log, newConversation, askAndSettle, expect, expectEq, expectStatus }) {
   // the page may not be on the app origin yet, so localStorage can be
   // inaccessible here; the login gate below is what actually proves the

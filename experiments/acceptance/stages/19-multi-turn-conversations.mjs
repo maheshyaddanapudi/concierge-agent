@@ -17,7 +17,11 @@ export default async function ({ page, nav, shot, settings, log, newConversation
   expectStatus(g2, 'completed', 'graph turn 2')
   // turn 2 is answerable ONLY from turn 1 — this is the continuity claim
   expectMatch(g2.final_answer, /84/, 'graph turn 2 doubled turn 1\'s answer')
-  const t3 = await askAndSettle(page, 'In one sentence, list both numbers from this conversation in the order they appeared.')
+  // "both numbers … in the order they appeared" was ambiguous and a model
+  // answering "17 and 25" was reading it correctly — those are the numbers
+  // that appeared first. Ask for the two RESULTS, which is what continuity
+  // over the earlier turns actually requires.
+  const t3 = await askAndSettle(page, 'In one sentence, give the two results you calculated earlier in this conversation, in order.')
   await shot(page, 'graph-t3')
   log(`graph continuity check: mentions 42=${/42/.test(t3.final_answer || '')} 84=${/84/.test(t3.final_answer || '')}`)
   expectStatus(t3, 'completed', 'graph turn 3')

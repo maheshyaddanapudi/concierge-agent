@@ -1,18 +1,21 @@
 // Stage 35 — tool schema drift (spec §3.2) and the registry pinned into the
-// run (§3.6), the overlap judge's own model role (§3.7). The seeded
-// `demo-stub` MCP server (the test stub, registered by the M56 ceremony) can
+// run (§3.6), the overlap judge's own model role (§3.7). A `demo-stub` MCP
+// server, registered by this stage (nothing seeds one, despite what this
+// comment used to claim), runs the repo's test stub, which
 // rename `echo`'s parameter at runtime through its `mutate_schema` tool: a
 // live run calls that tool, the server notifies listChanged, the re-ingest
 // versions the change, and the Tools page, the drawer, the trace and Settings
 // each show their side of it. Then the same change under the quarantine
 // policy, acknowledged from the drawer.
-export default async function ({ page, nav, shot, get, post, patch, log, settings, closeDrawer, newConversation, askAndSettle, waitRun, expect, expectEq }) {
+export default async function ({ page, nav, shot, get, post, patch, log, settings, closeDrawer, newConversation, askAndSettle, waitRun, ensureStubServer, expect, expectEq }) {
   await settings({ orchestrator_mode: 'graph', mcp_schema_change_policy: 'warn', overlap_judge_model: null, overlap_judge_model_params: null })
 
-  // ── the stub server, reconnected so the image's stub (with mutate_schema) is the one running ──
-  const servers = (await get('/mcp-servers')).json
-  const stub = servers.find((s) => s.name === 'demo-stub')
-  expect(!!stub, 'the demo-stub MCP server is registered')
+  // ── the stub server, reconnected so the stub (with mutate_schema) is running ──
+  // registered here if absent: nothing in the repository seeds `demo-stub`,
+  // so asserting it was already there could only ever fail (see
+  // ensureStubServer in lib.mjs)
+  const stub = await ensureStubServer('demo-stub')
+  expect(!!stub, 'the demo-stub MCP server is available')
   await post(`/mcp-servers/${stub.id}/reconnect`)
   await new Promise((r) => setTimeout(r, 3000))
   const tools = async () => (await get('/tools?limit=300')).json.filter((t) => t.tool_key.startsWith('demo-stub.'))

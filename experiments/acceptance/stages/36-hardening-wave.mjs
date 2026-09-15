@@ -3,15 +3,17 @@
 // Skills list (§8.3), an operator's tool description survives a re-ingest
 // (§3.2), and the judges get their own roles in Settings (§8.7: the
 // registry overlap audit gate, the eval judge model, the salience hint).
-// Uses the seeded `demo-stub` MCP server (the M56 ceremony registers it).
-export default async function ({ page, nav, shot, get, post, patch, del, log, settings, closeDrawer, newConversation, askAndSettle, expect, expectEq, expectHttp, expectMatch, expectStatus }) {
+// Uses a `demo-stub` MCP server, which this stage registers itself — nothing
+// in the repository seeds one, despite what this comment used to claim.
+export default async function ({ page, nav, shot, get, post, patch, del, log, settings, closeDrawer, newConversation, askAndSettle, ensureStubServer, expect, expectEq, expectHttp, expectMatch, expectStatus }) {
   const before = await settings()
   await settings({ orchestrator_mode: 'graph', formatter_enabled: true, evals_enabled: true, ambient_enabled: true, ambient_salience_model: null, eval_judge_model: null, eval_judge_model_params: null, registry_overlap_audit_enabled: false })
 
   // ── the stub server's echo tool, bound to a skill of this stage ──
-  const servers = (await get('/mcp-servers')).json
-  const stub = servers.find((s) => s.name === 'demo-stub')
-  expect(!!stub, 'the demo-stub MCP server is registered')
+  // registered here if absent — nothing in the repository seeds `demo-stub`
+  // (see ensureStubServer in lib.mjs)
+  const stub = await ensureStubServer('demo-stub')
+  expect(!!stub, 'the demo-stub MCP server is available')
   const tools = async () => (await get('/tools?limit=300')).json
   let echo = (await tools()).find((t) => t.tool_key === 'demo-stub.echo')
   expect(!!echo, 'demo-stub.echo is ingested')

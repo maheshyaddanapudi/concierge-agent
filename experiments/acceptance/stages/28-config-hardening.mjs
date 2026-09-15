@@ -188,13 +188,32 @@ export default async function (ctx) {
   // principal; with auth dark the middleware passes every request through
   // untouched (byte-identity), so the 429 transcript is produced by
   // prod/m34-auth.sh with AUTH_ENABLED=1 — this stage shows the live setting.
-  await api('PATCH', '/settings', { rate_limit_burst: 5, rate_limit_per_s: 1 })
-  await nav(page, 'settings')
-  await page.getByLabel('Rate-limit burst').scrollIntoViewIfNeeded()
-  log(`rate_limit_burst=5 rate_limit_per_s=1 set live (the 429 boundary is exercised under an identity in prod/m34-auth.sh)`)
-  expectEq((await get('/settings')).json.rate_limit_burst, 5, 'the rate-limit burst took live')
-  await shot(page, '21-guardrails-burst-5')
-  await api('PATCH', '/settings', { rate_limit_burst: initial.rate_limit_burst, rate_limit_per_s: initial.rate_limit_per_s })
+  // Order matters here, and it used to be wrong in two ways.
+  //
+  // 1. The read-back came AFTER a page navigation. `per_s: 1` with `burst: 5`
+  //    means the settings page's own request fan-out spends the bucket, so the
+  //    verifying GET came back 429 and the assertion compared `undefined`
+  //    against 5 — the stage throttling its own evidence. Read first, then
+  //    navigate for the frame.
+  // 2. The restore came AFTER the assertion, so a failing assertion left the
+  //    whole deployment pinned at 1 req/s. Every later stage then died on
+  //    `PATCH /settings 429` — one assertion turning into six red stages.
+  //    The restore now runs in `finally`, whatever happens above it.
+  let liveBurst
+  try {
+    await api('PATCH', '/settings', { rate_limit_burst: 5, rate_limit_per_s: 1 })
+    liveBurst = (await get('/settings')).json.rate_limit_burst
+    await nav(page, 'settings')
+    await page.getByLabel('Rate-limit burst').scrollIntoViewIfNeeded()
+    log(`rate_limit_burst=5 rate_limit_per_s=1 set live (the 429 boundary is exercised under an identity in prod/m34-auth.sh)`)
+    await shot(page, '21-guardrails-burst-5')
+  } finally {
+    await api('PATCH', '/settings', {
+      rate_limit_burst: initial.rate_limit_burst,
+      rate_limit_per_s: initial.rate_limit_per_s,
+    })
+  }
+  expectEq(liveBurst, 5, 'the rate-limit burst took live')
 
   // ── the ambient toast for a tier-0 delivery ──
   // (a tier-0 delivery inserted server-side — no click, no navigation — the

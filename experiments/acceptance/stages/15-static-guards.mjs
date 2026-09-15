@@ -12,16 +12,40 @@ async function drawerFacts(page) {
   const switches = await drawer.getByRole('switch').count()
   for (let i = 0; i < n; i++) if (await inputs.nth(i).isDisabled()) disabled++
   const del = await drawer.getByRole('button', { name: /^Delete$/ }).count()
-  return { n, disabled, del, switches, toString: () => `fields ${disabled}/${n} disabled, Delete buttons: ${del}, live switches: ${switches}` }
+  // a drawer may lock its definition by rendering it as read-only TEXT rather
+  // than as disabled fields — stricter, not weaker — and may offer its status
+  // control as a button rather than a switch
+  const locked = await drawer.getByText(/definition fields are locked/i).count()
+  const statusBtn = await drawer.getByRole('button', { name: /^(Deactivate|Activate)$/ }).count()
+  return {
+    n, disabled, del, switches, locked, statusBtn,
+    toString: () =>
+      `fields ${disabled}/${n} disabled, Delete buttons: ${del}, live switches: ${switches}, locked-banner: ${locked}, status button: ${statusBtn}`,
+  }
 }
 
 /** §4: a static record's definition is read-only, it cannot be deleted, and
- * its status / direct-exposure toggles still work. */
+ * its status / direct-exposure toggles still work.
+ *
+ * What §4 requires is that the definition CANNOT BE EDITED, not that it be
+ * rendered as a disabled `<input>`. The skill drawer builds a locked form;
+ * the MCP server drawer prints the definition as plain text under a "Static
+ * record — definition fields are locked" banner and offers Deactivate as a
+ * button. The second is at least as strict as the first — there is no field
+ * to re-enable — but the original helper only knew the first shape and so
+ * reported the server drawer as having no guards at all. */
 function expectStaticGuards(facts, what, { expect, expectEq }) {
-  expect(facts.n > 0, `${what}: the drawer rendered its definition fields (${facts.n})`)
-  expect(facts.disabled > 0, `${what}: the definition fields are disabled (${facts.disabled}/${facts.n})`)
+  const readOnlyForm = facts.n > 0 && facts.disabled > 0
+  const readOnlyText = facts.locked > 0 && facts.n === 0
+  expect(
+    readOnlyForm || readOnlyText,
+    `${what}: the definition is read-only — ${readOnlyText ? 'rendered as locked text' : `${facts.disabled}/${facts.n} fields disabled`}`,
+  )
   expectEq(facts.del, 0, `${what}: no Delete button`)
-  expect(facts.switches > 0, `${what}: the status / exposure toggles are still there`)
+  expect(
+    facts.switches > 0 || facts.statusBtn > 0,
+    `${what}: the status / exposure control is still live (${facts.switches} switch, ${facts.statusBtn} button)`,
+  )
 }
 
 export default async function ({ page, nav, shot, get, log, closeDrawer, expect, expectEq }) {

@@ -162,6 +162,34 @@ export const post = (route, body) => api('POST', route, body)
 export const patch = (route, body) => api('PATCH', route, body)
 export const del = (route) => api('DELETE', route)
 
+/** The stub MCP server a stage needs, registered if it is not already there.
+ *
+ * Several stages and prod drills open with "the SEEDED `demo-stub` server" —
+ * but nothing in this repository has ever seeded one. `git log -S demo-stub --
+ * backend/` is empty at every commit: the name lives only in
+ * experiments/acceptance and docs. Those stages could not pass on a stack
+ * built from this tree, and their published frames came from a fixture the
+ * tree cannot reproduce. Rather than assert a precondition nobody creates,
+ * a stage now makes its own, from the stub the repo DOES ship
+ * (backend/tests/stub_mcp_server.py — echo, add, mutate_toolset,
+ * mutate_schema, die), at the container path the compose stack uses.
+ */
+export async function ensureStubServer(name = 'demo-stub') {
+  const existing = (await get('/mcp-servers')).json.find((s) => s.name === name)
+  if (existing) return existing
+  const r = await post('/mcp-servers', {
+    name,
+    description: `the acceptance stub server: echo, add, mutate_toolset, mutate_schema, die — registered by the ${name} stage`,
+    transport: 'stdio',
+    command: 'python',
+    args: ['/app/tests/stub_mcp_server.py'],
+  })
+  if (r.status >= 300) throw new Error(`could not register ${name}: ${r.status} ${JSON.stringify(r.json)}`)
+  log(`registered the ${name} stub server (nothing seeds it — see ensureStubServer)`)
+  await new Promise((res) => setTimeout(res, 3000))
+  return (await get('/mcp-servers')).json.find((s) => s.name === name)
+}
+
 export async function settings(update) {
   if (update) {
     const r = await patch('/settings', update)

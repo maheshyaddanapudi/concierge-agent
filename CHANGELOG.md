@@ -46,6 +46,27 @@ The first wave whose findings came from **running the system** rather than readi
 
   Both are recorded because a wave that reports only its confirmed findings teaches nothing about the ones it nearly filed. The lesson is narrower than "test your harness": a harness that sits between the browser and the system can manufacture symptoms that read exactly like product defects — an invisible approval gate, a validation error that never appears — and both of these would have been filed as serious bugs on the evidence visible from the stage log alone.
 
+### The acceptance tree repaired — 17 red stages, no product defects
+
+With the harness finally honest, the full 37-stage tree ran end to end: **20 passed, 17 failed, and every one of the 17 was a defect in the test, the harness or the driver.** The product passed every stage whose assertions describe what the spec actually promises, including the entire §14 core path (`00`–`12`): seed, registry, all four trials, the HITL gate armed and approved, the uncovered-ask fallback rung, deny + queue.
+
+**Eight assertions that were wrong, every one of them added by `401914a`** — the wave whose live acceptance re-run did not happen — and therefore never executed until now. Several were unsatisfiable on any build, like stage `05`'s:
+
+- `13` matched a refusal against `/…|cannot|…/` but not the contraction models actually write; a model answering "I can’t summarize it" (typographic apostrophe) was refusing exactly as the leg requires and was scored as a failure.
+- `15` asserted a static MCP server's drawer renders disabled `<input>`s and a `role=switch`. It renders the definition as **locked read-only text** under a "definition fields are locked" banner, with Deactivate as a button — at least as strict, since there is no field to re-enable. The helper only knew the skill drawer's shape.
+- `16` asserted `html[data-theme] === 'default'`. `theme.ts` **removes** the attribute for the default palette and `index.css` defines rules only for the three branded ones, so the default look is the bare `:root`.
+- `17` asserted every conversation is deleted by "Purge run history". §8.7 scopes that control to run residue; conversations are the person's chat threads and must survive. The assertion described behaviour that would be a **destructive bug** if we found it.
+- `19` asked a model to "list both numbers … in the order they appeared" and required 42 and 84; a model answering "17 and 25" was reading the question correctly. Continuity is proven by turn 2, which passed — doubling 42 to 84 is only possible from history.
+- `25` asserted `source === 'manual'`, which is not one of the five legal sources at all; §16.2 attributes a user-asked remember to `user_stated`.
+- `26` asserted ledger verdicts `'fire'` / `'hold'` where the column records `'fired'` / `'held'`. The ledger had correctly recorded **both** decisions, which is exactly what the stage's own comment demands of an audit.
+- `28` set `rate_limit_per_s: 1` and then read the value back **after** a page navigation, so the settings page's own request fan-out spent the bucket and the verifying GET returned 429. The stage throttled its own evidence.
+
+**One of those eight reddened six stages.** `28`'s restore sat *after* its assertion, so a failing assertion left the deployment pinned at 1 req/s and stages `29`–`33` all died on `PATCH /settings 429`. The restore now runs in a `finally`.
+
+**Four stages were never runnable the way they were run.** `27` needs four A2A counterparty processes, `34` needs `AUTH_ENABLED=1` and bootstrap passwords, `35` and `36` need a `demo-stub` MCP server. Run bare by `node run.mjs stages/*.mjs` they fail on a missing precondition and read like product defects. Stages that need a wrapper now export `requires`, and a bare run **skips them by name** instead of failing them.
+
+**`demo-stub` has never existed in this repository.** `35`, `36` and several prod drills all open with "the **seeded** `demo-stub` server". `git log -S demo-stub -- backend/` is empty at every commit — the name appears only under `experiments/acceptance/` and `docs/`. Those stages could not pass on a stack built from this tree at any point in its history, and the frames published for them came from a fixture the tree cannot reproduce. They now register the server themselves, from the stub the repository does ship (`backend/tests/stub_mcp_server.py`).
+
 ### Known limitations stated rather than fixed
 
 - **`docs/acceptance/` remains stale**, and this wave does not clear it. The tree still reflects a build two waves old. Stages `00`–`05` have been re-run green against a live model; the stages beyond them and the prod drills are not yet republished, because the two runs that would have produced them were spent discovering the harness defects above.

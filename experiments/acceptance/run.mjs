@@ -12,9 +12,31 @@ if (!files.length) {
 }
 const { browser, context, page } = await lib.openBrowser()
 let failed = 0
+let skipped = 0
 for (const file of files) {
   const name = path.basename(file, '.mjs')
   const mod = await import(pathToFileURL(path.resolve(file)).href)
+  // Some stages are only meaningful under a prod/*.sh wrapper that builds
+  // their world first — A2A counterparty stubs, AUTH_ENABLED=1 and its
+  // bootstrap passwords, a `demo-stub` MCP server. Run bare from
+  // `node run.mjs stages/*.mjs` they fail on a missing precondition and read
+  // like product defects; a whole campaign was once triaged before anyone
+  // noticed four of its red stages had never been runnable that way. A stage
+  // that needs a wrapper says so by exporting `requires`, and a bare run
+  // skips it by name instead of failing it.
+  if (Array.isArray(mod.requires) && mod.requires.length) {
+    const missing = mod.requires.filter((r) => !process.env[r.env])
+    if (missing.length) {
+      skipped += 1
+      lib.stageStart(name)
+      lib.log(
+        `SKIPPED — needs ${missing.map((m) => `${m.env} (${m.why})`).join('; ')}. ` +
+          `Run it through ${mod.driver || 'its prod/ driver'}.`,
+      )
+      lib.stageEnd()
+      continue
+    }
+  }
   lib.stageStart(name)
   try {
     await mod.default({ page, context, browser, ...lib })
@@ -28,5 +50,6 @@ for (const file of files) {
     lib.stageEnd()
   }
 }
+if (skipped) lib.log(`${skipped} stage(s) skipped for missing preconditions — see the SKIPPED lines above`)
 await browser.close()
 process.exit(failed ? 1 : 0)

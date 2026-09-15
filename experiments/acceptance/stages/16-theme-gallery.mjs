@@ -28,7 +28,17 @@ export default async function ({ page, nav, shot, get, log, setTheme, openConver
     log(`theme ${t}: html[data-theme]=${applied} localStorage=${stored}`)
     // the gallery is only a gallery if each frame is a DIFFERENT palette
     expectEq(stored, t, `the ${t} palette is the stored preference`)
-    expectEq(applied, t, `…and the document is actually painted with it`)
+    // `default` is the ABSENCE of the attribute, by design: theme.ts removes
+    // `data-theme` for it and index.css defines rules only for the three
+    // branded palettes, so the default look is the bare `:root`. Asserting
+    // `data-theme === 'default'` could never pass.
+    expectEq(
+      applied,
+      t === 'default' ? null : t,
+      t === 'default'
+        ? '…and the document carries no palette attribute (default is bare :root)'
+        : '…and the document is actually painted with it',
+    )
   }
 
   await setTheme(page, 'default')

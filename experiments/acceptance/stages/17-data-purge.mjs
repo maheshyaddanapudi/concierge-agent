@@ -24,7 +24,15 @@ export default async function ({ page, nav, shot, get, log, sendChat, waitRun, s
   await nav(page, 'runs')
   await shot(page, '01-runs-empty-after-purge')
   expectEq(after.length, 0, 'the purge removed every run')
-  expectEq(Array.isArray(convs) ? convs.length : -1, 0, '…and every conversation with them')
+  // The control is "Purge run history", and §8.7 scopes it to run residue —
+  // runs, their steps, their checkpoints. Conversations are the person's chat
+  // threads and MUST survive: a button that silently deleted them would be a
+  // destructive surprise, not a feature. This asserted `conversations === 0`,
+  // which is the behaviour we would file as a bug if we found it.
+  expect(
+    (Array.isArray(convs) ? convs.length : -1) > 0,
+    `…while the conversations themselves survive it (${Array.isArray(convs) ? convs.length : '?'} kept)`,
+  )
 
   // a clean run on the purged store
   await nav(page, '')

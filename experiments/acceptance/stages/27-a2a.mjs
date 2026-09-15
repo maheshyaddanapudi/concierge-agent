@@ -12,6 +12,16 @@
 // ACC_A2A_OAUTH (…:8030), ACC_A2A_MTLS (…:8029, declares mutualTLS). Their
 // control endpoints are reached from this host at ACC_A2A_*_LOCAL (default
 // http://localhost:<port>).
+// Four counterparty processes have to be running before this stage means
+// anything (`backend/tests/a2a_counterparty.py`, one per port). Run bare
+// without them it dies on `fetch failed` at the first control call, which
+// reads like an A2A defect and is not one. Declaring the requirement makes a
+// bare run SKIP it by name instead.
+export const requires = [
+  { env: 'ACC_A2A_STUBS', why: 'the four a2a_counterparty.py stubs on 8027–8030 must be running' },
+]
+export const driver = 'prod/third-reading.sh (which starts the counterparties), or start them by hand and set ACC_A2A_STUBS=1'
+
 const CP = {
   bearer: process.env.ACC_A2A_BEARER || 'http://172.18.0.1:8027',
   apikey: process.env.ACC_A2A_APIKEY || 'http://172.18.0.1:8028',
